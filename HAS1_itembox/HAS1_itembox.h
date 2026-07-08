@@ -3,14 +3,24 @@
 
 #include "library_and_pin.h"
 
+// TELNET===================================================================================
+// WiFi가 연결되면 로그를 텔넷(포트 23)으로도 뿌린다. WiFi 없어도 게임은 정상 동작 (디버그 전용)
+WiFiServer telnetServer(23);
+WiFiClient telnetClient;   // 현재 접속 중인 텔넷 클라이언트 (동시 1명)
+
 // LOG======================================================================================
 // 로그 형식: [MODULE] message  예: [GAME ] WAIT_TAG -> PUZZLE
-// 모듈 태그: MAIN / MP3 / ENC / MOTOR / VIB / RFID / GAME / NEO
+// 모듈 태그: MAIN / MP3 / ENC / MOTOR / VIB / RFID / GAME / NEO / NET
+// 시리얼에는 항상 출력, 텔넷 클라이언트가 접속해 있으면 텔넷으로도 미러링
 void Log(const char *tag, const String &msg) {
   char head[12];
   snprintf(head, sizeof(head), "[%-5s] ", tag);
   Serial.print(head);
   Serial.println(msg);
+  if (telnetClient && telnetClient.connected()) {
+    telnetClient.print(head);
+    telnetClient.println(msg);
+  }
 }
 
 // DFPLAYER=================================================================================
