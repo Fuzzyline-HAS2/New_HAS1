@@ -3,12 +3,12 @@ void RfidInit()
   nfc.begin();
   if (!nfc.getFirmwareVersion())
   {
-    Serial.println("PN532 connect Fail");
+    Log("RFID", "PN532 connect FAIL");
   }
   else
   {
     nfc.SAMConfig();
-    Serial.println("PN532 connect Success");
+    Log("RFID", "PN532 online");
     AllNeoOn(YELLOW);
   }
 }
@@ -44,10 +44,11 @@ String CheckingPlayers(uint8_t rfidData[32])
   String tagUser = "";
   for (int i = 0; i < 4; i++)                             // GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
-  Serial.println("tag_user_data : " + tagUser);
+  Log("RFID", "tag: " + tagUser);
 
   if (tagUser == "MMMM")
   {                                                       //"MMMM"일경우 관리자 카드 → 즉시 재부팅
+    Log("RFID", "admin card -> restart");
     ESP.restart();
   }
   return tagUser;

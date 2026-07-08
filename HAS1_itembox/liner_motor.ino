@@ -16,6 +16,7 @@ bool isLinerMotorStopSwitchPressed() {
 }
 
 void boxOpen() {
+    Log("MOTOR", "box opening (" + String(BOX_OPEN_TIME / 1000) + "s)");
     ledcWrite(LINER_RPWM_PIN, 0);           // 반대쪽을 먼저 끄고 나서 듀티 출력
     ledcWrite(LINER_LPWM_PIN, MOTOR_SPEED);
     boxOpenStartTime = millis();            // 시작 시각 기록 → boxUpdate()가 4초 후 정지시킴
@@ -24,8 +25,9 @@ void boxOpen() {
 
 void boxClose() {
     // 마이크로 스위치가 눌려있으면 이미 박스가 닫혀있다
-    if (isLinerMotorStopSwitchPressed()) { Serial.println("BOX already closed"); return; }
+    if (isLinerMotorStopSwitchPressed()) { Log("MOTOR", "close skip: already closed"); return; }
 
+    Log("MOTOR", "box closing (until switch)");
     ledcWrite(LINER_LPWM_PIN, 0);
     ledcWrite(LINER_RPWM_PIN, MOTOR_SPEED);
     boxState = BOX_CLOSING;                 // boxUpdate()가 스위치 눌림을 감지하면 정지시킴
@@ -44,7 +46,7 @@ void boxUpdate() {
     // 4초동안 모터를 정방향으로 구동 시킨 후 MOTOR_IDLE 상태로 바뀐다.
     if (boxState == BOX_OPENING && millis() - boxOpenStartTime >= BOX_OPEN_TIME) {
         liner_motor_stop();
-        Serial.println("BOX open done");
+        Log("MOTOR", "box open done");
     }
     // 마이크로 스위치가 눌릴 때까지 모터를 구동 시킨 후 IDLE 상태로 바뀐다.
     // 모터 노이즈로 인한 순간 HIGH 스파이크를 거르기 위해 SWITCH_DEBOUNCE_TIME(50ms) 연속 HIGH여야 눌림으로 인정
@@ -54,7 +56,7 @@ void boxUpdate() {
             else if (millis() - switchHighSince >= SWITCH_DEBOUNCE_TIME) {      // 연속 HIGH 유지 확인
                 switchHighSince = 0;
                 liner_motor_stop();
-                Serial.println("BOX close done");
+                Log("MOTOR", "box close done");
             }
         } else {
             switchHighSince = 0;   // HIGH가 끊기면(노이즈였으면) 다시 처음부터

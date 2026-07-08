@@ -3,6 +3,16 @@
 
 #include "library_and_pin.h"
 
+// LOG======================================================================================
+// 로그 형식: [MODULE] message  예: [GAME ] WAIT_TAG -> PUZZLE
+// 모듈 태그: MAIN / MP3 / ENC / MOTOR / VIB / RFID / GAME / NEO
+void Log(const char *tag, const String &msg) {
+  char head[12];
+  snprintf(head, sizeof(head), "[%-5s] ", tag);
+  Serial.print(head);
+  Serial.println(msg);
+}
+
 // DFPLAYER=================================================================================
 SoftwareSerial MP3Serial(DFPLAYER_RX_PIN, DFPLAYER_TX_PIN);  // RX=39, TX=33
 DFRobotDFPlayerMini myDFPlayer;
@@ -42,6 +52,15 @@ int modeValue[3][5] = { {255, 190, 150, 110, 0}, // VIBESTREGNTH (모터 세기)
 // 상태 전환은 Game_system.ino의 각 상태 함수에서만 일어난다
 enum GameState { GAME_WAIT_TAG, GAME_PUZZLE, GAME_PAUSED, GAME_SOLVED };
 GameState gameState = GAME_WAIT_TAG;
+const char* GameStateName(GameState s) {  // 상태 전환 로그용 이름표
+  switch (s) {
+    case GAME_WAIT_TAG: return "WAIT_TAG";
+    case GAME_PUZZLE:   return "PUZZLE";
+    case GAME_PAUSED:   return "PAUSED";
+    case GAME_SOLVED:   return "SOLVED";
+  }
+  return "?";
+}
 int answerCnt = 0;               // 맞춘 정답 개수 (현재 몇 번째 문제인지)
 bool lastButtonPressed = false;  // 엔코더 버튼 에지 검출용
 unsigned long rfidLastSeenTime = 0;             // 퍼즐 중 RFID 마지막 감지 시각

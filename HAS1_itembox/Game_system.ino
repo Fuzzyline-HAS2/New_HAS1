@@ -13,6 +13,7 @@
 // 상태 전환 전용 함수. 새 상태의 진입 처리를 한곳에서 담당한다
 void ChangeGameState(GameState next)
 {
+    Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
     switch (next) {
         case GAME_WAIT_TAG:                 // 대기: 흰불, 직전에 쓴 카드는 뗐다 태그해야 인정
             AllNeoOn(WHITE);
@@ -72,7 +73,7 @@ void WaitTagState()
 
     if (waitTagRelease)
     {
-        if (TagReleaseConfirmed()) Serial.println("Tag released, ready for new game");
+        if (TagReleaseConfirmed()) Log("GAME", "tag released, ready for new game");
         return;
     }
 
@@ -80,7 +81,7 @@ void WaitTagState()
     if (!RfidReadTag(data)) return;         // 태그 없음 → 다음 loop에서 다시 확인
 
     String tagUser = CheckingPlayers(data);
-    Serial.println("Puzzle Start by: " + tagUser);
+    Log("GAME", "puzzle start by " + tagUser);
 
     answerCnt = 0;                          // 새 게임 초기화 (재개가 아닌 여기서만)
     encoder.clearCount();                   // 엔코더 0 위치에서 퍼즐 시작
@@ -101,8 +102,7 @@ void PuzzleState()
     }
     if (millis() - rfidLastSeenTime > RFID_PUZZLE_TIMEOUT)  // 태그 이탈 → 일시정지 (answerCnt 유지)
     {
-        Serial.println("Puzzle Paused: RFID 태그 없음");
-        ChangeGameState(GAME_PAUSED);
+        ChangeGameState(GAME_PAUSED);   // 전환 로그(PUZZLE -> PAUSED)가 남음
         return;
     }
 
@@ -122,7 +122,7 @@ void PuzzleState()
     int differenceValue = abs(currentAnswer - (int)readEncoderValue());
     if (differenceValue < modeValue[RANGE][ANSWER_RANGE])
     {
-        Serial.println("Correct Answer " + String(answerCnt + 1));
+        Log("GAME", "answer " + String(answerCnt + 1) + "/" + String(modeValue[RANGE][ANSWER_CNT]) + " correct");
         NeoBlink(NEO_ENCODER, GREEN, 5, 250);   // 정답 연출 (delay 블로킹 2.5초 - 연출 중 입력 무시 의도)
         rfidLastSeenTime = millis();            // 블로킹 연출 동안 태그 감지가 없었으므로 오탐 방지
 
@@ -132,7 +132,7 @@ void PuzzleState()
     }
     else
     {
-        Serial.println("Wrong Answer");
+        Log("GAME", "wrong answer (enc " + String(readEncoderValue()) + ", target " + String(currentAnswer) + ")");
         NeoBlink(NEO_ENCODER, RED, 5, 250);     // 오답 연출
         rfidLastSeenTime = millis();            // 블로킹 연출 동안 태그 감지가 없었으므로 오탐 방지
     }
@@ -141,7 +141,7 @@ void PuzzleState()
 // 퍼즐 완료 이벤트: 성공음 + 박스 열기 시작 (열림 완료는 boxUpdate()가, 연출은 GAME_SOLVED 진입 처리가 담당)
 void PuzzleSolved()
 {
-    Serial.println("QUIZ SUCCEED");
+    Log("GAME", "quiz solved");
     Mp3PlayLargeFolder(1, 1);   // 성공음
     boxOpen();                  // 4초 뒤 boxUpdate()가 자동 정지
     ChangeGameState(GAME_SOLVED);
@@ -153,7 +153,7 @@ void PausedState()
 {
     if (millis() - pauseStartTime > PUZZLE_RESET_TIME)  // 방치 → 처음부터
     {
-        Serial.println("Puzzle Reset: 일시정지 " + String(PUZZLE_RESET_TIME / 1000) + "초 경과");
+        Log("GAME", "pause " + String(PUZZLE_RESET_TIME / 1000) + "s timeout -> puzzle reset");
         ChangeGameState(GAME_WAIT_TAG);
         return;
     }
@@ -162,8 +162,7 @@ void PausedState()
     lastRfidCheckTime = millis();
     if (!RfidTagPresent()) return;
 
-    Serial.println("Puzzle Resumed");       // answerCnt 유지된 채 이어서 진행
-    ChangeGameState(GAME_PUZZLE);
+    ChangeGameState(GAME_PUZZLE);           // answerCnt 유지된 채 이어서 진행 (전환 로그: PAUSED -> PUZZLE)
 }
 
 //---------------------------------------- GAME_SOLVED ----------------------------------------
@@ -177,7 +176,7 @@ void SolvedState()
 
     if (waitTagRelease)
     {
-        if (TagReleaseConfirmed()) Serial.println("Tag released, tag again to close box");
+        if (TagReleaseConfirmed()) Log("GAME", "tag released, tag again to close box");
         return;
     }
 
@@ -185,7 +184,6 @@ void SolvedState()
     if (!RfidReadTag(data)) return;
 
     CheckingPlayers(data);
-    Serial.println("Box closing, game reset");
-    boxClose();                             // 마이크로 스위치가 눌리면 boxUpdate()가 자동 정지
+    boxClose();                             // MOTOR 로그(box closing)가 남음                             // 마이크로 스위치가 눌리면 boxUpdate()가 자동 정지
     ChangeGameState(GAME_WAIT_TAG);
 }
