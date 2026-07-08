@@ -1,9 +1,9 @@
 // PCNT 하드웨어 카운터(ESP32Encoder) 사용
 
 void EncoderInit() {
-    Serial.println("ENCODER INIT");
+    Log("ENC", "init");
     ESP32Encoder::useInternalWeakPullResistors = puType::up; // 풀업으로 ENCODER_A, ENCODER_B PIN 설정
-    encoder.attachFullQuad(ENCODER_A_PIN, ENCODER_B_PIN);  // 한 틱 = 4카운트 (이전 버전과 동일한 카운트 방식)
+    encoder.attachFullQuad(ENCODER_B_PIN, ENCODER_A_PIN);  // 한 틱 = 4카운트. A/B 순서를 바꿔 회전 방향 반전 (하드웨어가 리버스라서)
     encoder.clearCount(); // 엔코더의 현재 위치를 0으로 설정한다. 
 
     // GPIO34는 input-only 핀이라 내부 풀업 없음 → 회로에 외부 풀업 저항 달아둠
