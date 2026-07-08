@@ -1,0 +1,42 @@
+#ifndef _LIBRARY_AND_PIN
+#define _LIBRARY_AND_PIN
+
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+#include <SimpleTimer.h>
+#include <SoftwareSerial.h>
+#include "DFRobotDFPlayerMini.h"
+#include <ESP32Encoder.h>
+#include <Adafruit_PN532.h>
+
+// DFPLAYER
+#define DFPLAYER_RX_PIN 39
+#define DFPLAYER_TX_PIN 33
+
+// PN532
+#define PN532_SCK 18
+#define PN532_MISO 19
+#define PN532_MOSI 23
+#define PN532_SS1 5
+
+// NEOPIXEL
+#define PN532_NEOPIXEL_PIN 25
+#define ENCODER_NEOPIXEL_PIN 27
+
+// LINER MOTOR (BTS7960 모터 드라이버)
+// R_EN, L_EN은 5V 직결
+#define LINER_RPWM_PIN 32 
+#define LINER_LPWM_PIN 4
+
+// MICRO SWITCH
+#define LINER_MOTOR_STOP_SWITCH 36
+
+// 진동 모터 (TB6612FNG 모터 드라이버)
+// AIN1->3.3V, AIN2->GND, STBY->3.3V
+#define MOTOR_PWMA_PIN  14
+
+// ENCODER
+#define ENCODER_A_PIN 13
+#define ENCODER_B_PIN 15
+#define ENCODER_BUTTON_PIN 34 // 퍼즐을 풀 때 퍼즐 정답을 누르는 용도의 스위치
+#endif
