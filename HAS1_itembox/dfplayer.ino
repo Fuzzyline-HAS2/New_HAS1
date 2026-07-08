@@ -24,8 +24,6 @@ void Mp3_Init(){
 void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number)
 {
   if(!dfPlayerReady) return;  // DFPlayer 미초기화 시 스킵
-
-  // available()은 "재생 가능"이 아니라 "수신 버퍼에 응답이 있는지"라서
-  // 재생 조건으로 쓰면 거의 항상 false → 재생이 스킵되는 버그. 바로 재생 명령을 보낸다
+  
   myDFPlayer.playLargeFolder(folder_number, file_number);
 }

@@ -3,12 +3,12 @@
 
 #include "library_and_pin.h"
 
-// DFPLAYER
+// DFPLAYER=================================================================================
 SoftwareSerial MP3Serial(DFPLAYER_RX_PIN, DFPLAYER_TX_PIN);  // RX=39, TX=33
 DFRobotDFPlayerMini myDFPlayer;
 bool dfPlayerReady = false;  // 초기화 성공 여부 (실패 시 오디오 없이 동작)
 
-// LINER MOTOR (BTS7960)
+// LINER MOTOR (BTS7960)====================================================================
 #define MOTOR_FREQ       5000  // 5kHz (BTS7960 motor driver는 25kHz까지 허용)
 #define MOTOR_RESOLUTION 8     // 듀티 0~255
 #define MOTOR_SPEED      255   // 최대 출력 사용
@@ -19,19 +19,19 @@ unsigned long boxOpenStartTime = 0;
 unsigned long switchHighSince = 0;              // 스위치 HIGH 시작 시각 (0 = 안 눌림)
 const unsigned long SWITCH_DEBOUNCE_TIME = 50;  // 이 시간 연속 HIGH여야 눌림 인정 — 모터 노이즈 스파이크 필터 (ms)
 
-// VIBRATION MOTOR
+// VIBRATION MOTOR==========================================================================
 #define VIB_MOTOR_FREQ       5000  // 5kHz (TB6612FNG는 100kHz까지 허용)
 #define VIB_MOTOR_RESOLUTION 8     // 듀티 0~255
 
-// ENCODER
+// ENCODER==================================================================================
 ESP32Encoder encoder;
 #define ENCODER_MAX 95
 #define ENCODER_MIN 0
 
-// RFID
+// RFID=====================================================================================
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
 
-// GAME SYSTEM
+// GAME SYSTEM===============================================================================
 enum {VIBESTREGNTH = 0, ANSWER, RANGE};             // modeValue 행 인덱스
 enum {ANSWER_CNT = 0, ANSWER_RANGE, VIBRATION_RANGE}; // RANGE 행의 열 인덱스
 int modeValue[3][5] = { {255, 190, 150, 110, 0}, // VIBESTREGNTH (모터 세기): 0~255 설정 가능, 정답에 가까울수록 강함
@@ -54,7 +54,7 @@ bool waitTagRelease = false;                    // true면 카드를 뗐다가 �
 unsigned long tagAbsentSince = 0;               // 카드 미감지 시작 시각
 const unsigned long TAG_RELEASE_TIME = 700;     // 이 시간 동안 미감지면 "카드 뗌"으로 판정 (ms)
 
-// NEOPIXEL
+// NEOPIXEL======================================================================================
 #define LED_BRIGHTNESS 127                    // 고정 밝기 50% (0~255 스케일)
 const int NeopixelNum = 2;                    // 설치된 네오픽셀 스트립 개수
 enum {NEO_PN532 = 0, NEO_ENCODER};            // pixels[] 인덱스 (RFID/엔코더 객체와 구분을 위해 NEO_ 접두사)

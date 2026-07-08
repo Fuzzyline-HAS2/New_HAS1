@@ -1,6 +1,5 @@
 // RPWM에 듀티 → 정방향, LPWM에 듀티 → 역방향, 둘 다 0 → 정지, 둘 다 듀티 -> Brake
 // RPWM, LPWM이 둘 다 켜지면 급속 BRAKE 가 걸린다.
-// (설정값/상태 변수는 HAS1_itembox.h의 LINER MOTOR 섹션에 있음)
 
 void liner_motor_Init() {
     // 마이크로 스위치가 눌릴 시 LINER MOTOR가 멈춰야한다.
@@ -48,7 +47,7 @@ void boxUpdate() {
         Serial.println("BOX open done");
     }
     // 마이크로 스위치가 눌릴 때까지 모터를 구동 시킨 후 IDLE 상태로 바뀐다.
-    // 모터 노이즈로 인한 순간 HIGH 스파이크를 거르기 위해 SWITCH_DEBOUNCE_TIME 연속 HIGH여야 눌림으로 인정
+    // 모터 노이즈로 인한 순간 HIGH 스파이크를 거르기 위해 SWITCH_DEBOUNCE_TIME(50ms) 연속 HIGH여야 눌림으로 인정
     else if (boxState == BOX_CLOSING) {
         if (isLinerMotorStopSwitchPressed()) {
             if (switchHighSince == 0) switchHighSince = millis();               // HIGH 시작 시각 기록

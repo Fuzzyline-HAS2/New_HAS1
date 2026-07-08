@@ -1,10 +1,56 @@
 //****************************************GAME SYSTEM (STATE MACHINE)****************************************************************
 //
-//  GAME_WAIT_TAG ──(NFC 태그)──> GAME_PUZZLE ──(정답 3개 완료)──> GAME_SOLVED (박스 열림) ──(태그로 박스 열기)──> GAME_WAIT_TAG 
-//                                    ⇅ (태그 이탈 0.5초 / 재태그)
+//  GAME_WAIT_TAG ──(NFC 태그)──> GAME_PUZZLE ──(정답 3개 완료)──> GAME_SOLVED (박스 열림) ──(태그로 박스 닫기)──> GAME_WAIT_TAG
+//                                    ⇅ (태그 이탈 / 재태그)
 //                               GAME_PAUSED
 //
-//  상태 전환은 이 파일 안에서만 일어난다. loop()는 GameUpdate() 하나만 호출하면 됨.
+//  구조 원칙:
+//  - 상태 전환은 반드시 ChangeGameState()를 통해서만 한다.
+//  - 각 상태의 "진입 시 해야 할 일"(LED 색, 타이머/플래그 초기화)은 ChangeGameState() 안에만 있다.
+//    → 상태 함수들은 서로의 진입 조건을 몰라도 되고, 자기 상태의 로직만 담당한다.
+//  - loop()는 GameUpdate() 하나만 호출하면 됨.
+
+// 상태 전환 전용 함수. 새 상태의 진입 처리를 한곳에서 담당한다
+void ChangeGameState(GameState next)
+{
+    switch (next) {
+        case GAME_WAIT_TAG:                 // 대기: 흰불, 직전에 쓴 카드는 뗐다 태그해야 인정
+            AllNeoOn(WHITE);
+            waitTagRelease = true;
+            tagAbsentSince = millis();
+            break;
+
+        case GAME_PUZZLE:                   // 퍼즐: 육각 파랑 + 링 퍼즐 표시, 버튼/태그이탈 기준 초기화
+            lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼이 눌려있어도 오작동 없게
+            rfidLastSeenTime = millis();                   // 태그 이탈 판정 기준 시각 초기화
+            lightColor(pixels[NEO_PN532], color[BLUE]);
+            EncoderNeopixelOn();
+            break;
+
+        case GAME_PAUSED:                   // 일시정지: 진동 끄고 노란불, 방치 리셋 타이머 시작
+            vibrationOff();
+            AllNeoOn(YELLOW);
+            pauseStartTime = millis();
+            break;
+
+        case GAME_SOLVED:                   // 해결: 진동 끄고 초록불, 올려둔 카드는 뗐다 태그해야 닫기
+            vibrationOff();
+            AllNeoOn(GREEN);
+            waitTagRelease = true;
+            tagAbsentSince = millis();
+            break;
+    }
+    gameState = next;
+}
+
+// 카드가 리더에서 떨어졌는지 확인. TAG_RELEASE_TIME 연속 미감지면 뗌 확정(waitTagRelease 해제) 후 true
+bool TagReleaseConfirmed()
+{
+    if (RfidTagPresent()) { tagAbsentSince = millis(); return false; }
+    if (millis() - tagAbsentSince < TAG_RELEASE_TIME) return false;
+    waitTagRelease = false;
+    return true;
+}
 
 // loop()에서 매번 호출. 현재 상태에 맞는 처리 함수로 분기한다
 void GameUpdate()
@@ -18,19 +64,15 @@ void GameUpdate()
 }
 
 //---------------------------------------- GAME_WAIT_TAG ----------------------------------------
-// NFC 카드가 태그되기를 기다린다. 태그되면 퍼즐 모드 진입
+// NFC 카드가 태그되기를 기다린다. 태그되면 새 게임을 초기화하고 퍼즐 모드 진입
 void WaitTagState()
 {
     if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
     lastRfidCheckTime = millis();
 
-    // 직전 동작(박스 닫기)에 쓴 카드가 아직 올려져 있으면, 뗄 때까지 새 게임을 시작하지 않는다
     if (waitTagRelease)
     {
-        if (RfidTagPresent()) { tagAbsentSince = millis(); return; }
-        if (millis() - tagAbsentSince < TAG_RELEASE_TIME) return;
-        waitTagRelease = false;             // 카드 뗀 것 확인 → 이제 새 태그를 받는다
-        Serial.println("Tag released, ready for new game");
+        if (TagReleaseConfirmed()) Serial.println("Tag released, ready for new game");
         return;
     }
 
@@ -38,14 +80,11 @@ void WaitTagState()
     if (!RfidReadTag(data)) return;         // 태그 없음 → 다음 loop에서 다시 확인
 
     String tagUser = CheckingPlayers(data);
+    Serial.println("Puzzle Start by: " + tagUser);
 
-    answerCnt = 0;
+    answerCnt = 0;                          // 새 게임 초기화 (재개가 아닌 여기서만)
     encoder.clearCount();                   // 엔코더 0 위치에서 퍼즐 시작
-    lastButtonPressed = isEncoderButtonPressed(); // 태그 순간 버튼이 눌려있어도 오작동 없게
-    rfidLastSeenTime = millis();            // 태그 이탈 감지 기준 시각 초기화
-    lightColor(pixels[NEO_PN532], color[BLUE]); // 퍼즐 진행 중 육각 네오픽셀은 파란색
-    EncoderNeopixelOn();
-    gameState = GAME_PUZZLE;
+    ChangeGameState(GAME_PUZZLE);
 }
 
 //---------------------------------------- GAME_PUZZLE ----------------------------------------
@@ -60,13 +99,10 @@ void PuzzleState()
         if (RfidTagPresent())
             rfidLastSeenTime = millis();
     }
-    if (millis() - rfidLastSeenTime > RFID_PUZZLE_TIMEOUT)  // 태그 이탈 → 일시정지
+    if (millis() - rfidLastSeenTime > RFID_PUZZLE_TIMEOUT)  // 태그 이탈 → 일시정지 (answerCnt 유지)
     {
         Serial.println("Puzzle Paused: RFID 태그 없음");
-        vibrationOff();
-        AllNeoOn(YELLOW);
-        pauseStartTime = millis();  // 30초 방치 리셋의 기준 시각
-        gameState = GAME_PAUSED;    // answerCnt는 유지 → 재태그 시 이어서 진행
+        ChangeGameState(GAME_PAUSED);
         return;
     }
 
@@ -76,12 +112,13 @@ void PuzzleState()
     EncoderVibrationStrength(currentAnswer);// 정답에 가까울수록 진동 강하게
 
     // 버튼 에지 검출
+    // 엔코더가 박혔을 때를 대비하여
     bool pressed = isEncoderButtonPressed();
     bool justPressed = pressed && !lastButtonPressed;
     lastButtonPressed = pressed;
     if (!justPressed) return;
 
-    // 정답 판정: 정답 위치 ± ANSWER_RANGE 안이면 정답 (이전 프로젝트와 동일한 기준)
+    // 정답 판정: 정답 위치 ± ANSWER_RANGE 안이면 정답 (3호점 아이템박스와 동일한 기준)
     int differenceValue = abs(currentAnswer - (int)readEncoderValue());
     if (differenceValue < modeValue[RANGE][ANSWER_RANGE])
     {
@@ -101,46 +138,36 @@ void PuzzleState()
     }
 }
 
-// 퍼즐 완료: 성공 연출 후 박스 열기 시작 (열림 완료는 boxUpdate()가 처리)
+// 퍼즐 완료 이벤트: 성공음 + 박스 열기 시작 (열림 완료는 boxUpdate()가, 연출은 GAME_SOLVED 진입 처리가 담당)
 void PuzzleSolved()
 {
     Serial.println("QUIZ SUCCEED");
-    vibrationOff();
-    AllNeoOn(GREEN);
     Mp3PlayLargeFolder(1, 1);   // 성공음
     boxOpen();                  // 4초 뒤 boxUpdate()가 자동 정지
-    waitTagRelease = true;      // 퍼즐 내내 올려둔 카드가 아직 리더에 있음 → 뗐다 다시 태그해야 닫기 동작
-    tagAbsentSince = millis();
-    gameState = GAME_SOLVED;
+    ChangeGameState(GAME_SOLVED);
 }
 
 //---------------------------------------- GAME_PAUSED ----------------------------------------
 // 태그 이탈로 일시정지. 재태그하면 풀던 문제부터 이어서, 30초 방치되면 퍼즐 리셋
 void PausedState()
 {
-    if (millis() - pauseStartTime > PUZZLE_RESET_TIME)  // 30초 방치 → 처음부터
+    if (millis() - pauseStartTime > PUZZLE_RESET_TIME)  // 방치 → 처음부터
     {
         Serial.println("Puzzle Reset: 일시정지 " + String(PUZZLE_RESET_TIME / 1000) + "초 경과");
-        answerCnt = 0;
-        AllNeoOn(WHITE);        // 대기 상태 표시로 복귀
-        gameState = GAME_WAIT_TAG;
+        ChangeGameState(GAME_WAIT_TAG);
         return;
     }
 
-    if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;  // 여기도 200ms 주기로만 확인
+    if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
     lastRfidCheckTime = millis();
     if (!RfidTagPresent()) return;
 
-    Serial.println("Puzzle Resumed");
-    rfidLastSeenTime = millis();
-    lastButtonPressed = isEncoderButtonPressed(); // 재개 순간 버튼 오작동 방지
-    lightColor(pixels[NEO_PN532], color[BLUE]);   // 재개: 육각 네오픽셀 노란색 → 파란색 복귀
-    EncoderNeopixelOn();                          // 엔코더 링도 퍼즐 표시로 복귀
-    gameState = GAME_PUZZLE;
+    Serial.println("Puzzle Resumed");       // answerCnt 유지된 채 이어서 진행
+    ChangeGameState(GAME_PUZZLE);
 }
 
 //---------------------------------------- GAME_SOLVED ----------------------------------------
-// 박스 열림 완료 후 대기. 카드를 다시 태그하면 박스를 닫고 처음 상태로 복귀
+// 박스 열림 완료 후 대기. 카드를 뗐다가 다시 태그하면 박스를 닫고 처음 상태로 복귀
 void SolvedState()
 {
     if (boxState != BOX_IDLE) return;       // 박스가 아직 움직이는 중이면 대기
@@ -148,13 +175,9 @@ void SolvedState()
     if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
     lastRfidCheckTime = millis();
 
-    // 퍼즐 푸는 동안 올려둔 카드가 그대로 있으면 닫기 태그로 오인하지 않도록, 먼저 떼기를 기다린다
     if (waitTagRelease)
     {
-        if (RfidTagPresent()) { tagAbsentSince = millis(); return; }
-        if (millis() - tagAbsentSince < TAG_RELEASE_TIME) return;
-        waitTagRelease = false;             // 카드 뗀 것 확인 → 이제 새 태그가 닫기 명령
-        Serial.println("Tag released, tag again to close box");
+        if (TagReleaseConfirmed()) Serial.println("Tag released, tag again to close box");
         return;
     }
 
@@ -163,9 +186,6 @@ void SolvedState()
 
     CheckingPlayers(data);
     Serial.println("Box closing, game reset");
-    boxClose();
-    AllNeoOn(WHITE);
-    waitTagRelease = true;                  // 닫기에 쓴 카드도 뗐다 태그해야 다음 게임 시작
-    tagAbsentSince = millis();
-    gameState = GAME_WAIT_TAG;
+    boxClose();                             // 마이크로 스위치가 눌리면 boxUpdate()가 자동 정지
+    ChangeGameState(GAME_WAIT_TAG);
 }
