@@ -3,6 +3,7 @@ void Mp3_Init(){
 
   Serial.println("DFRobot DFPlayer Mini Demo");
   Serial.println("Initializing DFPlayer ... (May take 3~5 seconds)");
+  delay(2000);  // DFPlayer는 전원 인가 후 SD 스캔에 1.5~3초 필요 — ESP32가 먼저 깨어나므로 기다려야 콜드부팅에서 성공
   myDFPlayer.setTimeOut(1000);
 
   if (!myDFPlayer.begin(MP3Serial)) {
@@ -11,7 +12,7 @@ void Mp3_Init(){
     Serial.println("2.Please insert the SD card!");
     dfPlayerReady = false;
     Serial.println("DFPlayer skipped. Continuing without audio.");
-    return;  // dfplayer 초기화 실패 시 넘어간다. 
+    return;  // dfplayer 초기화 실패 시 넘어간다.
   }
   dfPlayerReady = true;
   Serial.println(F("DFPlayer Mini online."));
