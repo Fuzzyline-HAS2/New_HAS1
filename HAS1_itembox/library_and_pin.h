@@ -9,7 +9,8 @@
 #include <ESP32Encoder.h>
 #include <Adafruit_PN532.h>
 #include <WiFi.h>
-#include "secrets.h"  // WIFI_SSID, WIFI_PASSWORD (깃에 올라가지 않음 — .gitignore 처리)
+#include <HAS2_Wifi.h>  // has2wifi 객체, my/shift_machine JSON 전역 (wifi.ino 전용)
+#include "secrets.h"    // WIFI_SSID, WIFI_PASSWORD (깃에 올라가지 않음 — .gitignore 처리)
 
 // DFPLAYER
 #define DFPLAYER_RX_PIN 39

@@ -1,108 +1,93 @@
 #ifndef _HAS1_ITEMBOX
 #define _HAS1_ITEMBOX
 
-#include "library_and_pin.h"
+#include <ArduinoJson.h>          // StaticJsonDocument — myDoc 타입 선언에 필요
+#include "neopixel_hal.h"
+#include "motor_hal.h"
+#include "rfid_hal.h"
+#include "encoder_hal.h"
+#include "vibration_hal.h"
 
-// TELNET===================================================================================
-// WiFi가 연결되면 로그를 텔넷(포트 23)으로도 뿌린다. WiFi 없어도 게임은 정상 동작 (디버그 전용)
-WiFiServer telnetServer(23);
-WiFiClient telnetClient;   // 현재 접속 중인 텔넷 클라이언트 (동시 1명)
+// 코어 간 Queue (wifi.ino에서 정의, WifiInit()에서 xQueueCreate로 생성)
+struct SendMsg { char deviceName[32]; char key[32]; char value[64]; };
+extern QueueHandle_t sendQueue;    // Core1 → Core0  (게임 이벤트 → HTTP POST)
+extern QueueHandle_t receiveQueue; // Core0 → Core1  (서버 데이터 → DataChanged)
+extern StaticJsonDocument<1000> myDoc; // Core1 소유 — Core0이 직렬화해 전달, DataChanged()가 읽음
 
-// LOG======================================================================================
-// 로그 형식: [MODULE] message  예: [GAME ] WAIT_TAG -> PUZZLE
-// 모듈 태그: MAIN / MP3 / ENC / MOTOR / VIB / RFID / GAME / NEO / NET
-// 시리얼에는 항상 출력, 텔넷 클라이언트가 접속해 있으면 텔넷으로도 미러링
-void Log(const char *tag, const String &msg) {
-  char head[12];
-  snprintf(head, sizeof(head), "[%-5s] ", tag);
-  Serial.print(head);
-  Serial.println(msg);
-  if (telnetClient && telnetClient.connected()) {
-    telnetClient.print(head);
-    telnetClient.println(msg);
-  }
+// GAME SYSTEM==============================================================================
+enum {VIBESTREGNTH = 0, ANSWER, RANGE};
+enum {ANSWER_CNT = 0, ANSWER_RANGE, VIBRATION_RANGE};
+int modeValue[3][5] = { {255, 190, 150, 110, 0},
+                        {13,  43,  21,  0,   0},
+                        {3,   2,   5,   0,   0}};
+
+// 서버에서 받은 퍼즐 정보 (Step 7에서 DataChanged()가 갱신)
+unsigned long puzzleResetTime = 30000;   // PAUSED 상태 방치 시 ACTIVATE 복귀까지 대기 시간 (ms)
+
+// 상태 머신 ================================================================================
+enum GameState {
+    GAME_SETTING,        // game_state=setting.  초기화, 박스 열림 (LED: WHITE)
+    GAME_READY,          // game_state=ready.    외부 RFID 스캔, 태그 시 경고만 (LED: RED)
+    GAME_ACTIVATE,       // game_state=activate. 외부 RFID 스캔, 태그 시 퍼즐 시작 (LED: YELLOW)
+    GAME_PUZZLE,         // 퍼즐 진행 중, 외부 태그 유지 필요 (LED: BLUE)
+    GAME_PAUSED,         // 태그 이탈 일시정지, 재태그 대기 (LED: YELLOW)
+    GAME_CORRECT_ANIM,   // 정답 연출 (LED: GREEN 점멸) → 완료 후 GAME_PUZZLE or GAME_BOX_OPENING
+    GAME_WRONG_ANIM,     // 오답 연출 (LED: RED 점멸) → 완료 후 GAME_PUZZLE
+    GAME_BOX_OPENING,    // 모터 동작 중 (LED: GREEN) → MotorHalUpdate 완료 감지 → GAME_BOX_OPEN
+    GAME_BOX_OPEN,       // 내부 RFID 아이템 태그 대기 (LED: NEO_INNER YELLOW)
+    GAME_ITEM_FAIL_ANIM, // 배터리팩 초과 오류 연출 (LED: RED 점멸) → GAME_BOX_OPEN
+    GAME_USED,           // 아이템 수령 완료, 모든 입력 차단 (LED: BLUE)
+    GAME_DONE,           // 게임 종료 (repaired_all / win / lose), 모든 입력 차단 (LED: BLUE)
+};
+GameState gameState = GAME_DONE;  // setup()의 ChangeGameState(GAME_SETTING)으로 덮어씀
+
+const char* GameStateName(GameState s) {
+    switch (s) {
+        case GAME_SETTING:        return "SETTING";
+        case GAME_READY:          return "READY";
+        case GAME_ACTIVATE:       return "ACTIVATE";
+        case GAME_PUZZLE:         return "PUZZLE";
+        case GAME_PAUSED:         return "PAUSED";
+        case GAME_CORRECT_ANIM:   return "CORRECT_ANIM";
+        case GAME_WRONG_ANIM:     return "WRONG_ANIM";
+        case GAME_BOX_OPENING:    return "BOX_OPENING";
+        case GAME_BOX_OPEN:       return "BOX_OPEN";
+        case GAME_ITEM_FAIL_ANIM: return "ITEM_FAIL_ANIM";
+        case GAME_USED:           return "USED";
+        case GAME_DONE:           return "DONE";
+    }
+    return "?";
 }
 
-// DFPLAYER=================================================================================
-SoftwareSerial MP3Serial(DFPLAYER_RX_PIN, DFPLAYER_TX_PIN);  // RX=39, TX=33
-DFRobotDFPlayerMini myDFPlayer;
-bool dfPlayerReady = false;  // 초기화 성공 여부 (실패 시 오디오 없이 동작)
+// HAL Runnable 스케줄러 ===================================================================
+// "언제 실행할지"(TickRunnables)와 "무엇을 할지"(HAL 함수)를 분리한다.
+// HAL 함수 내부에는 millis() 없음 — due 플래그가 true일 때만 호출됨을 보장.
+struct Runnable {
+    uint32_t periodMs;
+    uint32_t lastRun;
+    bool     due;
+};
 
-// LINER MOTOR (BTS7960)====================================================================
-#define MOTOR_FREQ       5000  // 5kHz (BTS7960 motor driver는 25kHz까지 허용)
-#define MOTOR_RESOLUTION 8     // 듀티 0~255
-#define MOTOR_SPEED      255   // 최대 출력 사용
-#define BOX_OPEN_TIME    4000  // 박스 여는 시간 (ms)
-enum BoxState { BOX_IDLE, BOX_OPENING, BOX_CLOSING };
-BoxState boxState = BOX_IDLE;
-unsigned long boxOpenStartTime = 0;
-unsigned long switchHighSince = 0;              // 스위치 HIGH 시작 시각 (0 = 안 눌림)
-const unsigned long SWITCH_DEBOUNCE_TIME = 50;  // 이 시간 연속 HIGH여야 눌림 인정 — 모터 노이즈 스파이크 필터 (ms)
+Runnable motorR   = {  10, 0, false };  // MotorHalUpdate   10ms
+Runnable encoderR = {  20, 0, false };  // EncoderHalUpdate 20ms
+Runnable blinkR   = {  50, 0, false };  // BlinkHalUpdate   50ms (Step 4에서 사용)
+Runnable rfidR    = { 200, 0, false };  // RfidHalUpdate   200ms
 
-// VIBRATION MOTOR==========================================================================
-#define VIB_MOTOR_FREQ       5000  // 5kHz (TB6612FNG는 100kHz까지 허용)
-#define VIB_MOTOR_RESOLUTION 8     // 듀티 0~255
+// 게임 진행 상태 변수 =====================================================================
+int  answerCnt        = 0;
+bool lastButtonPressed = false;
 
-// ENCODER==================================================================================
-ESP32Encoder encoder;
-#define ENCODER_MAX 95
-#define ENCODER_MIN 0
+unsigned long rfidLastSeenTime  = 0;
+const unsigned long RFID_PUZZLE_TIMEOUT = 500;
 
-// RFID=====================================================================================
-Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
+unsigned long pauseStartTime = 0;
 
-// GAME SYSTEM===============================================================================
-enum {VIBESTREGNTH = 0, ANSWER, RANGE};             // modeValue 행 인덱스
-enum {ANSWER_CNT = 0, ANSWER_RANGE, VIBRATION_RANGE}; // RANGE 행의 열 인덱스
-int modeValue[3][5] = { {255, 190, 150, 110, 0}, // VIBESTREGNTH (모터 세기): 0~255 설정 가능, 정답에 가까울수록 강함
-                        {13,  43, 21,  0, 0},   // ANSWER (Puzzle 정답): 0~ENCODER_MAX 설정 가능
-                        {3,    2,  5,  0, 0}};  // RANGE {정답개수, 정답 범위, 진동 단계 범위}
+bool waitTagRelease  = false;
+unsigned long tagAbsentSince = 0;
+const unsigned long TAG_RELEASE_TIME = 700;
 
-// 게임 상태 머신: 태그 대기 → 퍼즐 진행 ⇄ 일시정지(태그 이탈) → 해결(박스 열림)
-// 상태 전환은 Game_system.ino의 각 상태 함수에서만 일어난다
-enum GameState { GAME_WAIT_TAG, GAME_PUZZLE, GAME_PAUSED, GAME_SOLVED };
-GameState gameState = GAME_WAIT_TAG;
-const char* GameStateName(GameState s) {  // 상태 전환 로그용 이름표
-  switch (s) {
-    case GAME_WAIT_TAG: return "WAIT_TAG";
-    case GAME_PUZZLE:   return "PUZZLE";
-    case GAME_PAUSED:   return "PAUSED";
-    case GAME_SOLVED:   return "SOLVED";
-  }
-  return "?";
-}
-int answerCnt = 0;               // 맞춘 정답 개수 (현재 몇 번째 문제인지)
-bool lastButtonPressed = false;  // 엔코더 버튼 에지 검출용
-unsigned long rfidLastSeenTime = 0;             // 퍼즐 중 RFID 마지막 감지 시각
-const unsigned long RFID_PUZZLE_TIMEOUT = 500; // 태그 이탈 판정 시간 (ms)
-unsigned long pauseStartTime = 0;               // 일시정지 진입 시각
-const unsigned long PUZZLE_RESET_TIME = 30000;  // 일시정지 상태로 30초 지나면 퍼즐 리셋 (ms)
-unsigned long lastRfidCheckTime = 0;            // 마지막 태그 확인 시각
-const unsigned long RFID_CHECK_INTERVAL = 200;  // 태그 확인 주기 (ms) — PN532 통신이 느려서 매 loop 확인하면 렉 발생
-bool waitTagRelease = false;                    // true면 카드를 뗐다가 다시 태그해야 다음 동작 인정 (연속 인식 방지)
-unsigned long tagAbsentSince = 0;               // 카드 미감지 시작 시각
-const unsigned long TAG_RELEASE_TIME = 700;     // 이 시간 동안 미감지면 "카드 뗌"으로 판정 (ms)
-
-// NEOPIXEL======================================================================================
-#define LED_BRIGHTNESS 127                    // 고정 밝기 50% (0~255 스케일)
-const int NeopixelNum = 2;                    // 설치된 네오픽셀 스트립 개수
-enum {NEO_PN532 = 0, NEO_ENCODER};            // pixels[] 인덱스 (RFID/엔코더 객체와 구분을 위해 NEO_ 접두사)
-const int NumPixels[NeopixelNum] = {28, 24};  // 스트립별 픽셀 개수
-enum {WHITE = 0, RED, YELLOW, GREEN, BLUE, PURPLE, BLACK, BLUE0, BLUE1, BLUE2, BLUE3};
-// Neopixel 색상정보
-int color[11][3] = {{255, 255, 255}, //WHITE
-                    {255, 0,   0  }, //RED
-                    {255, 255, 0  }, //YELLOW
-                    {0,   255, 0  }, //GREEN
-                    {0,   0,   255}, //BLUE
-                    {255, 0,   255}, //PURPLE
-                    {0,   0,   0  }, //BLACK
-                    {0,   0,   64 }, //ENCODERBLUE0
-                    {0,   0,   128}, //ENCODERBLUE1
-                    {0,   0,   192}, //ENCODERBLUE2
-                    {0,   0,   255}}; //ENCODERBLUE3
-
-Adafruit_NeoPixel pixels[NeopixelNum] = {Adafruit_NeoPixel(NumPixels[NEO_PN532], PN532_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800),
-                                         Adafruit_NeoPixel(NumPixels[NEO_ENCODER], ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800)};
+// ANIM 상태 공유 변수 (ChangeGameState에서 초기화, Step 4 BlinkHalUpdate에서 사용)
+int  blinkCnt = 0;
+bool ledOn    = false;
 
 #endif

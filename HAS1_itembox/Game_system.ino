@@ -1,189 +1,317 @@
 //****************************************GAME SYSTEM (STATE MACHINE)****************************************************************
 //
-//  GAME_WAIT_TAG ──(NFC 태그)──> GAME_PUZZLE ──(정답 3개 완료)──> GAME_SOLVED (박스 열림) ──(태그로 박스 닫기)──> GAME_WAIT_TAG
-//                                    ⇅ (태그 이탈 / 재태그)
-//                               GAME_PAUSED
-//
-//  구조 원칙:
-//  - 상태 전환은 반드시 ChangeGameState()를 통해서만 한다.
-//  - 각 상태의 "진입 시 해야 할 일"(LED 색, 타이머/플래그 초기화)은 ChangeGameState() 안에만 있다.
-//    → 상태 함수들은 서로의 진입 조건을 몰라도 되고, 자기 상태의 로직만 담당한다.
-//  - loop()는 GameUpdate() 하나만 호출하면 됨.
+//  상태 전환 원칙:
+//  - 전환은 ChangeGameState() 단 하나를 통해서만.
+//  - Exit action (현재 상태 정리)은 ChangeGameState() 내 exit switch에만.
+//  - Entry action (LED·타이머·플래그 초기화)도 ChangeGameState() 내 entry switch에만.
+//  - 상태 함수는 자기 로직만 — 다른 상태의 진입/정리 조건을 몰라도 된다.
+//  - ChangeGameState() 포함 모든 상태 함수에서 delay() 금지.
 
-// 상태 전환 전용 함수. 새 상태의 진입 처리를 한곳에서 담당한다
-void ChangeGameState(GameState next)
-{
+// Core1 → Core0 Queue 삽입 → has2wifi.Send() (논블로킹, 즉시 리턴)
+void GameEventSend(const char* key, const char* value) {
+    SendMsg msg;
+    strlcpy(msg.deviceName, myDoc["device_name"] | "", 32);
+    strlcpy(msg.key,   key,   32);
+    strlcpy(msg.value, value, 64);
+    if (xQueueSend(sendQueue, &msg, 0) != pdTRUE)
+        Log("GAME", String("event DROPPED (queue full): ") + key + "=" + value);
+    else
+        Log("GAME", String("event queued: ") + key + "=" + value);
+}
+
+// ── 상태 전환 ──────────────────────────────────────────────────────────────────────────
+void ChangeGameState(GameState next) {
     Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
-    switch (next) {
-        case GAME_WAIT_TAG:                 // 대기: 흰불, 직전에 쓴 카드는 뗐다 태그해야 인정
-            AllNeoOn(WHITE);
-            waitTagRelease = true;
-            tagAbsentSince = millis();
-            break;
 
-        case GAME_PUZZLE:                   // 퍼즐: 육각 파랑 + 링 퍼즐 표시, 버튼/태그이탈 기준 초기화
-            lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼이 눌려있어도 오작동 없게
-            rfidLastSeenTime = millis();                   // 태그 이탈 판정 기준 시각 초기화
-            lightColor(pixels[NEO_PN532], color[BLUE]);
-            EncoderNeopixelOn();
-            break;
-
-        case GAME_PAUSED:                   // 일시정지: 진동 끄고 노란불, 방치 리셋 타이머 시작
+    // Exit Action: 현재 상태 정리
+    switch (gameState) {
+        case GAME_PUZZLE:
+        case GAME_PAUSED:
             vibrationOff();
-            AllNeoOn(YELLOW);
-            pauseStartTime = millis();
+            EncoderDisable();
+            // GameTimer.stop();  // Step 3: SimpleTimer 연동 시 활성화
             break;
-
-        case GAME_SOLVED:                   // 해결: 진동 끄고 초록불, 올려둔 카드는 뗐다 태그해야 닫기
-            vibrationOff();
-            AllNeoOn(GREEN);
-            waitTagRelease = true;
-            tagAbsentSince = millis();
+        case GAME_CORRECT_ANIM:
+        case GAME_WRONG_ANIM:
+        case GAME_ITEM_FAIL_ANIM:
+            blinkCnt = 0;
+            blinkR.periodMs = 50;   // 기본 주기 복원
+            break;
+        default:
             break;
     }
+
+    // Entry Action: 다음 상태 초기화
+    switch (next) {
+        case GAME_SETTING:
+            NeoSetAll(WHITE);
+            boxOpen();
+            answerCnt = 0;
+            break;
+        case GAME_READY:
+            NeoSetAll(RED);
+            boxClose();
+            answerCnt = 0;
+            break;
+        case GAME_ACTIVATE:
+            NeoSetAll(YELLOW);
+            boxClose();
+            answerCnt = 0;
+            EncoderReset();
+            break;
+        case GAME_PUZZLE:
+            NeoSetAll(BLUE);
+            lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼 상태 동기화
+            rfidLastSeenTime  = millis();                  // 태그 이탈 판정 기준 초기화
+            EncoderEnable();
+            break;
+        case GAME_PAUSED:
+            NeoSetAll(YELLOW);
+            pauseStartTime = millis();
+            GameEventSend("device_state", "activate");
+            break;
+        case GAME_CORRECT_ANIM:
+        case GAME_WRONG_ANIM:
+        case GAME_ITEM_FAIL_ANIM:
+            blinkCnt = 0;
+            ledOn    = false;
+            blinkR.periodMs = 250;  // 점멸 주기 250ms (ON 250ms + OFF 250ms = 0.5s/cycle)
+            blinkR.lastRun  = 0;    // 진입 즉시 첫 점멸
+            break;
+        case GAME_BOX_OPENING:
+            NeoSetAll(GREEN);
+            boxOpen();
+            break;
+        case GAME_BOX_OPEN:
+            NeoSet(NEO_INNER, YELLOW);  // 내부 태그 유도 (하드웨어 미연결 시 무시됨)
+            break;
+        case GAME_USED:
+            NeoSetAll(BLUE);
+            boxOpen();
+            break;
+        case GAME_DONE:
+            NeoSetAll(BLUE);
+            boxOpen();
+            break;
+    }
+
     gameState = next;
 }
 
-// 카드가 리더에서 떨어졌는지 확인. TAG_RELEASE_TIME 연속 미감지면 뗌 확정(waitTagRelease 해제) 후 true
-bool TagReleaseConfirmed()
-{
+// ── 메인 디스패처 ──────────────────────────────────────────────────────────────────────
+void GameUpdate() {
+    switch (gameState) {
+        case GAME_SETTING:        SettingState();       break;
+        case GAME_READY:          ReadyState();         break;
+        case GAME_ACTIVATE:       ActivateState();      break;
+        case GAME_PUZZLE:         PuzzleState();        break;
+        case GAME_PAUSED:         PausedState();        break;
+        case GAME_CORRECT_ANIM:   CorrectAnimState();   break;
+        case GAME_WRONG_ANIM:     WrongAnimState();     break;
+        case GAME_BOX_OPENING:    BoxOpeningState();    break;
+        case GAME_BOX_OPEN:       BoxOpenState();       break;
+        case GAME_ITEM_FAIL_ANIM: ItemFailAnimState();  break;
+        case GAME_USED:                                 break;  // 서버 이벤트 대기 (DataChanged)
+        case GAME_DONE:                                 break;  // 종료 상태, 입력 차단
+    }
+}
+
+// ── 퍼즐 정답·리셋 시간 갱신 ─────────────────────────────────────────────────────────
+void UpdatePuzzleAnswers() {
+    const char* keys[] = {
+        "puzzle_answer_1","puzzle_answer_2","puzzle_answer_3",
+        "puzzle_answer_4","puzzle_answer_5"
+    };
+    int total = modeValue[RANGE][ANSWER_CNT];
+    for (int i = 0; i < total; i++) {
+        int v = myDoc[keys[i]] | 0;
+        if (v != 0) modeValue[ANSWER][i] = v;
+    }
+    // puzzle_reset_time: 서버 단위 ms, 0이면 현재 값 유지
+    unsigned long rt = myDoc["puzzle_reset_time"] | 0UL;
+    if (rt != 0) puzzleResetTime = rt;
+}
+
+// ── LED 밝기 갱신 ─────────────────────────────────────────────────────────────────
+void UpdateBrightness() {
+    int b = myDoc["brightness"] | 0;
+    if (b != 0) NeoSetBrightness(b);
+}
+
+// ── 서버 이벤트 처리 ────────────────────────────────────────────────────────────────
+// myDoc: xQueueReceive 후 Core1에서 역직렬화한 최신 서버 상태
+void DataChanged() {
+    static String prevGameState   = "";
+    static String prevDeviceState = "";
+
+    // game_state: 서버 씬 전환 (setting / ready / activate)
+    String gs = myDoc["game_state"] | "";
+    if (gs != "" && gs != prevGameState) {
+        if      (gs == "setting")  ChangeGameState(GAME_SETTING);
+        else if (gs == "ready")    ChangeGameState(GAME_READY);
+        else if (gs == "activate") ChangeGameState(GAME_ACTIVATE);
+        prevGameState = gs;
+    }
+
+    // device_state: 개별 기기 명령 (언제든지 수신 가능)
+    String ds = myDoc["device_state"] | "";
+    if (ds != "" && ds != prevDeviceState) {
+        if      (ds == "activate")    ChangeGameState(GAME_ACTIVATE);
+        else if (ds == "open")        ChangeGameState(GAME_BOX_OPENING);
+        else if (ds == "close")       boxClose();
+        else if (ds == "used")        ChangeGameState(GAME_USED);
+        else if (ds == "repaired_all" ||
+                 ds == "player_win"   ||
+                 ds == "player_lose") ChangeGameState(GAME_DONE);
+        // "solving" : HAS1에서 미사용 (Core0/1 분리로 WiFi 타이머 불필요) — 수신 시 무시
+        // "github"  : OTA 트리거 — Core0 WifiTaskFunc에서 처리 예정
+        prevDeviceState = ds;
+    }
+
+    // 설정값 갱신 — 상태 전환 여부와 무관하게 항상 적용
+    UpdatePuzzleAnswers();
+    UpdateBrightness();
+}
+
+// ── 퍼즐 완료 ──────────────────────────────────────────────────────────────────────────
+void PuzzleSolved() {
+    Log("GAME", "quiz solved");
+    Mp3PlayLargeFolder(1, 1);
+    ChangeGameState(GAME_BOX_OPENING);  // boxOpen()은 GAME_BOX_OPENING entry action에서 호출
+}
+
+// ── 카드 이탈 확인 (waitTagRelease 해제) ──────────────────────────────────────────────
+bool TagReleaseConfirmed() {
     if (RfidTagPresent()) { tagAbsentSince = millis(); return false; }
     if (millis() - tagAbsentSince < TAG_RELEASE_TIME) return false;
     waitTagRelease = false;
     return true;
 }
 
-// loop()에서 매번 호출. 현재 상태에 맞는 처리 함수로 분기한다
-void GameUpdate()
-{
-    switch (gameState) {
-        case GAME_WAIT_TAG: WaitTagState(); break;
-        case GAME_PUZZLE:   PuzzleState();  break;
-        case GAME_PAUSED:   PausedState();  break;
-        case GAME_SOLVED:   SolvedState();  break;
-    }
+//---------------------------------------- GAME_SETTING ----------------------------------------
+// 서버 game_state=setting 상태. 박스 열림·흰불. DataChanged()가 READY/ACTIVATE로 전환.
+void SettingState() {
+    // 서버 이벤트 대기 — DataChanged()가 처리함
 }
 
-//---------------------------------------- GAME_WAIT_TAG ----------------------------------------
-// NFC 카드가 태그되기를 기다린다. 태그되면 새 게임을 초기화하고 퍼즐 모드 진입
-void WaitTagState()
-{
-    if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
-    lastRfidCheckTime = millis();
-
-    if (waitTagRelease)
-    {
-        if (TagReleaseConfirmed()) Log("GAME", "tag released, ready for new game");
-        return;
-    }
+//---------------------------------------- GAME_READY ----------------------------------------
+// 서버 game_state=ready 상태. 태그 시 경고만, 퍼즐 시작 안 됨.
+void ReadyState() {
+    if (!RfidTagPresent()) return;  // 캐시 조회 (RfidHalUpdate 200ms 갱신)
 
     uint8_t data[32];
-    if (!RfidReadTag(data)) return;         // 태그 없음 → 다음 loop에서 다시 확인
+    if (!RfidReadTag(data)) return;  // 200ms마다 1회 소비 가능
+
+    Log("GAME", "tag in READY — game not activated yet");
+}
+
+//---------------------------------------- GAME_ACTIVATE ----------------------------------------
+// 외부 RFID 태그 대기. 플레이어 카드 태그 시 퍼즐 시작.
+void ActivateState() {
+    if (!RfidTagPresent()) return;  // 캐시 조회
+
+    uint8_t data[32];
+    if (!RfidReadTag(data)) return;  // 캐시 소비 (200ms마다 갱신)
 
     String tagUser = CheckingPlayers(data);
     Log("GAME", "puzzle start by " + tagUser);
-
-    answerCnt = 0;                          // 새 게임 초기화 (재개가 아닌 여기서만)
-    encoder.clearCount();                   // 엔코더 0 위치에서 퍼즐 시작
     ChangeGameState(GAME_PUZZLE);
 }
 
 //---------------------------------------- GAME_PUZZLE ----------------------------------------
-// 엔코더를 돌려 정답 위치를 찾고(진동이 힌트), 버튼으로 확정. 정답 3개를 모두 맞추면 박스 열림
-void PuzzleState()
-{
-    // 태그 유지 확인: 카드가 리더 위에 있어야 퍼즐이 진행된다
-    // PN532 통신은 한 번에 수십 ms 걸려서 매 loop 확인하면 네오픽셀/엔코더 반응이 둔해짐 → 200ms에 한 번만
-    if (millis() - lastRfidCheckTime >= RFID_CHECK_INTERVAL)
-    {
-        lastRfidCheckTime = millis();
-        if (RfidTagPresent())
-            rfidLastSeenTime = millis();
-    }
-    if (millis() - rfidLastSeenTime > RFID_PUZZLE_TIMEOUT)  // 태그 이탈 → 일시정지 (answerCnt 유지)
-    {
-        ChangeGameState(GAME_PAUSED);   // 전환 로그(PUZZLE -> PAUSED)가 남음
+// 엔코더로 정답 위치 탐색, 버튼으로 확정. 태그 이탈 시 PAUSED.
+void PuzzleState() {
+    // 태그 유지 확인 — RfidTagPresent()는 캐시 조회 (하드웨어 접근 없음, loop마다 안전)
+    if (RfidTagPresent()) rfidLastSeenTime = millis();
+    if (millis() - rfidLastSeenTime > RFID_PUZZLE_TIMEOUT) {
+        ChangeGameState(GAME_PAUSED);
         return;
     }
 
     int currentAnswer = modeValue[ANSWER][answerCnt];
 
-    EncoderNeopixelOn();                    // 현재 엔코더 위치를 네오픽셀로 표시
-    EncoderVibrationStrength(currentAnswer);// 정답에 가까울수록 진동 강하게
+    NeoEncoderUpdate();
+    vibrationSetByEncoder(currentAnswer);
 
-    // 버튼 에지 검출
-    // 엔코더가 박혔을 때를 대비하여
-    bool pressed = isEncoderButtonPressed();
-    bool justPressed = pressed && !lastButtonPressed;
+    bool pressed      = isEncoderButtonPressed();
+    bool justPressed  = pressed && !lastButtonPressed;
     lastButtonPressed = pressed;
     if (!justPressed) return;
 
-    // 정답 판정: 정답 위치 ± ANSWER_RANGE 안이면 정답 (3호점 아이템박스와 동일한 기준)
-    int differenceValue = abs(currentAnswer - (int)readEncoderValue());
-    if (differenceValue < modeValue[RANGE][ANSWER_RANGE])
-    {
-        Log("GAME", "answer " + String(answerCnt + 1) + "/" + String(modeValue[RANGE][ANSWER_CNT]) + " correct");
-        NeoBlink(NEO_ENCODER, GREEN, 5, 250);   // 정답 연출 (delay 블로킹 2.5초 - 연출 중 입력 무시 의도)
-        rfidLastSeenTime = millis();            // 블로킹 연출 동안 태그 감지가 없었으므로 오탐 방지
-
+    int diff = abs(currentAnswer - (int)readEncoderValue());
+    if (diff < modeValue[RANGE][ANSWER_RANGE]) {
         answerCnt++;
-        if (answerCnt >= modeValue[RANGE][ANSWER_CNT])  // 모든 정답을 맞췄으면
-            PuzzleSolved();
+        Log("GAME", "answer " + String(answerCnt) + "/" + String(modeValue[RANGE][ANSWER_CNT]) + " correct");
+        ChangeGameState(GAME_CORRECT_ANIM);
+    } else {
+        Log("GAME", "wrong (enc=" + String(readEncoderValue()) + " target=" + String(currentAnswer) + ")");
+        ChangeGameState(GAME_WRONG_ANIM);
     }
-    else
-    {
-        Log("GAME", "wrong answer (enc " + String(readEncoderValue()) + ", target " + String(currentAnswer) + ")");
-        NeoBlink(NEO_ENCODER, RED, 5, 250);     // 오답 연출
-        rfidLastSeenTime = millis();            // 블로킹 연출 동안 태그 감지가 없었으므로 오탐 방지
-    }
-}
-
-// 퍼즐 완료 이벤트: 성공음 + 박스 열기 시작 (열림 완료는 boxUpdate()가, 연출은 GAME_SOLVED 진입 처리가 담당)
-void PuzzleSolved()
-{
-    Log("GAME", "quiz solved");
-    Mp3PlayLargeFolder(1, 1);   // 성공음
-    boxOpen();                  // 4초 뒤 boxUpdate()가 자동 정지
-    ChangeGameState(GAME_SOLVED);
 }
 
 //---------------------------------------- GAME_PAUSED ----------------------------------------
-// 태그 이탈로 일시정지. 재태그하면 풀던 문제부터 이어서, 30초 방치되면 퍼즐 리셋
-void PausedState()
-{
-    if (millis() - pauseStartTime > PUZZLE_RESET_TIME)  // 방치 → 처음부터
-    {
-        Log("GAME", "pause " + String(PUZZLE_RESET_TIME / 1000) + "s timeout -> puzzle reset");
-        ChangeGameState(GAME_WAIT_TAG);
+// 태그 이탈 일시정지. 재태그 → 퍼즐 재개, puzzleResetTime 초과 → ACTIVATE 복귀.
+void PausedState() {
+    if (millis() - pauseStartTime > puzzleResetTime) {
+        Log("GAME", "pause " + String(puzzleResetTime / 1000) + "s timeout -> ACTIVATE");
+        ChangeGameState(GAME_ACTIVATE);
         return;
     }
 
-    if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
-    lastRfidCheckTime = millis();
-    if (!RfidTagPresent()) return;
+    if (!RfidTagPresent()) return;  // 캐시 조회
 
-    ChangeGameState(GAME_PUZZLE);           // answerCnt 유지된 채 이어서 진행 (전환 로그: PAUSED -> PUZZLE)
+    ChangeGameState(GAME_PUZZLE);
 }
 
-//---------------------------------------- GAME_SOLVED ----------------------------------------
-// 박스 열림 완료 후 대기. 카드를 뗐다가 다시 태그하면 박스를 닫고 처음 상태로 복귀
-void SolvedState()
-{
-    if (boxState != BOX_IDLE) return;       // 박스가 아직 움직이는 중이면 대기
+//---------------------------------------- GAME_CORRECT_ANIM ----------------------------------------
+// 정답 연출. blinkR.due(250ms)마다 LED 토글, 5회 점멸 후 다음 상태로 전환.
+void CorrectAnimState() {
+    if (!blinkR.due) return;
+    ledOn = !ledOn;
+    NeoSet(NEO_ENCODER, ledOn ? GREEN : BLACK);
+    if (ledOn) blinkCnt++;
+    if (blinkCnt < 5) return;
 
-    if (millis() - lastRfidCheckTime < RFID_CHECK_INTERVAL) return;
-    lastRfidCheckTime = millis();
+    if (answerCnt >= modeValue[RANGE][ANSWER_CNT])
+        PuzzleSolved();
+    else
+        ChangeGameState(GAME_PUZZLE);
+}
 
-    if (waitTagRelease)
-    {
-        if (TagReleaseConfirmed()) Log("GAME", "tag released, tag again to close box");
-        return;
-    }
+//---------------------------------------- GAME_WRONG_ANIM ----------------------------------------
+// 오답 연출. blinkR.due(250ms)마다 LED 토글, 5회 점멸 후 PUZZLE 복귀.
+void WrongAnimState() {
+    if (!blinkR.due) return;
+    ledOn = !ledOn;
+    NeoSet(NEO_ENCODER, ledOn ? RED : BLACK);
+    if (ledOn) blinkCnt++;
+    if (blinkCnt < 5) return;
+    ChangeGameState(GAME_PUZZLE);
+}
 
-    uint8_t data[32];
-    if (!RfidReadTag(data)) return;
+//---------------------------------------- GAME_BOX_OPENING ----------------------------------------
+// 모터가 박스를 여는 중. 열림 감지 즉시 GAME_USED로 전환 (내부 RFID 없음 — 열림 = 수령 완료).
+// GameEventSend를 ChangeGameState entry가 아닌 여기서 호출 — 물리 개방 시에만 서버 보고.
+// (서버 "used" 에코백 → DataChanged → GAME_USED 재진입 시 중복 전송 방지)
+void BoxOpeningState() {
+    if (!isBoxOpened()) return;
+    GameEventSend("device_state", "used");
+    ChangeGameState(GAME_USED);
+}
 
-    CheckingPlayers(data);
-    boxClose();                             // MOTOR 로그(box closing)가 남음                             // 마이크로 스위치가 눌리면 boxUpdate()가 자동 정지
-    ChangeGameState(GAME_WAIT_TAG);
+//---------------------------------------- GAME_BOX_OPEN ----------------------------------------
+// 내부 RFID 미설치. 퍼즐/서버 "open" 경로는 GAME_BOX_OPENING → GAME_USED로 직행.
+// 이 상태는 현재 하드웨어에서 도달하지 않음 (미래 내부 RFID 추가 시 활용).
+void BoxOpenState() {}
+
+//---------------------------------------- GAME_ITEM_FAIL_ANIM ----------------------------------------
+// 배터리팩 초과 오류 연출. blinkR.due(250ms)마다 LED 토글, 8회 점멸 후 BOX_OPEN 복귀.
+// NEO_INNER 미연결 시 NeoSet이 내부적으로 무시.
+void ItemFailAnimState() {
+    if (!blinkR.due) return;
+    ledOn = !ledOn;
+    NeoSet(NEO_INNER, ledOn ? RED : BLACK);
+    if (ledOn) blinkCnt++;
+    if (blinkCnt < 8) return;
+    ChangeGameState(GAME_BOX_OPEN);
 }

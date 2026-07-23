@@ -1,27 +1,47 @@
-// PCNT 하드웨어 카운터(ESP32Encoder) 사용
+#include "encoder_hal.h"
+#include "library_and_pin.h"
+
+#define ENCODER_MAX 95
+#define ENCODER_MIN 0
+
+ESP32Encoder encoder;
 
 void EncoderInit() {
     Log("ENC", "init");
-    ESP32Encoder::useInternalWeakPullResistors = puType::up; // 풀업으로 ENCODER_A, ENCODER_B PIN 설정
-    encoder.attachFullQuad(ENCODER_B_PIN, ENCODER_A_PIN);  // 한 틱 = 4카운트. A/B 순서를 바꿔 회전 방향 반전 (하드웨어가 리버스라서)
-    encoder.clearCount(); // 엔코더의 현재 위치를 0으로 설정한다. 
-
-    // GPIO34는 input-only 핀이라 내부 풀업 없음 → 회로에 외부 풀업 저항 달아둠
+    ESP32Encoder::useInternalWeakPullResistors = puType::up;
+    encoder.attachFullQuad(ENCODER_B_PIN, ENCODER_A_PIN);  // A/B 순서 스왑 → 방향 반전 보정
+    encoder.clearCount();
     pinMode(ENCODER_BUTTON_PIN, INPUT);
 }
 
+void EncoderHalUpdate() {
+    // Step 3에서 구현 — Runnable 기반 틱 처리
+}
+
+void EncoderEnable() {
+    encoder.resumeCount();
+}
+
+void EncoderDisable() {
+    encoder.pauseCount();
+}
+
 long readEncoderValue() {
-    long count = encoder.getCount();  // 원시 카운트 (한 틱 = 4)
+    long count = encoder.getCount();
     if (count > ENCODER_MAX * 4) {
         count = ENCODER_MAX * 4;
-        encoder.setCount(count); // 엔코더 값이 최댓값에 도달하면 최댓값으로 고정
+        encoder.setCount(count);
     } else if (count < ENCODER_MIN * 4) {
         count = ENCODER_MIN * 4;
-        encoder.setCount(count); // 엔코더 값이 최솟값에 도달하면 최솟값으로 고정
+        encoder.setCount(count);
     }
-    return count / 4;  // 이전 버전과 동일: 4카운트 = 1틱으로 환산
+    return count / 4;
 }
 
 bool isEncoderButtonPressed() {
     return digitalRead(ENCODER_BUTTON_PIN) == LOW;  // 외부 풀업: 평소 HIGH, 누르면 LOW
+}
+
+void EncoderReset() {
+    encoder.clearCount();
 }
