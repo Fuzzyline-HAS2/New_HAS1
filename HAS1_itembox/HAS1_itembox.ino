@@ -1,5 +1,5 @@
-#define FIRMWARE_VER  30
-#define PARTITION_VER  1
+#define FIRMWARE_VER 31
+#define PARTITION_VER 2
 #include "HAS1_itembox.h"
 
 // Runnable 플래그 갱신 — loop() 가장 먼저 호출. 이 순간의 millis()를 기준으로 통일.
