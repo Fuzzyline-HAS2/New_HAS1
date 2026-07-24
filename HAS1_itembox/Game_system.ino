@@ -10,18 +10,6 @@
 // role 조회 대기 중인 태그 (ChangeGameState(GAME_ACTIVATE) entry에서 초기화)
 static String pendingTagUser = "";
 
-// Core1 → Core0 Queue 삽입 → has2wifi.Send() (논블로킹, 즉시 리턴)
-void GameEventSend(const char* key, const char* value) {
-    SendMsg msg;
-    strlcpy(msg.deviceName, myDoc["device_name"] | "", 32);
-    strlcpy(msg.key,   key,   32);
-    strlcpy(msg.value, value, 64);
-    if (xQueueSend(sendQueue, &msg, 0) != pdTRUE)
-        Log("GAME", String("event DROPPED (queue full): ") + key + "=" + value);
-    else
-        Log("GAME", String("event queued: ") + key + "=" + value);
-}
-
 // ── 상태 전환 ──────────────────────────────────────────────────────────────────────────
 void ChangeGameState(GameState next) {
     Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
@@ -182,14 +170,6 @@ void PuzzleSolved() {
     Log("GAME", "quiz solved");
     Mp3PlayLargeFolder(1, 1);
     ChangeGameState(GAME_BOX_OPENING);  // boxOpen()은 GAME_BOX_OPENING entry action에서 호출
-}
-
-// ── 카드 이탈 확인 (waitTagRelease 해제) ──────────────────────────────────────────────
-bool TagReleaseConfirmed() {
-    if (RfidTagPresent()) { tagAbsentSince = millis(); return false; }
-    if (millis() - tagAbsentSince < TAG_RELEASE_TIME) return false;
-    waitTagRelease = false;
-    return true;
 }
 
 //---------------------------------------- GAME_SETTING ----------------------------------------

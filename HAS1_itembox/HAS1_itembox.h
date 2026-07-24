@@ -90,10 +90,6 @@ const unsigned long RFID_PUZZLE_TIMEOUT = 500;
 
 unsigned long pauseStartTime = 0;
 
-bool waitTagRelease  = false;
-unsigned long tagAbsentSince = 0;
-const unsigned long TAG_RELEASE_TIME = 700;
-
 // ANIM 상태 공유 변수 (ChangeGameState에서 초기화, Step 4 BlinkHalUpdate에서 사용)
 int  blinkCnt = 0;
 bool ledOn    = false;
