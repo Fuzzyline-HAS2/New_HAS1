@@ -27,7 +27,7 @@ enum {VIBESTREGNTH = 0, ANSWER, RANGE};
 enum {ANSWER_CNT = 0, ANSWER_RANGE, VIBRATION_RANGE};
 int modeValue[3][5] = { {255, 190, 150, 110, 0},
                         {13,  43,  21,  0,   0},
-                        {3,   2,   5,   0,   0}};
+                        {5,   2,   5,   0,   0}};  // RANGE[ANSWER_CNT]=5: 서버 puzzle_count 수신 전까지 최대값
 
 // 서버에서 받은 퍼즐 정보 (Step 7에서 DataChanged()가 갱신)
 unsigned long puzzleResetTime = 30000;   // PAUSED 상태 방치 시 ACTIVATE 복귀까지 대기 시간 (ms)

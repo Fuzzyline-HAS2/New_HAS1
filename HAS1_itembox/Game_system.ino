@@ -108,18 +108,23 @@ void GameUpdate() {
     }
 }
 
-// ── 퍼즐 정답·리셋 시간 갱신 ─────────────────────────────────────────────────────────
+// ── 퍼즐 정답·카운트·리셋 시간 갱신 ──────────────────────────────────────────────────
 void UpdatePuzzleAnswers() {
+    // puzzle_count 먼저 갱신 — 이후 완료 판정 기준이 됨 (언제든지 바뀔 수 있음)
+    int cnt = myDoc["puzzle_count"] | 0;
+    if (cnt > 0) modeValue[RANGE][ANSWER_CNT] = cnt;
+
+    // 항상 5개(total) 전부 업데이트 — puzzle_count와 무관하게 저장
+    // puzzle_count가 나중에 늘어나도 이미 슬롯에 값이 준비돼 있음
     const char* keys[] = {
         "puzzle_answer_1","puzzle_answer_2","puzzle_answer_3",
         "puzzle_answer_4","puzzle_answer_5"
     };
-    int total = modeValue[RANGE][ANSWER_CNT];
-    for (int i = 0; i < total; i++) {
+    for (int i = 0; i < 5; i++) {
         int v = myDoc[keys[i]] | 0;
         if (v != 0) modeValue[ANSWER][i] = v;
     }
-    // puzzle_reset_time: 서버 단위 ms, 0이면 현재 값 유지
+
     unsigned long rt = myDoc["puzzle_reset_time"] | 0UL;
     if (rt != 0) puzzleResetTime = rt;
 }
@@ -135,7 +140,6 @@ void UpdateBrightness() {
 void DataChanged() {
     static String prevGameState   = "";
     static String prevDeviceState = "";
-
     // game_state: 서버 씬 전환 (setting / ready / activate)
     String gs = myDoc["game_state"] | "";
     if (gs != "" && gs != prevGameState) {
@@ -276,7 +280,9 @@ void CorrectAnimState() {
     if (ledOn) blinkCnt++;
     if (blinkCnt < 5) return;
 
-    if (answerCnt >= modeValue[RANGE][ANSWER_CNT])
+    bool nextIsTerminator = (answerCnt < modeValue[RANGE][ANSWER_CNT])
+                         && (modeValue[ANSWER][answerCnt] == -1);
+    if (answerCnt >= modeValue[RANGE][ANSWER_CNT] || nextIsTerminator)
         PuzzleSolved();
     else
         ChangeGameState(GAME_PUZZLE);
