@@ -60,13 +60,15 @@ Core 1 (PRO_CPU) — 게임 루프 전용      Core 0 (APP_CPU) — WiFi 전용
 loop()                                  WifiTaskFunc()  [FreeRTOS Task]
 ├── [1] TickRunnables() → 플래그 갱신   ├── has2wifi.Loop()
 ├── [2] HAL 실행 (플래그 기반)          │   ├── MaintainWifi()       (재연결 시 수 초 블로킹 가능)
-│   ├── MotorHalUpdate    10ms           │   ├── HTTP GET shift_machine
-│   ├── EncoderHalUpdate  20ms           │   └── shift_machine >= 1 이면
-│   └── RfidHalUpdate    200ms           │        └── ReceiveMine()
-├── [3] receiveQueue 소비 (논블로킹)    ├── serializeJson → xQueueSend(receiveQueue)
-│   └── deserialize → my 갱신           └── sendQueue 소비 → has2wifi.Send()
-│       → DataChanged()
+│   ├── MotorHalUpdate    10ms           │   └── HTTP GET shift_machine + ReceiveMine
+│   ├── EncoderHalUpdate  20ms           ├── serializeJson → xQueueSend(receiveQueue)
+│   └── RfidHalUpdate    200ms           ├── sendQueue 소비 → has2wifi.Send()
+├── [3] receiveQueue 소비 (논블로킹)    └── roleRequestQueue 소비
+│   └── deserialize → my 갱신                → has2wifi.Receive(tagUser)
+│       → DataChanged()                       → xQueueSend(roleResponseQueue, role)
 ├── [4] GameUpdate()
+│   └── ActivateState() — 태그 감지 시 roleRequestQueue 투입 (논블로킹)
+│                        — 다음 루프에서 roleResponseQueue 소비
 └── [5] TelnetRun()
 ```
 
@@ -217,32 +219,35 @@ void ChangeGameState(GameState next) {
             break;
         case GAME_PUZZLE:
             NeoSetAll(BLUE);
-            EncoderEnable();  // HAL — 내부에서 attachInterrupt
-            GameTimer.start(puzzleResetTime, GameTimerFunc);
-            GameEventSend("device_state", "solving");
+            lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼 상태 동기화
+            rfidLastSeenTime  = millis();
+            EncoderEnable();   // HAL — 내부에서 attachInterrupt
             break;
+            // "solving" 전송 없음 — HAS1은 Core0/1 분리로 WiFi 폴링 항상 유지
         case GAME_PAUSED:
             NeoSetAll(YELLOW);
+            pauseStartTime = millis();
             GameEventSend("device_state", "activate");
             break;
         case GAME_CORRECT_ANIM:
         case GAME_WRONG_ANIM:
         case GAME_ITEM_FAIL_ANIM:
             blinkCnt = 0;  ledOn = false;
+            blinkR.periodMs = 250;  // 점멸 주기 250ms
+            blinkR.lastRun  = 0;    // 진입 즉시 첫 점멸
             break;
         case GAME_BOX_OPENING:
             NeoSetAll(GREEN);  boxOpen();
             break;
         case GAME_BOX_OPEN:
-            NeoSet(NEO_INNER, YELLOW);  // 내부 태그 유도
-            break;
+            break;  // 현재 하드웨어 미도달 (내부 RFID 미설치)
         case GAME_USED:
         case GAME_DONE:
             NeoSetAll(BLUE);  boxOpen();
             break;
     }
 
-    currentState = next;
+    gameState = next;
 }
 ```
 
@@ -320,8 +325,9 @@ void WrongAnimState() {
 
 | 위치 | delay | 처리 방침 |
 |---|---|---|
-| `neopixel.ino:42,44` | 250ms × 10 | GAME_CORRECT/WRONG_ANIM 상태로 대체 |
-| `dfplayer.ino:5` | 2000ms | setup() 안 — 허용 (부팅 1회, 실시간 무관) |
+| `dfplayer.ino` | 2000ms | setup() 안 — 허용 (부팅 1회, 실시간 무관) |
+
+> `neopixel.ino` 의 `NeoBlink()` 250ms×10 블로킹은 ANIM 상태로 완전 대체됨.
 
 ---
 
@@ -336,8 +342,10 @@ struct SendMsg {
     char value[64];
 };
 
-QueueHandle_t sendQueue;     // Core1 → Core0  (게임 이벤트 → HTTP POST)
-QueueHandle_t receiveQueue;  // Core0 → Core1  (서버 데이터 → 상태 전환)
+QueueHandle_t sendQueue;          // Core1 → Core0  (게임 이벤트 → HTTP POST)
+QueueHandle_t receiveQueue;       // Core0 → Core1  (서버 데이터 → 상태 전환)
+QueueHandle_t roleRequestQueue;   // Core1 → Core0  (tagUser → Receive 요청, depth=1)
+QueueHandle_t roleResponseQueue;  // Core0 → Core1  (role 결과 → ActivateState 응답, depth=1)
 ```
 
 ### 6.2 수신 경로
@@ -352,7 +360,36 @@ Core1: xQueueReceive(receiveQueue)  // 논블로킹 (0 timeout)
      → DataChanged()                // 하드웨어 조작은 여기서만
 ```
 
-### 6.3 송신 경로
+### 6.3 role 조회 비동기 경로
+
+`HTTPClient http`는 전역 싱글턴이며 thread-safe하지 않다.
+Core1에서 `has2wifi.Receive()`를 직접 호출하면 Core0의 `has2wifi.Loop()` HTTP 트랜잭션과 충돌한다.
+따라서 **모든 `has2wifi.*` 호출은 Core0 `WifiTaskFunc` 안에서만** 한다.
+
+```
+Core1: ActivateState() → 태그 감지 + tagUser 추출
+     → WifiRequestPlayer(tagUser)          // roleRequestQueue 투입, 즉시 리턴
+     → return (다음 loop() 대기)
+
+Core0: xQueueReceive(roleRequestQueue)
+     → has2wifi.Receive(tagUser)            // HTTP GET — Core0 전용 http 객체, 안전
+     → xQueueSend(roleResponseQueue, role)
+
+Core1: ActivateState() 다음 호출 → WifiPollPlayerRole()
+     → xQueueReceive(roleResponseQueue, 0) // 논블로킹
+     → role == "player"  → ChangeGameState(GAME_PUZZLE)
+     → role != "" && !="player" → 무시, pendingTagUser 초기화
+     → role == ""        → 아직 응답 없음, 다음 loop 재시도
+```
+
+**Service 인터페이스 (wifi.ino)**:
+```cpp
+void   WifiRequestPlayer(const char* tagUser);  // roleRequestQueue 투입, 논블로킹
+String WifiPollPlayerRole();                     // roleResponseQueue 폴링, 논블로킹
+                                                 // 응답 없으면 "" 반환
+```
+
+### 6.4 송신 경로
 
 ```
 Core1: 게임 이벤트 발생
@@ -366,14 +403,14 @@ Core0: xQueueReceive(sendQueue)
 > **"solving" 미사용**: 3호점에서는 퍼즐 중 `WifiTimer`를 끊기 위해 `"solving"` 상태를 서버에 전송했지만,
 > HAS1은 Core0/1 분리로 WiFi 폴링이 항상 유지되므로 타이머 중단 자체가 불필요하다.
 
-### 6.4 `my` JSON 소유권 규칙
+### 6.5 `my` JSON 소유권 규칙
 
 `my` 객체는 Core1 만 읽고 쓴다.
 Core0은 직렬화 문자열로만 주고받는다 → race condition 원천 차단.
 
 ---
 
-## 6.5 wifi.ino 구현 계획
+## 6.6 wifi.ino 구현 계획
 
 ### 역할 분리 원칙
 
@@ -396,46 +433,75 @@ Service Layer가 `ChangeGameState()`를 직접 호출하면 상향 호출(Servic
 ```cpp
 // ── Queue 선언 ───────────────────────────────────────────────────────────
 struct SendMsg { char deviceName[32]; char key[32]; char value[64]; };
-QueueHandle_t sendQueue;     // Core1 → Core0
-QueueHandle_t receiveQueue;  // Core0 → Core1
+QueueHandle_t sendQueue;          // Core1 → Core0  (게임 이벤트 → HTTP POST)
+QueueHandle_t receiveQueue;       // Core0 → Core1  (서버 데이터 → DataChanged)
+QueueHandle_t roleRequestQueue;   // Core1 → Core0  (tagUser → Receive 요청)
+QueueHandle_t roleResponseQueue;  // Core0 → Core1  (role 결과 반환)
 
-// ── Core 0 태스크 ────────────────────────────────────────────────────────
+// ── Core 0 태스크 — 모든 has2wifi.* 호출은 여기서만 ─────────────────────
+// HTTPClient http 는 전역 싱글턴(비스레드세이프) → Core0 독점 사용
 void WifiTaskFunc(void*) {
     for (;;) {
-        has2wifi.Loop();   // MaintainWifi + shift_machine 폴 (블로킹 OK, Core 0이므로)
+        has2wifi.Loop();  // MaintainWifi + HTTP GET shift_machine + (ReceiveMine 포함)
 
+        // shift_machine >= 1 이면 Loop()가 ReceiveMine()을 이미 호출함
+        // → my 갱신됨 → 직렬화 후 Core1으로 전달
         if ((int)shift_machine["shift_machine"] >= 1) {
-            has2wifi.ReceiveMine();          // my JSON 갱신
             char buf[512];
             serializeJson(my, buf, sizeof(buf));
-            xQueueSend(receiveQueue, buf, 0); // Core 1으로 전달
+            xQueueSend(receiveQueue, buf, 0);
         }
 
-        if ((int)shift_machine["watchdog"] >= 1) {
-            has2wifi.Send((const char*)my["device_name"], "watchdog", "0");
-            ESP.restart();
+        // role 조회 요청 처리 (ActivateState에서 투입)
+        char tagUserBuf[32];
+        if (xQueueReceive(roleRequestQueue, tagUserBuf, 0)) {
+            has2wifi.Receive(tagUserBuf);          // HTTP GET — Core0 전용, 안전
+            char roleBuf[32];
+            strlcpy(roleBuf, (const char*)tag["role"], 32);
+            xQueueSend(roleResponseQueue, roleBuf, 0);
         }
 
-        // Core 1의 송신 요청 소비
+        // Core1의 송신 요청 소비 → HTTP POST
         SendMsg msg;
         while (xQueueReceive(sendQueue, &msg, 0))
             has2wifi.Send(msg.deviceName, msg.key, msg.value);
     }
 }
 
-// ── Core 1에서 호출 — 논블로킹 송신 ─────────────────────────────────────
+// ── Core1 Service 인터페이스 ─────────────────────────────────────────────
+// GameEventSend: 논블로킹 송신 (Core1 → Core0 sendQueue)
 void GameEventSend(const char* key, const char* value) {
     SendMsg msg;
-    strlcpy(msg.deviceName, myDoc["device_name"] | "", 32);  // Core1 소유 myDoc 사용
+    strlcpy(msg.deviceName, myDoc["device_name"] | "", 32);
     strlcpy(msg.key,   key,   32);
     strlcpy(msg.value, value, 64);
     if (xQueueSend(sendQueue, &msg, 0) != pdTRUE)
-        Log("GAME", String("event DROPPED (queue full): ") + key + "=" + value);
+        Log("GAME", String("event DROPPED: ") + key + "=" + value);
+}
+
+// WifiRequestPlayer: role 조회 요청 투입 — 논블로킹, 즉시 리턴
+void WifiRequestPlayer(const char* tagUser) {
+    char buf[32];
+    strlcpy(buf, tagUser, 32);
+    xQueueOverwrite(roleRequestQueue, buf);  // 이전 미처리 요청 덮어씀
+}
+
+// WifiPollPlayerRole: role 조회 결과 폴링 — 논블로킹
+// 응답 있으면 role 문자열 반환, 없으면 "" 반환
+String WifiPollPlayerRole() {
+    char roleBuf[32];
+    if (xQueueReceive(roleResponseQueue, roleBuf, 0)) return String(roleBuf);
+    return "";
 }
 
 void WifiInit() {
-    sendQueue    = xQueueCreate(8, sizeof(SendMsg));
-    receiveQueue = xQueueCreate(4, 512);
+    sendQueue         = xQueueCreate(8, sizeof(SendMsg));
+    receiveQueue      = xQueueCreate(4, 512);
+    roleRequestQueue  = xQueueCreate(1, 32);   // depth=1, 최신 요청만 유효
+    roleResponseQueue = xQueueCreate(1, 32);
+    // badland 외 AP 이력 제거 — 저장된 SK_DA20_2.4G 시도 방지
+    Preferences prefs; prefs.begin("has2wifi", false);
+    prefs.remove("last_ssid"); prefs.remove("last_pw"); prefs.end();
     has2wifi.Setup("badland");
     has2wifi.Send((const char*)my["device_name"], "esp_version", "30");
     xTaskCreatePinnedToCore(WifiTaskFunc, "wifi", 8192, NULL, 1, NULL, 0);
@@ -518,8 +584,10 @@ enum GameState {
     GAME_SETTING,        // game_state=setting.  초기화, 박스 열림 (LED: WHITE)
     GAME_READY,          // game_state=ready.    외부 RFID 스캔, 태그 시 경고만 (LED: RED)
                          // 진입 시 boxClose() — 닫히는 동안 RFID 스캔은 계속 (MotorHalUpdate 백그라운드)
-    GAME_ACTIVATE,       // game_state=activate. 외부 RFID 스캔, 태그 시 퍼즐 시작 (LED: YELLOW)
+    GAME_ACTIVATE,       // game_state=activate. 외부 RFID 스캔 대기 (LED: YELLOW)
                          // 진입 시 boxClose()
+                         // ActivateState()에서: 태그 감지 → CheckingPlayers() → role=="player" → GAME_PUZZLE
+                         // tagger/ghost/기타 role → 무시
 
     // ── 퍼즐 진행 ──────────────────────────────────────────────────────────
     GAME_PUZZLE,         // 퍼즐 진행 중, 외부 태그 유지 필요 (LED: BLUE)
@@ -562,7 +630,16 @@ enum GameState {
 
 [게임 흐름]
 GAME_ACTIVATE
-    │ 외부 RFID 플레이어 태그
+    │ 외부 RFID 태그 감지 (RfidTagPresent + RfidReadTag — HAL)
+    │ → tagUser 추출 / "MMMM" → ESP.restart()
+    │ → WifiRequestPlayer(tagUser) [roleRequestQueue 투입 — 논블로킹, 즉시 리턴]
+    │   ↓
+    │  [Core0: has2wifi.Receive(tagUser) → roleResponseQueue]
+    │   ↓
+    │ 다음 ActivateState() 호출 → WifiPollPlayerRole()
+    │      ├─ role == "player" → ChangeGameState(GAME_PUZZLE)
+    │      ├─ role != ""       → 무시 (pendingTagUser 초기화)
+    │      └─ role == ""       → 아직 응답 없음, 다음 루프 재시도
     ▼
 GAME_PUZZLE ──── 태그 이탈 ────► GAME_PAUSED ── 재태그 ──► GAME_PUZZLE
     │                                │ puzzleResetTime 초과
@@ -603,7 +680,8 @@ GAME_USED  (아이템 수령 완료, 종료)
 ┌──────────────────────────────────────────────────────────────────┐
 │  Application Layer    Game_system.ino                            │
 │  - GameState 전환, 퍼즐 로직                                      │
-│  - HAL 함수만 호출. 라이브러리 객체·핀 번호·색상 배열 접근 금지   │
+│  - HAL 함수 호출 허용, Service Layer 함수 호출 허용               │
+│  - 라이브러리 객체·핀 번호·색상 배열 직접 접근 금지              │
 ├──────────────────────────────────────────────────────────────────┤
 │  Service Layer        wifi.ino / telnet.ino / ota.ino            │
 │  - HTTP 운반, Queue, Log 인프라, OTA 업데이트                     │
@@ -653,9 +731,11 @@ GAME_USED  (아이템 수령 완료, 종료)
 
 OTA 트리거 흐름:
 ```
-Core 0: WiFi 폴링 → DataChanged() → device_state == "github"
-  → Queue로 OTA_TRIGGER 이벤트 전달 (or Core 0 직접 처리)
-    → ota.check() 실행 → HTTP 다운로드 + 플래시 쓰기 → ESP.restart()
+Core 0: WiFi 폴링 → shift_machine >= 1 → ReceiveMine()
+  → serializeJson → xQueueSend(receiveQueue)
+Core 1: xQueueReceive → DataChanged() → device_state == "github"
+  → Queue로 OTA_TRIGGER 이벤트 전달 → Core 0에서 ota.check() 실행
+    → HTTP 다운로드 + 플래시 쓰기 → ESP.restart()
 ```
 
 ### 8.4 서브시스템별 HAL 공개 인터페이스
@@ -693,16 +773,52 @@ void vibrationSetByEncoder(int answer);   // 엔코더 거리 → 세기 계산 
 // 금지: ledcWrite(), VIBRATION_RANGE_PIN — HAL 내부에서만 사용
 ```
 
-**rfid.ino**
+**rfid.ino** — 순수 HAL, 하드웨어 접근만
 ```cpp
 void RfidInit();
-void RfidHalUpdate();           // 200ms Runnable: 태그 감지 결과를 HAL 내부 플래그에 저장
-bool RfidOuterTagPresent();     // 외부 리더 태그 유무
-bool RfidInnerTagPresent();     // 내부 리더 태그 유무
-bool RfidOuterReadTag(uint8_t data[32]);  // 외부 태그 데이터 읽기
-bool RfidInnerReadTag(uint8_t data[32]); // 내부 태그 데이터 읽기
-// 금지: nfc[] 객체, PN532 라이브러리 직접 호출 — HAL 내부에서만 사용
+void RfidHalUpdate();               // 200ms Runnable
+                                    // sendCommandCheckAck(0x00) ping → PN532 통신 확인
+                                    // startPassiveTargetIDDetection() → 태그 유무
+                                    // ntag2xx_ReadPage(7) → 태그 데이터 읽기
+                                    // 결과를 내부 캐시에 저장 (Application 직접 접근 금지)
+bool RfidTagPresent();              // 캐시 조회 — 하드웨어 접근 없음, loop()마다 안전
+bool RfidReadTag(uint8_t data[32]); // 캐시 소비 — 소비 후 dataReady=false
+// 금지: nfc 객체, PN532 라이브러리 직접 호출 — HAL 내부에서만 사용
+// 내부 RFID 미설치 — Inner 관련 함수 없음
 ```
+
+**Game_system.ino** — Application, 태그 해석·role 판단 (비동기)
+```cpp
+// ActivateState() 내 role 조회 흐름 — pendingTagUser로 상태 유지
+static String pendingTagUser = "";  // ChangeGameState(GAME_ACTIVATE) entry에서 초기화
+
+void ActivateState() {
+    // (A) 응답 대기 중 — 결과 폴링
+    if (pendingTagUser != "") {
+        String role = WifiPollPlayerRole();   // 논블로킹
+        if (role == "player") {
+            Log("GAME", "puzzle start by " + pendingTagUser);
+            pendingTagUser = "";
+            ChangeGameState(GAME_PUZZLE);
+        } else if (role != "") {
+            Log("GAME", "non-player ignored (" + role + ")");
+            pendingTagUser = "";
+        }
+        return;  // 응답 없으면 다음 루프 재시도
+    }
+    // (B) 신규 태그 감지
+    if (!RfidTagPresent()) return;
+    uint8_t data[32];
+    if (!RfidReadTag(data)) return;
+    String tagUser = "";
+    for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+    if (tagUser == "MMMM") { ESP.restart(); return; }
+    pendingTagUser = tagUser;
+    WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴
+}
+```
+> `pendingTagUser`는 `ChangeGameState(GAME_ACTIVATE)` entry action에서 `= ""` 초기화.
+> Core0이 `has2wifi.Receive()`를 처리하는 동안 Core1 루프는 블로킹 없이 계속 실행된다.
 
 **encoder.ino**
 ```cpp
@@ -833,29 +949,31 @@ include 허용:  liner_motor.ino, vibration_motor.ino, rfid.ino, encoder.ino, ne
 include 금지:  Game_system.ino, HAS1_itembox.h (전역 헤더에 넣으면 Application에 노출됨)
 ```
 
-### 8.6 현재 PRD 내 위반 사항 및 수정 계획
-
-| 위반 위치 | 위반 내용 | 수정 방향 |
-|---|---|---|
-| 섹션 5.3 `CorrectAnimState()` | `lightColor(pixels[NEO_ENCODER], color[GREEN])` — Application이 NeoPixel 객체 직접 접근 | `NeoSet(NEO_ENCODER, GREEN)` HAL 함수 호출로 교체 |
-| 섹션 5.3 `CorrectAnimState()` | `lightColor(pixels[NEO_ENCODER], color[BLACK])` — 동일 | `NeoSet(NEO_ENCODER, BLACK)` |
-| 섹션 8 (구) | HAL 인터페이스 예시 3개만 존재, 전체 API 미정의 | 섹션 8.3으로 대체 |
-| `HAS1_itembox.h` | `library_and_pin.h` include → 핀 번호가 전역 노출 | HAL 파일에서만 include하도록 이동 |
-
-### 8.7 계층 호출 방향 규칙
+### 8.6 계층 호출 방향 규칙
 
 ```
-허용:  Application → HAL → MCAL
-허용:  Application → Service (Log만)
-금지:  HAL → Application  (상향 호출)
-금지:  Service → Application (Queue로만 통신)
-금지:  Application → MCAL 직접 (라이브러리 객체, 핀 번호 등)
+허용:  Application → HAL
+허용:  Application → Service  (GameEventSend, WifiRequestPlayer, WifiPollPlayerRole 등)
+허용:  HAL        → Service   (Log()만 — 진단 인프라 예외)
+금지:  HAL        → Application  (상향 호출)
+금지:  Service    → Application  (Queue로만 통신)
+금지:  Application → MCAL 직접   (라이브러리 객체, 핀 번호 등)
 
 HAL이 Application에 결과를 알려야 할 때:
   HAL 내부 플래그 세팅 → Application이 폴링
-  예: rfid.ino에서 ChangeGameState() 호출 ✗
-      rfid.ino에서 tagDetected = true 세팅 → Game_system.ino가 읽음 ✓
+  예: rfid.ino에서 ChangeGameState() 호출      ✗  (HAL→Application 금지)
+      rfid.ino에서 has2wifi.Receive() 호출     ✗  (HAL→Service 금지, Log 제외)
+      rfid.ino에서 rfid_tagPresent = true 세팅 ✓  (Application이 RfidTagPresent()로 폴링)
+      Game_system.ino에서 has2wifi.Receive()   ✓  (Application→Service 허용)
 ```
+
+### 8.7 설계 결정 메모
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| `has2wifi.*` Core0 독점 | Core1은 Queue로만 요청, 결과는 Queue로 수신 | `HTTPClient http` 전역 싱글턴이 thread-safe하지 않아 동시 호출 시 `no HTTP server` 오류 발생 |
+| role 조회 비동기화 | `WifiRequestPlayer` + `WifiPollPlayerRole` 분리 | vTaskSuspend(Core0 태스크 정지)는 "Core0 논블로킹" 목표에 반함 |
+| `roleRequestQueue` depth=1 | `xQueueOverwrite` 사용 | 태그 연속 감지 시 최신 요청만 유효, 이전 요청 버림 |
 
 ---
 

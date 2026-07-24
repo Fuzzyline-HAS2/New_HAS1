@@ -10,9 +10,17 @@
 
 // 코어 간 Queue (wifi.ino에서 정의, WifiInit()에서 xQueueCreate로 생성)
 struct SendMsg { char deviceName[32]; char key[32]; char value[64]; };
-extern QueueHandle_t sendQueue;    // Core1 → Core0  (게임 이벤트 → HTTP POST)
-extern QueueHandle_t receiveQueue; // Core0 → Core1  (서버 데이터 → DataChanged)
-extern StaticJsonDocument<1000> myDoc; // Core1 소유 — Core0이 직렬화해 전달, DataChanged()가 읽음
+extern QueueHandle_t sendQueue;          // Core1 → Core0  (게임 이벤트 → HTTP POST)
+extern QueueHandle_t receiveQueue;       // Core0 → Core1  (서버 데이터 → DataChanged)
+extern QueueHandle_t roleRequestQueue;   // Core1 → Core0  (tagUser → Receive 요청)
+extern QueueHandle_t roleResponseQueue;  // Core0 → Core1  (role 결과 반환)
+extern StaticJsonDocument<1000> myDoc;   // Core1 소유 — Core0이 직렬화해 전달, DataChanged()가 읽음
+
+// Service Layer 공개 인터페이스 (wifi.ino)
+void   WifiInit();
+void   GameEventSend(const char* key, const char* value);
+void   WifiRequestPlayer(const char* tagUser);  // role 조회 요청 — 논블로킹
+String WifiPollPlayerRole();                    // role 조회 결과 폴링 — 논블로킹, 없으면 ""
 
 // GAME SYSTEM==============================================================================
 enum {VIBESTREGNTH = 0, ANSWER, RANGE};

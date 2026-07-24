@@ -7,6 +7,9 @@
 //  - 상태 함수는 자기 로직만 — 다른 상태의 진입/정리 조건을 몰라도 된다.
 //  - ChangeGameState() 포함 모든 상태 함수에서 delay() 금지.
 
+// role 조회 대기 중인 태그 (ChangeGameState(GAME_ACTIVATE) entry에서 초기화)
+static String pendingTagUser = "";
+
 // Core1 → Core0 Queue 삽입 → has2wifi.Send() (논블로킹, 즉시 리턴)
 void GameEventSend(const char* key, const char* value) {
     SendMsg msg;
@@ -58,6 +61,7 @@ void ChangeGameState(GameState next) {
             boxClose();
             answerCnt = 0;
             EncoderReset();
+            pendingTagUser = "";  // role 조회 대기 상태 초기화
             break;
         case GAME_PUZZLE:
             NeoSetAll(BLUE);
@@ -206,16 +210,36 @@ void ReadyState() {
 }
 
 //---------------------------------------- GAME_ACTIVATE ----------------------------------------
-// 외부 RFID 태그 대기. 플레이어 카드 태그 시 퍼즐 시작.
+// 외부 RFID 태그 대기. role 조회는 Core0 Queue 경유 비동기 처리.
 void ActivateState() {
-    if (!RfidTagPresent()) return;  // 캐시 조회
+    // (A) role 조회 응답 대기 중 — 결과 폴링
+    if (pendingTagUser != "") {
+        String role = WifiPollPlayerRole();  // 논블로킹, Core0 미완료 시 ""
+        if (role == "player") {
+            Log("GAME", "puzzle start by " + pendingTagUser);
+            pendingTagUser = "";
+            ChangeGameState(GAME_PUZZLE);
+        } else if (role != "") {
+            Log("GAME", "non-player ignored (" + role + ")");
+            pendingTagUser = "";
+        }
+        return;
+    }
 
+    // (B) 신규 태그 감지 → role 조회 요청 투입
+    if (!RfidTagPresent()) return;
     uint8_t data[32];
-    if (!RfidReadTag(data)) return;  // 캐시 소비 (200ms마다 갱신)
+    if (!RfidReadTag(data)) return;
 
-    String tagUser = CheckingPlayers(data);
-    Log("GAME", "puzzle start by " + tagUser);
-    ChangeGameState(GAME_PUZZLE);
+    String tagUser = "";
+    for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+    Log("GAME", "tag: " + tagUser);
+
+    if (tagUser == "MMMM") { Log("GAME", "admin card -> restart"); ESP.restart(); return; }
+
+    pendingTagUser = tagUser;
+    WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴
+    Log("GAME", "role request sent for: " + tagUser);
 }
 
 //---------------------------------------- GAME_PUZZLE ----------------------------------------
