@@ -76,6 +76,12 @@ void WifiInit() {
     roleRequestQueue  = xQueueCreate(1, 32);
     roleResponseQueue = xQueueCreate(1, 32);
 
+    // 콜드부트 시 WiFi 라디오 웜업 — 라이브러리 TryConnect 3초 타임아웃 우회
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    for (unsigned long t = millis(); WiFi.status() != WL_CONNECTED && millis() - t < 15000;)
+        delay(100);
+    // 이미 AP 인증 완료 상태이므로 Setup 내부 disconnect→reconnect가 즉시 성공
     has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
     has2wifi.Send((const char*)my["device_name"], "esp_version", "30");
 
