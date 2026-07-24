@@ -54,10 +54,9 @@ void NeoSetBrightness(int b) {
     }
 }
 
-void NeoEncoderUpdate() {
-    long val   = readEncoderValue();
-    int  grade = (int)(val / 24);        // 0~3: 파란색 농도 단계
-    int  pos   = 23 - (int)(val % 24);  // 빨간 마커 위치
+void NeoEncoderUpdate(long value) {
+    int  grade = (int)(value / 24);        // 0~3: 파란색 농도 단계
+    int  pos   = 23 - (int)(value % 24);  // 빨간 마커 위치
     for (int i = 0; i < NumPixels[NEO_ENCODER]; i++)
         pixels[NEO_ENCODER].setPixelColor(i, pixels[NEO_ENCODER].Color(encBlue[grade][0], encBlue[grade][1], encBlue[grade][2]));
     pixels[NEO_ENCODER].setPixelColor(pos, pixels[NEO_ENCODER].Color(colorTable[RED][0], colorTable[RED][1], colorTable[RED][2]));

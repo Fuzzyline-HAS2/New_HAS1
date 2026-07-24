@@ -14,9 +14,7 @@ void EncoderInit() {
     pinMode(ENCODER_BUTTON_PIN, INPUT);
 }
 
-void EncoderHalUpdate() {
-    // Step 3에서 구현 — Runnable 기반 틱 처리
-}
+void EncoderHalUpdate() {}
 
 void EncoderEnable() {
     encoder.resumeCount();

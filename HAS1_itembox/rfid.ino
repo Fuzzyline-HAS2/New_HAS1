@@ -15,7 +15,6 @@ void RfidInit() {
     else {
         nfc.SAMConfig();
         Log("RFID", "PN532 online");
-        NeoSetAll(YELLOW);
     }
 }
 

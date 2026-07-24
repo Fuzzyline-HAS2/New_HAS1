@@ -17,16 +17,3 @@ void vibrationOn(uint8_t strength) {
 void vibrationOff() {
     ledcWrite(MOTOR_PWMA_PIN, 0);
 }
-
-void vibrationSetByEncoder(int answer) {
-    int diff       = abs(answer - (int)readEncoderValue());
-    int aRange     = modeValue[RANGE][ANSWER_RANGE];
-    int vRange     = modeValue[RANGE][VIBRATION_RANGE];
-    int vibeStrength;
-    if      (diff < aRange + vRange * 0) vibeStrength = 0;
-    else if (diff < aRange + vRange * 1) vibeStrength = 1;
-    else if (diff < aRange + vRange * 2) vibeStrength = 2;
-    else if (diff < aRange + vRange * 3) vibeStrength = 3;
-    else                                 vibeStrength = 4;
-    vibrationOn(modeValue[VIBESTREGNTH][vibeStrength]);
-}

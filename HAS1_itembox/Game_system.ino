@@ -108,6 +108,20 @@ void GameUpdate() {
     }
 }
 
+// 엔코더 위치와 정답 거리에 따라 진동 세기 설정 — 게임 로직, HAL 호출만 함
+static void setVibrationByProximity(int answer, long encValue) {
+    int diff  = abs(answer - (int)encValue);
+    int aRange = modeValue[RANGE][ANSWER_RANGE];
+    int vRange = modeValue[RANGE][VIBRATION_RANGE];
+    int grade;
+    if      (diff < aRange + vRange * 0) grade = 0;
+    else if (diff < aRange + vRange * 1) grade = 1;
+    else if (diff < aRange + vRange * 2) grade = 2;
+    else if (diff < aRange + vRange * 3) grade = 3;
+    else                                 grade = 4;
+    vibrationOn(modeValue[VIBESTREGNTH][grade]);
+}
+
 // ArduinoJson | 0 은 서버가 숫자를 string으로 내릴 때 0을 반환.
 // 이 헬퍼는 int형·string형 모두 파싱한다.
 static int jsonInt(JsonVariant v) {
@@ -153,6 +167,8 @@ void DataChanged() {
         else if (gs == "activate") ChangeGameState(GAME_ACTIVATE);
         prevGameState = gs;
     }
+    // activate는 중복 수신이어도 항상 닫기
+    if (gs == "activate") boxClose();
 
     // device_state: 개별 기기 명령 (언제든지 수신 가능)
     String ds = myDoc["device_state"] | "";
@@ -168,6 +184,8 @@ void DataChanged() {
         // "github"  : OTA 트리거 — Core0 WifiTaskFunc에서 처리 예정
         prevDeviceState = ds;
     }
+    // activate는 중복 수신(이미 ACTIVATE 상태)이어도 항상 닫기
+    if (ds == "activate") boxClose();
 
     // 설정값 갱신 — 상태 전환 여부와 무관하게 항상 적용
     UpdatePuzzleAnswers();
@@ -249,8 +267,9 @@ void PuzzleState() {
         return;
     }
 
-    NeoEncoderUpdate();
-    vibrationSetByEncoder(currentAnswer);
+    long encValue = readEncoderValue();
+    NeoEncoderUpdate(encValue);
+    setVibrationByProximity(currentAnswer, encValue);
 
     bool pressed      = isEncoderButtonPressed();
     bool justPressed  = pressed && !lastButtonPressed;

@@ -7,5 +7,5 @@ void NeopixelInit();
 void NeoSetAll(NeoColor c);
 void NeoSet(NeoStrip strip, NeoColor c);
 void NeoSetBrightness(int brightness);
-void NeoEncoderUpdate();
+void NeoEncoderUpdate(long value);
 void BlinkHalUpdate();
