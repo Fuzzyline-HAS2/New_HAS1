@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
+#include <SecureOTA.h>
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
 #include "DFRobotDFPlayerMini.h"

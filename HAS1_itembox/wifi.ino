@@ -1,6 +1,6 @@
 #include "library_and_pin.h"
 
-// ── Queue 실체 정의 ──────────────────────────────────────────────────────────
+// ── Queue / 전역 실체 정의 ───────────────────────────────────────────────────
 // 선언은 HAS1_itembox.h(extern) — 정의는 여기서만
 QueueHandle_t sendQueue;          // Core1 → Core0  (GameEventSend → HTTP POST)
 QueueHandle_t receiveQueue;       // Core0 → Core1  (ReceiveMine 결과 → DataChanged)
@@ -8,13 +8,28 @@ QueueHandle_t roleRequestQueue;   // Core1 → Core0  (tagUser → Receive 요�
 QueueHandle_t roleResponseQueue;  // Core0 → Core1  (role 결과 반환)
 StaticJsonDocument<1000> myDoc;   // Core1 소유 JSON — xQueueReceive 후 deserialize
 
-// has2wifi·http·tag 객체 — Core0 WifiTaskFunc 전용, Core1 직접 접근 금지
-// HTTPClient http 는 HAS2_Wifi.cpp 전역 싱글턴(비스레드세이프)
+volatile bool otaRequested = false;  // Core1이 세팅, Core0이 소비
+
+// has2wifi·ota·tag 객체 — Core0 WifiTaskFunc 전용, Core1 직접 접근 금지
 HAS2_Wifi has2wifi("http://192.168.45.57:8080");
 
-// ── Core 0 태스크 — 모든 has2wifi.* 호출은 여기서만 ──────────────────────────
+SecureOTA ota(
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/update.bin",
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/version.txt",
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/update.sig",
+    HMAC_SECRET,
+    FIRMWARE_VER
+);
+
+// ── Core 0 태스크 — 모든 has2wifi.* / ota.* 호출은 여기서만 ─────────────────
 void WifiTaskFunc(void*) {
     for (;;) {
+        // OTA 트리거 확인 — ota.check()는 블로킹, 성공 시 ESP.restart() 호출
+        if (otaRequested) {
+            otaRequested = false;
+            ota.check();
+        }
+
         // MaintainWifi + HTTP GET shift_machine + (shift>=1이면 ReceiveMine 포함)
         has2wifi.Loop();
 
@@ -83,7 +98,21 @@ void WifiInit() {
         delay(100);
     // 이미 AP 인증 완료 상태이므로 Setup 내부 disconnect→reconnect가 즉시 성공
     has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
-    has2wifi.Send((const char*)my["device_name"], "esp_version", "30");
+    has2wifi.Send((const char*)my["device_name"], "esp_version", String(FIRMWARE_VER).c_str());
+
+    // SecureOTA 콜백 — Core0 컨텍스트에서 실행되므로 has2wifi.Send() 직접 호출 가능
+    ota.setOnSuccess([]() {
+        has2wifi.Send((const char*)my["device_name"], "device_state", "setting");
+    });
+    ota.setOnSkip([]() {
+        has2wifi.Send((const char*)my["device_name"], "device_state", "setting");
+    });
+    ota.setPartitionUpdate(
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partitions.bin",
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partitions.sig",
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partition_version.txt",
+        PARTITION_VER
+    );
 
     xTaskCreatePinnedToCore(WifiTaskFunc, "wifi", 8192, NULL, 1, NULL, 0);
     Log("NET", "wifi task pinned to Core 0");

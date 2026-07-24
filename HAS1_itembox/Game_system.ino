@@ -180,8 +180,8 @@ void DataChanged() {
         else if (ds == "repaired_all" ||
                  ds == "player_win"   ||
                  ds == "player_lose") ChangeGameState(GAME_DONE);
+        else if (ds == "github")      otaRequested = true;  // Core0으로 OTA 트리거 전달
         // "solving" : HAS1에서 미사용 (Core0/1 분리로 WiFi 타이머 불필요) — 수신 시 무시
-        // "github"  : OTA 트리거 — Core0 WifiTaskFunc에서 처리 예정
         prevDeviceState = ds;
     }
     // activate는 중복 수신(이미 ACTIVATE 상태)이어도 항상 닫기

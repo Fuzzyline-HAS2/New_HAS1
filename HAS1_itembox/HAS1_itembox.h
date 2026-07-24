@@ -14,6 +14,8 @@ extern QueueHandle_t sendQueue;          // Core1 → Core0  (게임 이벤트 �
 extern QueueHandle_t receiveQueue;       // Core0 → Core1  (서버 데이터 → DataChanged)
 extern QueueHandle_t roleRequestQueue;   // Core1 → Core0  (tagUser → Receive 요청)
 extern QueueHandle_t roleResponseQueue;  // Core0 → Core1  (role 결과 반환)
+// OTA 트리거 플래그 — Core1(DataChanged)이 세팅, Core0(WifiTaskFunc)이 소비
+extern volatile bool otaRequested;
 extern StaticJsonDocument<1000> myDoc;   // Core1 소유 — Core0이 직렬화해 전달, DataChanged()가 읽음
 
 // Service Layer 공개 인터페이스 (wifi.ino)

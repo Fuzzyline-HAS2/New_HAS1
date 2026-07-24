@@ -2,3 +2,4 @@
 build/
 ArduinoOutput/
 secrets.h
+HAS1_itembox/scripts/secrets.py
