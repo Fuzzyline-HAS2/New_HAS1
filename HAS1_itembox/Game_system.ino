@@ -108,25 +108,30 @@ void GameUpdate() {
     }
 }
 
+// ArduinoJson | 0 은 서버가 숫자를 string으로 내릴 때 0을 반환.
+// 이 헬퍼는 int형·string형 모두 파싱한다.
+static int jsonInt(JsonVariant v) {
+    if (v.is<int>())         return v.as<int>();
+    const char* s = v.as<const char*>();
+    return s ? atoi(s) : 0;
+}
+
 // ── 퍼즐 정답·카운트·리셋 시간 갱신 ──────────────────────────────────────────────────
 void UpdatePuzzleAnswers() {
-    // puzzle_count 먼저 갱신 — 이후 완료 판정 기준이 됨 (언제든지 바뀔 수 있음)
-    int cnt = myDoc["puzzle_count"] | 0;
+    int cnt = jsonInt(myDoc["puzzle_count"]);
     if (cnt > 0) modeValue[RANGE][ANSWER_CNT] = cnt;
 
-    // 항상 5개(total) 전부 업데이트 — puzzle_count와 무관하게 저장
-    // puzzle_count가 나중에 늘어나도 이미 슬롯에 값이 준비돼 있음
     const char* keys[] = {
         "puzzle_answer_1","puzzle_answer_2","puzzle_answer_3",
         "puzzle_answer_4","puzzle_answer_5"
     };
     for (int i = 0; i < 5; i++) {
-        int v = myDoc[keys[i]] | 0;
+        int v = jsonInt(myDoc[keys[i]]);
         if (v != 0) modeValue[ANSWER][i] = v;
     }
 
-    unsigned long rt = myDoc["puzzle_reset_time"] | 0UL;
-    if (rt != 0) puzzleResetTime = rt;
+    int rt = jsonInt(myDoc["puzzle_reset_time"]);
+    if (rt != 0) puzzleResetTime = (unsigned long)rt;
 }
 
 // ── LED 밝기 갱신 ─────────────────────────────────────────────────────────────────
