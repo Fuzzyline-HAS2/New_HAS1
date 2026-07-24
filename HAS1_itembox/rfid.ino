@@ -52,14 +52,3 @@ bool RfidReadTag(uint8_t data[32]) {
     return true;
 }
 
-String CheckingPlayers(uint8_t rfidData[32]) {
-    String tagUser = "";
-    for (int i = 0; i < 4; i++)
-        tagUser += (char)rfidData[i];
-    Log("RFID", "tag: " + tagUser);
-    if (tagUser == "MMMM") {
-        Log("RFID", "admin card -> restart");
-        ESP.restart();
-    }
-    return tagUser;
-}

@@ -17,7 +17,9 @@ void setup() {
     MotorInit();
     EncoderInit();
     NeopixelInit();
+    delay(1000);
     RfidInit();
+    delay(1000);
     WifiInit();              // has2wifi.Setup() + Queue 생성 + Core0 태스크 시작
     TelnetInit();            // Telnet 서버 시작 (WiFi는 WifiInit이 완료한 뒤)
     Mp3_Init();              // 내부 2초 delay — 맨 마지막

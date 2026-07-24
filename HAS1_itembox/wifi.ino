@@ -10,7 +10,7 @@ StaticJsonDocument<1000> myDoc;   // Core1 소유 JSON — xQueueReceive 후 des
 
 // has2wifi·http·tag 객체 — Core0 WifiTaskFunc 전용, Core1 직접 접근 금지
 // HTTPClient http 는 HAS2_Wifi.cpp 전역 싱글턴(비스레드세이프)
-HAS2_Wifi has2wifi("http://172.30.1.43");
+HAS2_Wifi has2wifi("http://192.168.45.57:8080");
 
 // ── Core 0 태스크 — 모든 has2wifi.* 호출은 여기서만 ──────────────────────────
 void WifiTaskFunc(void*) {
@@ -31,7 +31,7 @@ void WifiTaskFunc(void*) {
         if (xQueueReceive(roleRequestQueue, tagUserBuf, 0)) {
             has2wifi.Receive(tagUserBuf);  // HTTP GET — Core0 전용, 안전
             char roleBuf[32];
-            strlcpy(roleBuf, (const char*)tag["role"], 32);
+            strlcpy(roleBuf, tag["role"] | "", 32);
             xQueueSend(roleResponseQueue, roleBuf, 0);
         }
 
@@ -76,14 +76,7 @@ void WifiInit() {
     roleRequestQueue  = xQueueCreate(1, 32);
     roleResponseQueue = xQueueCreate(1, 32);
 
-    // badland 외 AP로 연결했던 이력 제거 — 저장된 SK_DA20_2.4G 시도로 스캔 실패 방지
-    Preferences prefs;
-    prefs.begin("has2wifi", false);
-    prefs.remove("last_ssid");
-    prefs.remove("last_pw");
-    prefs.end();
-
-    has2wifi.Setup("badland");
+    has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
     has2wifi.Send((const char*)my["device_name"], "esp_version", "30");
 
     xTaskCreatePinnedToCore(WifiTaskFunc, "wifi", 8192, NULL, 1, NULL, 0);
