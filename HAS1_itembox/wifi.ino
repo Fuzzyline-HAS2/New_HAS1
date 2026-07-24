@@ -14,9 +14,9 @@ volatile bool otaRequested = false;  // Core1이 세팅, Core0이 소비
 HAS2_Wifi has2wifi("http://192.168.45.57:8080");
 
 SecureOTA ota(
-    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/update.bin",
-    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/version.txt",
-    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/update.sig",
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/update.bin",
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/version.txt",
+    "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/update.sig",
     HMAC_SECRET,
     FIRMWARE_VER
 );
@@ -108,9 +108,9 @@ void WifiInit() {
         has2wifi.Send((const char*)my["device_name"], "device_state", "setting");
     });
     ota.setPartitionUpdate(
-        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partitions.bin",
-        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partitions.sig",
-        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1_itembox/deploy/partition_version.txt",
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/partitions.bin",
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/partitions.sig",
+        "https://raw.githubusercontent.com/Fuzzyline-HAS2/HAS1/deploy/HAS1_itembox/partition_version.txt",
         PARTITION_VER
     );
 
