@@ -238,6 +238,12 @@ void PuzzleState() {
 
     int currentAnswer = modeValue[ANSWER][answerCnt];
 
+    if (currentAnswer == -1) {
+        Log("GAME", "answer -1: server force-solve");
+        PuzzleSolved();
+        return;
+    }
+
     NeoEncoderUpdate();
     vibrationSetByEncoder(currentAnswer);
 
