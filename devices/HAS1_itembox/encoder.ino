@@ -1,4 +1,4 @@
-#include "encoder_hal.h"
+#include "hal.h"
 #include "library_and_pin.h"
 
 #define ENCODER_MAX 95

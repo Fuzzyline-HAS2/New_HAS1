@@ -1,4 +1,4 @@
-#include "vibration_hal.h"
+#include "hal.h"
 #include "library_and_pin.h"
 
 #define VIB_MOTOR_FREQ       5000

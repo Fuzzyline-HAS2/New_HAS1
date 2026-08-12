@@ -11,7 +11,7 @@ StaticJsonDocument<1000> myDoc;   // Core1 소유 JSON — xQueueReceive 후 des
 volatile bool otaRequested = false;  // Core1이 세팅, Core0이 소비
 
 // has2wifi·ota·tag 객체 — Core0 WifiTaskFunc 전용, Core1 직접 접근 금지
-HAS2_Wifi has2wifi("http://192.168.45.57:8080");
+HAS2_Wifi has2wifi("http://172.30.1.5:8080");
 
 SecureOTA ota(
     "https://raw.githubusercontent.com/Fuzzyline-HAS2/New_HAS1/main/devices/HAS1_itembox/update.bin",

@@ -14,8 +14,8 @@
 #include "secrets.h"    // HMAC_SECRET (깃에 올라가지 않음 — .gitignore 처리)
 
 // WiFi 접속 정보 — OTA 빌드에 포함되도록 코드에 직접 기입 (secrets.h 아님)
-#define WIFI_SSID     "SK_DA20_2.4G"
-#define WIFI_PASSWORD "GGA48@6587"
+#define WIFI_SSID     "badland_shoot"
+#define WIFI_PASSWORD "Code3824@"
 
 // DFPLAYER
 #define DFPLAYER_RX_PIN 39

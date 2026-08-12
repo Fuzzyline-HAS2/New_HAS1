@@ -1,4 +1,4 @@
-#include "motor_hal.h"
+#include "hal.h"
 #include "library_and_pin.h"
 
 #define MOTOR_FREQ       5000

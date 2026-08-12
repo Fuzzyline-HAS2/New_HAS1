@@ -1,4 +1,4 @@
-#include "rfid_hal.h"
+#include "hal.h"
 #include "library_and_pin.h"
 
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);

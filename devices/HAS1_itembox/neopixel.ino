@@ -1,4 +1,4 @@
-#include "neopixel_hal.h"
+#include "hal.h"
 #include "library_and_pin.h"
 
 #define LED_BRIGHTNESS 127

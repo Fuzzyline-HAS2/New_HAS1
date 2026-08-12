@@ -2,11 +2,7 @@
 #define _HAS1_ITEMBOX
 
 #include <ArduinoJson.h>          // StaticJsonDocument — myDoc 타입 선언에 필요
-#include "neopixel_hal.h"
-#include "motor_hal.h"
-#include "rfid_hal.h"
-#include "encoder_hal.h"
-#include "vibration_hal.h"
+#include "hal.h"
 
 // 코어 간 Queue (wifi.ino에서 정의, WifiInit()에서 xQueueCreate로 생성)
 struct SendMsg { char deviceName[32]; char key[32]; char value[64]; };
