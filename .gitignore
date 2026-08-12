@@ -2,4 +2,5 @@
 build/
 ArduinoOutput/
 secrets.h
-HAS1_itembox/scripts/secrets.py
+devices/HAS1_itembox/scripts/secrets.py
+__pycache__/
