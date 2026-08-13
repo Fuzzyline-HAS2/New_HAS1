@@ -1,0 +1,109 @@
+name: Deploy Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_partition:
+        description: "파티션 스키마도 업데이트 (partitions.bin/sig 재생성 + 배포)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  DEVICE_DIR: devices/HAS1_itembox
+  FQBN: "esp32:esp32:ttgo-t1:UploadSpeed=115200,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=min_spiffs,DebugLevel=none,EraseFlash=none"
+  ESP32_CORE_VERSION: "3.3.11"
+  ESP32_BOARD_INDEX: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 실제 브랜치로 고정 (detached HEAD 방지 — 이후 커밋/푸시에 필요)
+        run: |
+          git checkout -B "${{ github.ref_name }}"
+          git branch --set-upstream-to="origin/${{ github.ref_name }}" "${{ github.ref_name }}"
+
+      - name: git 사용자 설정
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: arduino-cli 설치
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: arduino-cli 초기 설정
+        run: arduino-cli config init --overwrite
+
+      - name: esp32 코어 설치 (v${{ env.ESP32_CORE_VERSION }} 고정)
+        run: |
+          arduino-cli core update-index --additional-urls "${{ env.ESP32_BOARD_INDEX }}"
+          arduino-cli core install "esp32:esp32@${{ env.ESP32_CORE_VERSION }}" --additional-urls "${{ env.ESP32_BOARD_INDEX }}"
+
+      - name: 레지스트리 라이브러리 설치 (로컬 개발 환경과 동일 버전 고정)
+        run: |
+          arduino-cli lib install \
+            "Adafruit NeoPixel@1.15.5" \
+            "Adafruit PN532@1.3.4" \
+            "Adafruit BusIO@1.17.4" \
+            "ArduinoJson@7.4.3" \
+            "DFRobotDFPlayerMini@1.0.6" \
+            "ESP32Encoder@5.0.0" \
+            "EspSoftwareSerial@8.1.0" \
+            "SimpleTimer@1.0.0"
+
+      - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi — 둘 다 public repo)
+        run: |
+          LIB_DIR="$HOME/Arduino/libraries"
+          mkdir -p "$LIB_DIR"
+          git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
+          git clone --depth 1 https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
+          cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
+          echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
+
+      - name: secrets.h 생성
+        run: |
+          cat > "$DEVICE_DIR/secrets.h" <<EOF
+          #ifndef SECRETS_H
+          #define SECRETS_H
+
+          #define HMAC_SECRET   "${{ secrets.HMAC_SECRET }}"
+
+          #endif // SECRETS_H
+          EOF
+
+      - name: 버전 증가
+        id: bump
+        run: |
+          if [ "${{ inputs.update_partition }}" = "true" ]; then
+            python "$SECUREOTA_SCRIPTS/ci_deploy.py" bump "$GITHUB_WORKSPACE/$DEVICE_DIR" --partition >> "$GITHUB_OUTPUT"
+          else
+            python "$SECUREOTA_SCRIPTS/ci_deploy.py" bump "$GITHUB_WORKSPACE/$DEVICE_DIR" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 컴파일
+        run: |
+          mkdir -p "$RUNNER_TEMP/build-out"
+          arduino-cli compile --fqbn "$FQBN" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
+
+      - name: 빌드 산출물 배치
+        run: |
+          cp "$RUNNER_TEMP/build-out"/*.ino.bin "$DEVICE_DIR/update.bin"
+          if [ "${{ inputs.update_partition }}" = "true" ]; then
+            cp "$RUNNER_TEMP/build-out"/*.ino.partitions.bin "$DEVICE_DIR/partitions.bin"
+          fi
+
+      - name: 서명 + Release 업로드 + 소스 커밋
+        env:
+          HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python "$SECUREOTA_SCRIPTS/ci_deploy.py" publish \
+            "$GITHUB_WORKSPACE/$DEVICE_DIR" \
+            "${{ steps.bump.outputs.NEW_VER }}" \
+            "${{ steps.bump.outputs.NEW_PARTITION_VER }}"
