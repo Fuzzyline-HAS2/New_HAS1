@@ -1,4 +1,4 @@
-#define FIRMWARE_VER 31
+#define FIRMWARE_VER 32
 #define PARTITION_VER 2
 #include "HAS1_itembox.h"
 
