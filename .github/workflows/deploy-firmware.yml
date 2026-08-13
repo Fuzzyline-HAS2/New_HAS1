@@ -24,9 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 실제 브랜치로 고정 (detached HEAD 방지 — 이후 커밋/푸시에 필요)
+      - name: 브랜치를 원격 최신 상태로 강제 동기화
+        # actions/checkout은 워크플로가 "트리거된 시점"의 커밋을 체크아웃한다.
+        # "Re-run failed jobs"로 재실행하면 그 사이 원격이 앞서갔어도 옛 커밋
+        # 그대로 재사용돼서, 이후 커밋 push가 non-fast-forward로 거부된다
+        # (detached HEAD 방지도 겸함 — 이후 커밋/푸시에 실제 브랜치가 필요).
         run: |
-          git checkout -B "${{ github.ref_name }}"
+          git fetch origin "${{ github.ref_name }}:refs/remotes/origin/${{ github.ref_name }}"
+          git checkout -B "${{ github.ref_name }}" "origin/${{ github.ref_name }}"
           git branch --set-upstream-to="origin/${{ github.ref_name }}" "${{ github.ref_name }}"
 
       - name: git 사용자 설정
