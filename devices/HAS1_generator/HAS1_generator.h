@@ -126,6 +126,9 @@ bool rfid_timer_assess; // (현재 코드에서 직접 참조되지 않는 전�
 
 bool rfid_init_complete[rfid_num]; // 각 리더의 초기화 성공 여부 (RfidInit에서 설정)
 void RfidInit(void);   // PN532 리더 초기화 (rfid.ino)
+// 근접 인식 Dead Zone 대응용 태그 유무 확인 헬퍼 (rfid.ino 구현, 근/원거리 Gain 자동 재시도).
+// StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
+bool RfidPresenceCheck();
 void RfidLoop(void);   // (프로토타입만 존재 — 실제 정의는 RfidLoopMain()이라는 이름으로 rfid.ino에 있음)
 void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프로토타입만 존재 — 실제 정의는 rfid.ino의 CheckingPlayers(uint8_t rfidData[32])와 시그니처가 다름, 미사용 프로토타입으로 보임)
 

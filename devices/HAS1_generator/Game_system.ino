@@ -18,27 +18,24 @@ void StarterActivate(){
     static unsigned long lastRfidCheck = 0;
     if (millis() - lastRfidCheck >= 200){
         lastRfidCheck = millis();
-        byte pn532_buf[64];
-        pn532_buf[0] = 0x00;
-        tagOnReader = false;
-        if (nfc[MAINPN532].sendCommandCheckAck(pn532_buf, 1)){
-            if (nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)){
-                tagOnReader = true;
-                if (!lastTagState) { // 새 태그가 올라왔을 때만 role 확인
-                    uint8_t data[32];
-                    if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)){
-                        String tagUser = "";
-                        for(int i = 0; i < 4; i++) tagUser += (char)data[i];
-                        has2wifi.Receive(tagUser); // 서버에 조회해 tag["role"]을 채움
-                        isPlayerTagged = ((String)(const char*)tag["role"] == "player");
-                        Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Ghost Blocked");
-                    } else {
-                        isPlayerTagged = false;
-                    }
+        // RfidPresenceCheck()가 근접 Dead Zone 대응을 위해 근/원거리 Gain을 자동으로 오가며 확인한다
+        // (rfid.ino 참고). 감지에 성공한 Gain은 내부에 유지되어 뒤이은 ntag2xx_ReadPage에도 그대로 쓰인다.
+        tagOnReader = RfidPresenceCheck();
+        if (tagOnReader) {
+            if (!lastTagState) { // 새 태그가 올라왔을 때만 role 확인
+                uint8_t data[32];
+                if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)){
+                    String tagUser = "";
+                    for(int i = 0; i < 4; i++) tagUser += (char)data[i];
+                    has2wifi.Receive(tagUser); // 서버에 조회해 tag["role"]을 채움
+                    isPlayerTagged = ((String)(const char*)tag["role"] == "player");
+                    Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Ghost Blocked");
+                } else {
+                    isPlayerTagged = false;
                 }
-                // 태그가 계속 얹혀 있는 동안(lastTagState==true)은 재조회하지 않고
-                // 직전에 판정한 isPlayerTagged 값을 그대로 유지한다 (통신 절약).
             }
+            // 태그가 계속 얹혀 있는 동안(lastTagState==true)은 재조회하지 않고
+            // 직전에 판정한 isPlayerTagged 값을 그대로 유지한다 (통신 절약).
         }
         lastTagState = tagOnReader;
     }
