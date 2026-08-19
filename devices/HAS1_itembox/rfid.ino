@@ -15,7 +15,7 @@ static uint8_t rfid_tagData[32];
 // RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB) 중거리(2~4cm)가 각각
 // 커버되므로, 두 세팅을 상황에 따라 전환해 근접~4cm 전체 구간을 잇는다.
 // TX 출력(GsNOn/CWGsP)은 실측상 근거리 개선 기여가 낮아 PN532 기본값을 그대로 둔다.
-enum GainMode { GAIN_NEAR, GAIN_FAR };
+// (GainMode enum 정의는 hal.h — Arduino 자동 프로토타입 생성 때문에 여기 두면 안 됨)
 
 static GainMode      currentGain     = GAIN_NEAR;
 static bool          rfid_tagLocked  = false;   // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
