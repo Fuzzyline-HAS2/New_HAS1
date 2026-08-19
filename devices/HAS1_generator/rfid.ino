@@ -14,7 +14,7 @@
 // MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
 // 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
 // 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
-enum GainMode { GAIN_NEAR, GAIN_FAR };
+// (GainMode enum 정의는 HAS1_generator.h — Arduino 자동 프로토타입 생성 때문에 여기 두면 안 됨)
 GainMode currentGain = GAIN_NEAR;
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
