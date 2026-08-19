@@ -67,6 +67,9 @@ jobs:
           done
 
       - name: 레지스트리 라이브러리 설치 (로컬 개발 환경과 동일 버전 고정)
+        # SimpleTimer는 레지스트리에 동명이인 라이브러리가 있어 "SimpleTimer@1.0.0"으로 설치하면
+        # run()/deleteTimer()가 없는 다른 라이브러리가 받아질 수 있음 — 아래 커스텀 설치 단계에서
+        # 실제로 쓰는 marcelloromani/Arduino-SimpleTimer를 직접 받는다.
         run: |
           arduino-cli lib install \
             "Adafruit NeoPixel@1.15.5" \
@@ -75,16 +78,17 @@ jobs:
             "ArduinoJson@7.4.3" \
             "DFRobotDFPlayerMini@1.0.6" \
             "ESP32Encoder@5.0.0" \
-            "EspSoftwareSerial@8.1.0" \
-            "SimpleTimer@1.0.0"
+            "EspSoftwareSerial@8.1.0"
 
-      - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi — 둘 다 public repo)
+      - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi, SimpleTimer — 전부 public repo)
         run: |
           LIB_DIR="$HOME/Arduino/libraries"
           mkdir -p "$LIB_DIR"
           git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
           git clone --depth 1 https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
           cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
+          git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
+          cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
           echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
 
       - name: secrets.h 생성
