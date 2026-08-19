@@ -126,10 +126,10 @@ bool rfid_timer_assess; // (현재 코드에서 직접 참조되지 않는 전�
 
 bool rfid_init_complete[rfid_num]; // 각 리더의 초기화 성공 여부 (RfidInit에서 설정)
 void RfidInit(void);   // PN532 리더 초기화 (rfid.ino)
-// 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현). GainMode는 여기서 정의해야 한다 —
-// Arduino가 .ino 파일들을 병합할 때 자동 생성 함수 프로토타입을 스케치 맨 앞(이 헤더 include 다음,
-// 각 .ino 탭의 실제 코드보다 앞)에 삽입하므로, rfid.ino 안에서만 정의하면 그 프로토타입 자리에서
-// "GainMode를 아직 모른다"는 컴파일 에러가 난다.
+// 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현) — GainMode는 currentGain 등
+// 내부 상태 변수 타입으로만 쓰이고 함수 매개변수 타입으로는 쓰지 않는다(ApplyGain은 int를 받음).
+// Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다도 앞에
+// 삽입돼서, 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 // StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
 bool RfidPresenceCheck();
