@@ -18,7 +18,7 @@ const int rfid_num = 1; // 설치된 pn532의 개수
 //****************************************WIFI****************************************************************
 // has2wifi: 서버(172.30.1.5:8080)와 주기적으로 통신하며 my/tag 등 JSON 상태를 동기화하는 객체.
 //           TimerRun() -> WifiIntervalFunc() -> has2wifi.Loop(DataChanged) 로 매 tick 폴링된다.
-HAS2_Wifi has2wifi("http://172.30.1.43");
+HAS2_Wifi has2wifi("http://172.30.1.5:8080");
 
 // ota: GitHub Releases(HAS1_generator 태그)에 올라간 update.bin을 내려받아 검증/적용하는 OTA 객체.
 //      HMAC_SECRET으로 서명을 검증하고, FIRMWARE_VER보다 서버 버전이 높을 때만 업데이트를 진행한다.

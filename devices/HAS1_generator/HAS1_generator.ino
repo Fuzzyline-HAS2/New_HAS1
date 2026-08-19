@@ -39,10 +39,9 @@ void setup() {
     nvs_flash_erase();
     nvs_flash_init();
 
-    // "badland" 테마로 연결 — HAS2_Wifi 라이브러리가 badland_ruins/badland_auto/badland_shoot
-    // 후보 AP 중 신호가 가장 좋은 곳으로 자동 접속하고, 서버 호스트도 badland용(172.30.1.43)으로 설정된다.
-    // 연결 직후 현재 펌웨어 버전을 서버에 보고한다.
-    has2wifi.Setup("badland");
+    // 임시 롤백: badland 테마 서버(172.30.1.43)가 응답하지 않아 고정 SSID/서버로 되돌림.
+    // (badland_ruins + 구서버 172.30.1.5:8080 — HAS1_generator.h의 has2wifi 생성자 참고)
+    has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
 
     // OTA 진행 로그를 시리얼로 출력하도록 설정
