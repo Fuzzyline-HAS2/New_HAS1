@@ -1,4 +1,7 @@
 name: Deploy Firmware
+# Actions 실행 목록에 뜨는 제목을 "Deploy Firmware"로 통일해서 보여주는 대신,
+# 어떤 device를 배포했는지/파티션도 같이 올렸는지 한눈에 구분되도록 커스텀.
+run-name: "Deploy ${{ inputs.device }}${{ inputs.update_partition && ' (+partition)' || '' }} by @${{ github.actor }}"
 
 on:
   workflow_dispatch:
