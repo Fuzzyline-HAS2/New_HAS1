@@ -18,7 +18,7 @@ const int rfid_num = 1; // 설치된 pn532의 개수
 //****************************************WIFI****************************************************************
 // has2wifi: 서버(172.30.1.5:8080)와 주기적으로 통신하며 my/tag 등 JSON 상태를 동기화하는 객체.
 //           TimerRun() -> WifiIntervalFunc() -> has2wifi.Loop(DataChanged) 로 매 tick 폴링된다.
-HAS2_Wifi has2wifi("http://172.30.1.43");
+HAS2_Wifi has2wifi("http://172.30.1.5:8080");
 
 // ota: GitHub Releases(HAS1_generator 태그)에 올라간 update.bin을 내려받아 검증/적용하는 OTA 객체.
 //      HMAC_SECRET으로 서명을 검증하고, FIRMWARE_VER보다 서버 버전이 높을 때만 업데이트를 진행한다.
@@ -126,6 +126,9 @@ bool rfid_timer_assess; // (현재 코드에서 직접 참조되지 않는 전�
 
 bool rfid_init_complete[rfid_num]; // 각 리더의 초기화 성공 여부 (RfidInit에서 설정)
 void RfidInit(void);   // PN532 리더 초기화 (rfid.ino)
+// 근접 인식 Dead Zone 대응용 태그 유무 확인 헬퍼 (rfid.ino 구현, 근/원거리 Gain 자동 재시도).
+// StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
+bool RfidPresenceCheck();
 void RfidLoop(void);   // (프로토타입만 존재 — 실제 정의는 RfidLoopMain()이라는 이름으로 rfid.ino에 있음)
 void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프로토타입만 존재 — 실제 정의는 rfid.ino의 CheckingPlayers(uint8_t rfidData[32])와 시그니처가 다름, 미사용 프로토타입으로 보임)
 

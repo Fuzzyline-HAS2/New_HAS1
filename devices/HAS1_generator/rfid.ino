@@ -8,6 +8,61 @@
 //  별도 로직으로 들어있다.)
 // =================================================================================
 
+// ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (HAS1_itembox와 동일 대응) ──
+// 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
+// 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
+// MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
+// 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
+// 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+enum GainMode { GAIN_NEAR, GAIN_FAR };
+GainMode currentGain = GAIN_NEAR;
+
+// RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
+// PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
+bool ApplyGain(GainMode mode)
+{
+  uint8_t rfCfg = (mode == GAIN_NEAR) ? 0x19 : 0x49;  // 23dB(근거리) / 33dB(중거리)
+  uint8_t cmd[] = {
+      0x32,       // RFConfiguration
+      0x0A,       // Type A 106kbps Analog Setting
+      rfCfg,      // RFCfg — RxGain (아래 TX 관련 값들은 실측상 기본값 유지가 최선이었음)
+      0xF4,       // GsNOn
+      0x3F,       // CWGsP
+      0x11,       // ModGsP
+      0x4D,       // Demod RF ON
+      0x85,       // RxThreshold
+      0x61,       // Demod RF OFF
+      0x6F,       // GsNOff
+      0x26,       // ModWidth
+      0x62,       // MifNFC
+      0x87        // TxBitPhase
+  };
+  return nfc[MAINPN532].sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+}
+
+// 태그 유무만 확인(페이지 읽기 없음). 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도.
+// 성공한 Gain은 currentGain에 남아 다음 호출(및 뒤이은 ntag2xx_ReadPage)에도 유지된다.
+bool RfidPresenceCheck()
+{
+  byte buf[64] = {0};
+  if (nfc[MAINPN532].sendCommandCheckAck(buf, 1) &&
+      nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A))
+    return true;
+
+  currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+  ApplyGain(currentGain);
+  return nfc[MAINPN532].sendCommandCheckAck(buf, 1) &&
+         nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
+}
+
+// 태그 감지 + 7번 페이지(사용자 데이터) 읽기까지 1회 수행. 감지 실패 시 반대 Gain으로 즉시 재시도.
+bool RfidDetectTag(uint8_t outData[32])
+{
+  if (RfidPresenceCheck())
+    return nfc[MAINPN532].ntag2xx_ReadPage(7, outData);
+  return false;
+}
+
 // setup()에서 1회 호출: PN532와 통신을 열고 SAM(Secure Access Module) 설정을 적용한다.
 // 초기화에 실패하면 전체 네오픽셀을 빨간색으로 켜서 하드웨어 문제를 시각적으로 알린다
 // (goto 재시도 루틴은 주석 처리되어 있어 현재는 1회 시도 후 실패 상태로 넘어감).
@@ -25,33 +80,26 @@ void RfidInit()
     nfc[MAINPN532].SAMConfig();
     Serial.println("PN532 SUCC : MAINPN532");
     rfid_init_complete[MAINPN532] = true;
+    currentGain = GAIN_NEAR;
+    ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
   }
   delay(100);
 }
 
 // ptrCurrentMode로 등록되어 loop()마다 호출됨.
-// 매 프레임 PN532에 태그 감지를 질의하고, 태그가 감지되면 NTAG의 7번 페이지(사용자 데이터)를
+// 매 프레임 PN532에 태그 감지를 질의하고(근접 Dead Zone 대응 위해 RfidDetectTag로 근/원거리
+// Gain을 자동 전환하며 시도), 태그가 감지되면 NTAG의 7번 페이지(사용자 데이터)를
 // 읽어 CheckingPlayers()로 넘겨 역할을 판정한다.
 // (rfid_num은 현재 1로 고정되어 있어 for문은 사실상 MAINPN532 1개만 순회한다.)
 void RfidLoopMain()
 {
-  uint8_t uid[3][7] = {{0, 0, 0, 0, 0, 0, 0},
-                       {0, 0, 0, 0, 0, 0, 0},
-                       {0, 0, 0, 0, 0, 0, 0}}; // Buffer to store the returned UID
-  uint8_t uidLength[] = {0};                   // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
   uint8_t data[32];
-  byte pn532_packetbuffer11[64];
-  pn532_packetbuffer11[0] = 0x00;
 
   for (int i = 0; i < rfid_num; ++i)
   {
-    if (nfc[MAINPN532].sendCommandCheckAck(pn532_packetbuffer11, 1)){ // rfid 통신 가능한 상태인지 확인
-      if (nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)){                                       // rfid에 tag 찍혔는지 확인용 //데이터 들어오면 uid정보 가져오기
-        if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)){ // ntag 데이터에 접근해서 불러와서 data행열에 저장
-          Serial.println("TAGGGED");
-          CheckingPlayers(data);
-        }
-      }
+    if (RfidDetectTag(data)){ // ntag 데이터에 접근해서 불러와서 data행열에 저장
+      Serial.println("TAGGGED");
+      CheckingPlayers(data);
     }
   }
 }
