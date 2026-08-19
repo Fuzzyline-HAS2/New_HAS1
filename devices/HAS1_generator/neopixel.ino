@@ -43,13 +43,13 @@ void UpdateBrightness()
 }
 
 // 배선(0~max) 개수를 GAUGE(28개)에 비례 채움 — StarterActivate 단계 전, 배터리팩 충전 단계 전용
-// cnt/maxCnt 비율만큼 앞에서부터 파란색으로 채우고, 나머지는 꺼진 상태(검정)로 만든다.
+// cnt/maxCnt 비율만큼 앞에서부터 초록색으로 채우고, 나머지(아직 안 채워진 배경)는 노란색으로 유지한다.
 void BatteryGaugeShow(int cnt, int maxCnt){
   int litPixels = (maxCnt > 0) ? (int)((long)NumPixels[GAUGE] * cnt / maxCnt) : 0;
   for(int i = 0; i < litPixels; i++)
-    pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[BLUE][0], color[BLUE][1], color[BLUE][2]));
+    pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[GREEN][0], color[GREEN][1], color[GREEN][2]));
   for(int i = litPixels; i < NumPixels[GAUGE]; i++)
-    pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[BLACK][0], color[BLACK][1], color[BLACK][2]));
+    pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[YELLOW][0], color[YELLOW][1], color[YELLOW][2]));
   pixels[GAUGE].show();
 }
 
