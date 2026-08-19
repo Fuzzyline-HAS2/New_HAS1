@@ -97,9 +97,9 @@ void WifiInit() {
     for (unsigned long t = millis(); WiFi.status() != WL_CONNECTED && millis() - t < 15000;)
         delay(100);
     // 이미 AP 인증 완료 상태이므로 Setup 내부 disconnect→reconnect가 즉시 성공.
-    // "badland" 테마로 연결 — badland_ruins/badland_auto/badland_shoot 후보 중
-    // 신호가 가장 좋은 곳으로 붙고, 서버 호스트도 badland용(172.30.1.43)으로 설정된다.
-    has2wifi.Setup("badland");
+    // 임시 롤백: badland 테마 서버(172.30.1.43)가 응답하지 않아 고정 SSID/서버로 되돌림.
+    // (badland_ruins + 구서버 172.30.1.5:8080 — HAS1_generator와 동일한 임시 설정)
+    has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
     has2wifi.Send((const char*)my["device_name"], "esp_version", String(FIRMWARE_VER).c_str());
 
     // SecureOTA 콜백 — Core0 컨텍스트에서 실행되므로 has2wifi.Send() 직접 호출 가능

@@ -14,7 +14,9 @@
 #include "secrets.h"    // HMAC_SECRET (깃에 올라가지 않음 — .gitignore 처리)
 
 // WiFi 접속 정보 — OTA 빌드에 포함되도록 코드에 직접 기입 (secrets.h 아님)
-#define WIFI_SSID     "badland_shoot"
+// 임시 고정: badland 테마 서버(172.30.1.43)가 아직 응답하지 않아 badland_ruins로 롤백.
+// TODO: badland 테마 서버 문제 해결되면 wifi.ino의 Setup("badland")로 되돌릴 것.
+#define WIFI_SSID     "badland_ruins"
 #define WIFI_PASSWORD "Code3824@"
 
 // DFPLAYER
