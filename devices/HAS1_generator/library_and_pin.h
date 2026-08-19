@@ -20,12 +20,6 @@
 #include <SecureOTA.h>            // 서명 검증 기반 OTA(원격 펌웨어 업데이트) 라이브러리
 #include "secrets.h"              // OTA 서명 검증용 HMAC 비밀키 (별도 관리, git에 커밋되는 값은 아님)
 
-// WiFi 접속 정보 — 임시 고정: badland 테마 서버(172.30.1.43)가 아직 응답하지 않아
-// 기존에 확인된 badland_ruins AP + 구서버(172.30.1.5:8080)로 임시 롤백.
-// TODO: badland 테마 서버(172.30.1.43:80) 문제 해결되면 Setup("badland")로 되돌릴 것.
-#define WIFI_SSID     "badland_ruins"
-#define WIFI_PASSWORD "Code3824@"
-
 // ---------------------------------------------------------------------------------
 // DFPlayer Mini (MP3 재생 모듈) 통신 핀
 // SoftwareSerial 기준이므로 RX/TX는 DFPlayer 쪽 TX/RX와 교차 연결됨
