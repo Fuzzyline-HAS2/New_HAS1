@@ -17,7 +17,7 @@
 // 이런 "diff 후 처리" 방식 덕분에 서버 폴링이 반복되어도 같은 동작이 중복 실행되지 않는다.
 void DataChanged()
 {
-  static StaticJsonDocument<2048> cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
+  static StaticJsonDocument<1000> cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행 (HAS2_Wifi의 my와 동일한 크기여야 대입 가능)
 
   // 서버에서 받은 스타터 설정값 동기화 (0 이하인 값은 아직 세팅 전이라 판단해 무시)
   if((int)my["starter_encoder_unit"] > 0)  starterEncoderUnit  = (int)my["starter_encoder_unit"];
