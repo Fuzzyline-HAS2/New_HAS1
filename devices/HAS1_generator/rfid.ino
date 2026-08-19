@@ -14,12 +14,14 @@
 // MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
 // 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
 // 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
-enum GainMode { GAIN_NEAR, GAIN_FAR };
 GainMode currentGain = GAIN_NEAR;
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
 // PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
-bool ApplyGain(GainMode mode)
+// 매개변수를 GainMode가 아닌 int로 받는다 — Arduino가 .ino 탭들을 병합할 때 자동 생성하는
+// 함수 프로토타입은 파일 어디에 있는 include/enum보다도 앞에 삽입될 수 있어서, 커스텀 enum을
+// 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 난다(enum은 int로 암묵 변환되므로 호출부는 그대로 둬도 됨).
+bool ApplyGain(int mode)
 {
   uint8_t rfCfg = (mode == GAIN_NEAR) ? 0x19 : 0x49;  // 23dB(근거리) / 33dB(중거리)
   uint8_t cmd[] = {
