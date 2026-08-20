@@ -12,6 +12,8 @@ on:
         options:
           - HAS1_itembox
           - HAS1_generator
+          - HAS1_tagmachine_main
+          - HAS1_tagmachine_sub
         default: HAS1_itembox
       update_partition:
         description: "파티션 스키마도 업데이트 (partitions.bin/sig 재생성 + 배포)"
@@ -23,7 +25,6 @@ permissions:
 
 env:
   DEVICE_DIR: devices/${{ github.event.inputs.device }}
-  FQBN: "esp32:esp32:ttgo-t1:UploadSpeed=115200,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=min_spiffs,DebugLevel=none,EraseFlash=none"
   ESP32_CORE_VERSION: "3.3.11"
   ESP32_BOARD_INDEX: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
 
@@ -48,6 +49,28 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 보드별 FQBN 결정
+        # HAS1_itembox/HAS1_generator/HAS1_tagmachine_main은 TTGO(esp32:esp32:ttgo-t1)지만
+        # HAS1_tagmachine_main은 로컬 개발 설정이 PartitionScheme=default라 min_spiffs를
+        # 그대로 쓰면 실기기에 이미 플래시된 OTA 파티션 레이아웃과 어긋날 수 있음.
+        # HAS1_tagmachine_sub(Beetle)는 아예 다른 칩(esp32:esp32:esp32c3)이라 FQBN 자체가 다름.
+        run: |
+          case "${{ inputs.device }}" in
+            HAS1_itembox|HAS1_generator)
+              echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=115200,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=min_spiffs,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
+              ;;
+            HAS1_tagmachine_main)
+              echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=921600,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=default,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
+              ;;
+            HAS1_tagmachine_sub)
+              echo "FQBN=esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=default,CPUFreq=160,FlashMode=qio,FlashFreq=80,FlashSize=4M,DebugLevel=none" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "지원하지 않는 device: ${{ inputs.device }}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: arduino-cli 설치
         uses: arduino/setup-arduino-cli@v2
