@@ -78,14 +78,23 @@ void RfidInit()
 void RfidLoopMain(void)
 {
     uint8_t data[32];
+    // 태그 한 번 = 전송 한 번이 되도록 디바운스. 이게 없으면 카드가 리더에 붙어있는
+    // 짧은 순간에도 루프마다(초당 여러 번) 같은 태그를 계속 재전송해서, TTGO->서버
+    // 요청이 폭주하고(순간적인 connection refused 등) 태그를 안 했는데도 반복 태그로
+    // 보이는 문제가 생긴다. 카드가 완전히 떨어져 DetectTag()가 실패하는 순간 초기화되어,
+    // 다음 태그(같은 카드를 다시 대는 것 포함)는 새 이벤트로 정상 처리된다.
+    static String lastTagSent = "";
     // 근접 Dead Zone 대응 위해 DetectTag()로 근/원거리 Gain을 자동 전환하며 시도
     if (DetectTag()){ // rfid에 tag 찍혔는지 확인용(내부에서 통신 가능 여부까지 확인)
         if (nfc.ntag2xx_ReadPage(7, data)){ // ntag 데이터에 접근해서 불러와서 data행열에 저장
             String tagData = "";
             for(int i = 0; i < 4; i++)
                 tagData += (char)data[i];
-            Serial.println(tagData);
-            fromSubSerial.println(tagData);
+            if (tagData != lastTagSent) {
+                Serial.println(tagData);
+                fromSubSerial.println(tagData);
+                lastTagSent = tagData;
+            }
         } else {
             fromSubSerial.println("D:READPAGE_FAIL");
         }
@@ -94,5 +103,7 @@ void RfidLoopMain(void)
         // 아직 release되지 않은 같은 카드에 재-anticollision을 거는 꼴이 되어 COLL이 뜬다.
         // 명시적으로 release하고 살짝 쉬어서 카드가 트랜잭션에서 완전히 빠져나올 시간을 준다.
         ReleaseTag();
+    } else {
+        lastTagSent = "";  // 태그 없음 확인 — 다음 태그(같은 카드 재태그 포함)를 새 이벤트로 인정
     }
 }
