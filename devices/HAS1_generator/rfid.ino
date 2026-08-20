@@ -88,7 +88,7 @@ bool RfidPresenceCheck()
   bool found = DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0;
   if (!found)
   {
-    int otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+    GainMode otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
     ApplyGain(otherGain);
     if (DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0)
     {
