@@ -89,7 +89,7 @@ void UpdateBrightness();   // 서버에서 받은 밝기(1~100)를 0~255로 매�
 void EncoderNeopixelOn();  // 스타터 게이지 진행률만큼 GAUGE 네오픽셀을 채움 (neopixel.ino)
 void NeoBlink(int neo, int neoColor, int cnt, int blinkTime); // 지정 스트립을 cnt회 blocking 방식으로 점멸 (neopixel.ino)
 void BatteryGaugeShow(int cnt, int maxCnt); // 배선 충전 비율(cnt/maxCnt)만큼 GAUGE 네오픽셀을 채움 (neopixel.ino)
-const int NumPixels[4] = {28,4,16,10}; // 각 스트립(GAUGE/STARTER/DEVICESTATE/CIRCUIT)의 픽셀 개수
+const int NumPixels[4] = {28,12,16,10}; // 각 스트립(GAUGE/STARTER/DEVICESTATE/CIRCUIT)의 픽셀 개수
 const int NeopixelNum = 4;             // 네오픽셀 스트립(용도) 개수
 enum {GAUGE = 0, STARTER, DEVICESTATE, CIRCUIT};                          // pixels[] / NumPixels[] 인덱스
 enum {WHITE = 0, RED, YELLOW, GREEN, BLUE, PURPLE, BLACK, BLUE0, BLUE1, BLUE2, BLUE3}; // color[] 인덱스
