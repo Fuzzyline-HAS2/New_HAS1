@@ -14,6 +14,8 @@ on:
           - HAS1_generator
           - HAS1_tagmachine_main
           - HAS1_tagmachine_sub
+          - HAS1_escape_main
+          - HAS1_revival_machine
         default: HAS1_itembox
       update_partition:
         description: "파티션 스키마도 업데이트 (partitions.bin/sig 재생성 + 배포)"
@@ -55,12 +57,14 @@ jobs:
         # HAS1_tagmachine_main은 로컬 개발 설정이 PartitionScheme=default라 min_spiffs를
         # 그대로 쓰면 실기기에 이미 플래시된 OTA 파티션 레이아웃과 어긋날 수 있음.
         # HAS1_tagmachine_sub(Beetle)는 아예 다른 칩(esp32:esp32:esp32c3)이라 FQBN 자체가 다름.
+        # HAS1_escape_main/HAS1_revival_machine도 로컬 .vscode/arduino.json·build 설정 기준
+        # PartitionScheme=default, UploadSpeed=921600 — HAS1_tagmachine_main과 동일 FQBN.
         run: |
           case "${{ inputs.device }}" in
             HAS1_itembox|HAS1_generator)
               echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=115200,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=min_spiffs,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
               ;;
-            HAS1_tagmachine_main)
+            HAS1_tagmachine_main|HAS1_escape_main|HAS1_revival_machine)
               echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=921600,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=default,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
               ;;
             HAS1_tagmachine_sub)
