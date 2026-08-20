@@ -15,9 +15,61 @@ void SensorInit()
 
   // Rfid init
   RfidInit();
+
+  // Solenoid init
+  SolenoidInit();
 }
 
 //********************************************* Rfid *********************************************
+// ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (HAS1_generator/HAS1_itembox와 동일 대응) ──
+// 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
+// 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
+// MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
+// 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
+// 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+static GainMode currentGain = GAIN_NEAR;
+
+// RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
+// PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
+static bool ApplyGain(int mode)
+{
+  uint8_t rfCfg = (mode == GAIN_NEAR) ? 0x19 : 0x49;  // 23dB(근거리) / 33dB(중거리)
+  uint8_t cmd[] = {
+      0x32,       // RFConfiguration
+      0x0A,       // Type A 106kbps Analog Setting
+      rfCfg,      // RFCfg — RxGain (아래 TX 관련 값들은 실측상 기본값 유지가 최선이었음)
+      0xF4,       // GsNOn
+      0x3F,       // CWGsP
+      0x11,       // ModGsP
+      0x4D,       // Demod RF ON
+      0x85,       // RxThreshold
+      0x61,       // Demod RF OFF
+      0x6F,       // GsNOff
+      0x26,       // ModWidth
+      0x62,       // MifNFC
+      0x87        // TxBitPhase
+  };
+  return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+}
+
+// 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
+static bool DetectAndRead(uint8_t outData[32])
+{
+  byte buf[64] = {0};
+  if (!nfc.sendCommandCheckAck(buf, 1)) return false;
+  if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
+  return nfc.ntag2xx_ReadPage(7, outData);
+}
+
+// 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도. 성공한 Gain은 currentGain에 남아 다음 호출에도 유지된다.
+static bool DetectWithGainSwitch(uint8_t outData[32])
+{
+  if (DetectAndRead(outData)) return true;
+  currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+  ApplyGain(currentGain);
+  return DetectAndRead(outData);
+}
+
 /**
  * @brief RFID(=PN532) 세팅
  */
@@ -31,6 +83,8 @@ void RfidInit(void)
     return;
   }
   nfc.SAMConfig(); // configure board to read RFID tags
+  currentGain = GAIN_NEAR;
+  ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
   Serial.println("RFID 연결성공");
 }
 
@@ -48,20 +102,10 @@ void RfidLoop()
   {
     return;
   }
-  uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
-  uint8_t uidLength;                     // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
+
   uint8_t data[32];
-  char user_data[5];
-  byte pn532_packetbuffer11[64];
-  pn532_packetbuffer11[0] = 0x00;
-  if (nfc.sendCommandCheckAck(pn532_packetbuffer11, 1))
-  { // rfid 통신 가능한 상태인지 확인
-    if (nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A))
-    {                                    // rfid에 tag 찍혔는지 확인용 //데이터 들어오면 uid정보 가져오기
-      if (nfc.ntag2xx_ReadPage(7, data)) // ntag 데이터에 접근해서 불러와서 data행열에 저장
-        CardChecking(data);
-    }
-  }
+  if (DetectWithGainSwitch(data)) // 근접 Dead Zone 대응 위해 근/원거리 Gain을 자동 전환하며 시도
+    CardChecking(data);
 }
 
 /**
@@ -84,19 +128,18 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   if (!valid_tag_user)
   {
     Serial.println("[RFID] Invalid tag data (expected G#P#); request skipped");
-    sendCommand("pgCardCheckin.wNoChip.en=1");
     return;
   }
 
-  // 이미 사용된(used) 제단이면 칩 처리 없이 "사용 불가" 안내만 표시.
-  // 서버 반영(device_state="used") 전이라도 로컬 래치(altar_used_local)로 즉시 차단한다.
-  if ((String)(const char *)my["device_state"] == "used" || altar_used_local)
+  // activate 상태가 아니거나 이미 열린 상태(서버 확정 또는 로컬 래치)면 ghost 태그를 무시한다.
+  if ((String)(const char *)my["game_state"] != "activate" ||
+      (String)(const char *)my["device_state"] == "open" ||
+      ghost_opened_local)
   {
-    sendCommand("pgUsed.wNoChip.en=1");
     return;
   }
 
-  // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기
+  // 태그한 사용자의 role을 읽어와 ghost 여부 확인.
   // Receive가 성공 여부를 반환하지 않으므로, 매 시도 전 tag를 비우고
   // 응답 device_name이 실제 태그값과 같을 때만 성공으로 판정한다.
   const int tag_lookup_attempts = 3; // 최초 1회 + 재시도 2회
@@ -132,58 +175,29 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       delay(tag_lookup_retry_delay_ms);
   }
 
-  // RX가 모두 실패해도 TX가 살아 있는 경우를 위해 태그값을 대상으로 봉헌을 계속한다.
-  // 조회가 성공한 경우에는 기존처럼 술래이고 taken_chip이 1개 이상일 때만 허용한다.
-  bool can_sacrifice = !tag_lookup_succeeded ||
-                       ((String)(const char *)tag["role"] == "tagger" &&
-                        (int)tag["taken_chip"] > 0);
-
   if (!tag_lookup_succeeded)
   {
-    Serial.printf("[RFID][RX FALLBACK] Lookup failed after %d attempts; "
-                  "sacrificing for scanned user %s\n",
-                  tag_lookup_attempts, tagUser.c_str());
+    Serial.println("[RFID] Tag lookup failed; ghost tag ignored");
+    return;
   }
 
-  if (can_sacrifice)
+  if ((String)(const char *)tag["role"] != "ghost")
   {
-    sendCommand("page pgKeepTag");
-
-    // 봉헌 커밋 즉시 로컬 잠금. 서버가 device_state="used" 를 되돌려주기 전까지
-    // 추가 태그가 pgKeepTag 로 넘어가 중복 봉헌되는 것을 막는다.
-    altar_used_local = true;
-
-    String main_altar = (String)(const char *)my["main_altar_device_name"];
-    if (main_altar.length() > 0)
-        // 출처 표식: 소제단 경유 제물은 "taken_chip_sub"로 보낸다.
-        // 서버는 대제단 taken_chip을 똑같이 올리되 대제단 효과는 발동하지 않는다.
-        // (대제단에 직접 바친 제물만 "taken_chip" → 효과 발동)
-        has2wifi.Send(main_altar, "taken_chip_sub", "+1");
-    else
-        Serial.println("[WARN] main_altar_device_name 없음, taken_chip 전송 스킵");
-
-    // 소제단은 1회용. 자신의 taken_chip 은 증가하지 않으므로(제물은 대제단으로 감)
-    // taken_chip 반영을 기다리지 말고 즉시 device_state 를 "used" 로 전환한다.
-    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "used");
-
-    // RX 성공/실패와 관계없이 스캔한 RFID 값만 차감/경험치 대상으로 사용한다.
-    has2wifi.Send(tagUser, "taken_chip", "-1");
-    has2wifi.Send(tagUser, "exp", "+100");
-
-    pixels_mid.clear();
-    pixels_bot.clear();
-    pixels_top.clear();
-
-    // 페이지 전환(pgKeepTag -> pgUsed)은 Nextion 내부 타이머(3초)가 처리
-
-    NeopixelSet(purple);   // 봉헌 완료 - 네오픽셀 전체 보라색(고정)
-    NeoFunc = NeoNo;       // 호흡/화살표 애니메이션 없음
+    Serial.println("[RFID] Not a ghost tag; ignored");
+    return;
   }
-  else
-  {
-    // tagger가 아니거나(=다른 역할) tagger인데 바칠 칩이 없는 경우 → "사용 불가" 안내
-    sendCommand("pgCardCheckin.wNoChip.en=1");
-  }
+
+  Serial.println("[RFID] Ghost tagged - opening");
+
+  // 서버 반영 전이라도 로컬 래치로 즉시 잠가 중복 전송을 막는다.
+  ghost_opened_local = true;
+
+  has2wifi.Send((String)(const char *)my["device_name"], "device_state", "open");
+  has2wifi.Send((String)(const char *)my["device_name"], "game_state", "activate");
+
+  NeopixelSet(blue);   // ghost 태그로 열림 - 네오픽셀 전체 파란색(고정)
+  SolenoidOff();
+  NeoFunc = NeoNo;
 }
 
 bool RfidNsecTag(int sec)
@@ -254,6 +268,25 @@ void lightColor(Adafruit_NeoPixel &pixels, int color[3], int index)
 {
   pixels.setPixelColor(index, color[0], color[1], color[2]);
   pixels.show();
+}
+
+//******************************************* Solenoid *******************************************
+// 모스펫으로 구동되는 솔레노이드. HIGH = 통전(ON), LOW = 차단(OFF)로 가정.
+// (배선이 반대라면 SolenoidOn/Off의 HIGH/LOW만 뒤집으면 됨)
+void SolenoidInit()
+{
+  pinMode(SOLENOID_PIN, OUTPUT);
+  digitalWrite(SOLENOID_PIN, LOW);
+}
+
+void SolenoidOn()
+{
+  digitalWrite(SOLENOID_PIN, HIGH);
+}
+
+void SolenoidOff()
+{
+  digitalWrite(SOLENOID_PIN, LOW);
 }
 
 //******************************************* Neopixel *******************************************

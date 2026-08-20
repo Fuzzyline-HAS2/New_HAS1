@@ -24,12 +24,11 @@
 // #define SERIAL1_RX_PIN 36 // 미사용
 // #define SERIAL1_TX_PIN 32
 
-#define SERIAL2_RX_PIN 39   // 디스플레이
-#define SERIAL2_TX_PIN 33
-
 #define NEOPIXEL_TOP_PIN 25
 #define NEOPIXEL_MID_PIN 26
 #define NEOPIXEL_BOT_PIN 27
+
+#define SOLENOID_PIN 14  // 솔레노이드 데이터 핀 (모스펫 구동)
 
 #define PN532_SCK                       (18)
 #define PN532_MISO                      (19)

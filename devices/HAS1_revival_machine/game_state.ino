@@ -6,9 +6,10 @@
 void SettingFunc()
 {
     activate_bool = false;
-    sendCommand("page pgSetting");
+    ghost_opened_local = false;  // 다음 라운드를 위해 로컬 잠금 해제
     NeoFunc = NeoNo;
     NeopixelSet(white);
+    SolenoidOff();
 }
 
 /**
@@ -18,8 +19,8 @@ void SettingFunc()
 void ReadyFunc()
 {
     activate_bool = false;
-    sendCommand("page pgInfo");
     NeopixelSet(red);   // ready - 네오픽셀 전체 빨간색(고정)
+    SolenoidOn();
     NeoFunc = NeoNo;    // 호흡 애니메이션 없음
 }
 
@@ -52,8 +53,6 @@ void DataChange()
 
     static StaticJsonDocument<2048> cur;
 
-    String cmd;
-
     bool brightness_changed = ((int)my["brightness"] != (int)cur["brightness"]);
 
     if ((String)(const char *)my["game_state"] != (String)(const char *)cur["game_state"])
@@ -83,57 +82,27 @@ void DataChange()
     {
         if ((String)(const char *)my["device_state"] == "activate")
         {
-            altar_used_local = false;   // 제단 재활성화 → 로컬 잠금 해제(다음 봉헌 허용)
-            sendCommand("page pgChipCount");
-            NeopixelSet(purple);   // activate - 네오픽셀 전체 보라색(고정)
+            ghost_opened_local = false;   // 재무장 → 로컬 잠금 해제(다음 ghost 태그 허용)
+            NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
+            SolenoidOn();
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
         }
-        else if ((String)(const char *)my["device_state"] == "used")
+        else if ((String)(const char *)my["device_state"] == "open")
         {
-            // 현재 페이지가 pgUsed 가 아니면 강제 전환 (Nextion 내부 타이머 누락 대비)
-            if (NextionGetNum("get dp") != PG_USED_ID)
-                sendCommand("page pgUsed");
-            NeopixelSet(red);   // 칩 사용됨 - 네오픽셀 전체 빨간색
-            NeoFunc = NeoNo;    // 애니메이션 정지(빨간색 고정 유지)
+            NeopixelSet(blue);   // ghost 태그로 열림 - 네오픽셀 전체 파란색(고정)
+            SolenoidOff();
+            NeoFunc = NeoNo;
         }
-        else if ((String)(const char *)my["device_state"] == "player_win")
+        else if ((String)(const char *)my["device_state"] == "show_time")
         {
-            sendCommand("page pgTaggerLose");
-            NeopixelSet(red);   // player_win(=tagger 패배) - 네오픽셀 전체 빨간색(고정)
-            NeoFunc = NeoNo;    // 깜빡임 애니메이션 없음
-        }
-        else if ((String)(const char *)my["device_state"] == "player_lose")
-        {
-            sendCommand("page pgTaggerWin");
-            NeopixelSet(blue);  // player_lose(=tagger 승리) - 네오픽셀 전체 파란색(고정)
-            NeoFunc = NeoNo;    // 깜빡임 애니메이션 없음
-        }
-        else if ((String)(const char *)my["device_state"] == "blink")
-        {
-            if (rfid_tag) return;
-            sendCommand("page pgAltarTag");
-            NeopixelSet(red);   // blink - 네오픽셀 전체 빨간색(고정)
-            NeoFunc = NeoNo;    // 호흡 애니메이션 없음
+            // 이전 on/off 상태와 무관하게 강제로 on. 색상은 변경하지 않는다.
+            SolenoidOn();
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
             ota.check();
         }
     }
-
-    if((int)my["taken_chip"] != (int)cur["taken_chip"])
-    {
-        // 전역변수 갱신만 하면 pgUsed가 자동으로 받아서 표시.
-        // 페이지 전환은 Nextion 내부 타이머가 담당.
-        cmd = "pgChipCount.vSacrificeChip.val=" + (String)(int)my["taken_chip"];
-        sendCommand(cmd.c_str());
-    }
-    if((int)my["max_chip"] != (int)cur["max_chip"])
-    {
-        cmd = "pgChipCount.vMaxChip.val=" + (String)(int)my["max_chip"];
-        sendCommand(cmd.c_str());
-    }
-    SyncLanguage();
 
     Serial.println("Data Change");
     cur = my;

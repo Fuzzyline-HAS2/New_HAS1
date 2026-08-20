@@ -8,10 +8,6 @@
 void NeoNo();
 void (*NeoFunc)() = NeoNo;
 
-//============================ Hardware Serial ============================
-// HardwareSerial MySerial1(1); // 사용X
-HardwareSerial MySerial2(2); // Display
-
 //================================ Wifi ==================================
 HAS2_Wifi has2wifi("http://172.30.1.43");
 
@@ -30,18 +26,6 @@ void ReadyFunc();
 void ActionFunc();
 void DataChange();
 
-//=============================== Display ================================
-int nextion_language = 1;  // 0=EN, 1=KO (기본값 KO)
-// pgUsed 페이지 id ("get dp" 응답 기준). HMI 변경 시 함께 갱신할 것.
-#define PG_USED_ID 6
-void DisplayCheck();
-void NextionReceived(String *nextion_string);
-int NextionGetNum(const char *cmd);
-void NextionInit();
-void SyncLanguage();
-void nexInit();
-void sendCommand(const char *cmd);
-
 //* =============================== Sensor =============================== *
 /**
  * @brief Temple에 사용되는 센서, 모듈 세팅
@@ -59,6 +43,12 @@ bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
 
 bool send_nfc_err = false;
+
+// 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현) — GainMode는 currentGain 등
+// 내부 상태 변수 타입으로만 쓰이고 함수 매개변수 타입으로는 쓰이지 않는다(ApplyGain은 int를 받음).
+// Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다도 앞에
+// 삽입돼서, 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
+enum GainMode { GAIN_NEAR, GAIN_FAR };
 
 void RfidInit(void);
 void RfidLoop(void);
@@ -104,6 +94,11 @@ void ApplyBrightness(int raw);
 void SetBrightness(int pct);
 void lightColor(Adafruit_NeoPixel &pixels, int color[3], int index);
 
+//=============================== Solenoid ================================
+void SolenoidInit();
+void SolenoidOn();
+void SolenoidOff();
+
 void NeoBeforeTagger();
 void NeoTagger();
 void NeoTaggerTag();
@@ -128,13 +123,12 @@ int wifi_timer_id;
 int nsec_tag_num;
 bool nsec_tag_bool;
 
-//=========================== Used 잠금 ===========================
-// 봉헌이 로컬에서 커밋된 순간 즉시 "사용됨"으로 잠그는 로컬 래치.
-// device_state="used" 는 서버 왕복 후에야 반영되는데, Nextion 화면은 내부 타이머(3초)로
-// 먼저 pgUsed 로 넘어간다. 그 사이(서버 반영 지연 구간)에 카드를 다시 대면 device_state 가
-// 아직 "used" 가 아니라 가드를 통과해 pgKeepTag 로 넘어가고 중복 봉헌이 발생한다.
+//=========================== Open 잠금 ===========================
+// ghost 태그로 열림이 로컬에서 커밋된 순간 즉시 잠그는 로컬 래치.
+// device_state="open" 은 서버 왕복 후에야 반영되는데, 그 사이(서버 반영 지연 구간)에
+// ghost 태그를 다시 대면 device_state 가 아직 "open" 이 아니라 가드를 통과해 중복 전송이 발생한다.
 // 이 래치로 그 구간을 막고, device_state 가 "activate" 로 (재)전환될 때 해제한다.
-bool altar_used_local = false;
+bool ghost_opened_local = false;
 
 void TimerInit();
 void TimerRun();
