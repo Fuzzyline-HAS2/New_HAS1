@@ -51,7 +51,11 @@ void DataChange()
         return;
     }
 
-    static StaticJsonDocument<2048> cur;
+    // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
+    // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
+    // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다(HAS1_itembox와 동일 이슈).
+    // JsonDocument는 크기에 상관없이 대입/set()이 되므로 어떤 환경에서도 안전하다.
+    static JsonDocument cur;
 
     bool brightness_changed = ((int)my["brightness"] != (int)cur["brightness"]);
 
