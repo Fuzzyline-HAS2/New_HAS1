@@ -79,7 +79,7 @@ volatile unsigned int gameTimerCnt; // GameTimerFunc 호출 횟수를 세는 카
 // 실제 폴더/트랙 번호는 각 호출부(wifi.ino, rfid.ino, dfplayer.ino)에서 직접 지정할 것.
 void Mp3_Init();  // DFPlayer 초기화 (dfplayer.ino)
 void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number); // 지정 폴더/트랙 재생 (dfplayer.ino)
-void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number, unsigned long timeoutMs); // 재생 완료(또는 timeout)까지 대기 후 리턴 (dfplayer.ino)
+void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number); // 재생 완료까지 대기 후 리턴 (dfplayer.ino)
 void LeftGenerator();   // 남은 발전기 개수 안내 음원 재생 (dfplayer.ino)
 void BatteryPackSend(); // 배선 충전량을 게이지 네오픽셀에 반영 + 음원 재생 (dfplayer.ino)
 //****************************************Neopixel SETUP****************************************************************

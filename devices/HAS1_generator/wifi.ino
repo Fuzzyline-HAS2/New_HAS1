@@ -72,8 +72,8 @@ void DataChanged()
         // 모든 발전기가 수리 완료 — 더 이상 할 일 없음, 탈출구 오픈 안내
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = WaitFunc;
-        Mp3PlayLargeFolderAndWait(1, 6, 8000);  // device_state == "repaired_all"
-        Mp3PlayLargeFolder(1, 2);               // device_state == "repaired_all"
+        Mp3PlayLargeFolderAndWait(1, 6);  // device_state == "repaired_all"
+        Mp3PlayLargeFolder(1, 2);         // device_state == "repaired_all"
         GameTimer.deleteTimer(gameTimerId);
 
         BlinkTimer.deleteTimer(blinkTimerId);
@@ -87,7 +87,7 @@ void DataChanged()
         GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료
         BlinkTimer.deleteTimer(blinkTimerId);
         Serial.println("Generator Fixed!");
-        Mp3PlayLargeFolderAndWait(1, 4, 8000);  // device_state == "repaired"
+        Mp3PlayLargeFolderAndWait(1, 4);  // device_state == "repaired"
         LeftGenerator();
         AllNeoOn(BLUE);
         ptrCurrentMode = WaitFunc;
