@@ -238,13 +238,13 @@ void StartFinish()
   if ((String)(const char*)my["device_state"] == "repaired_all") {
     ptrRfidMode = WaitFunc;
     ptrCurrentMode = WaitFunc;
-    Mp3PlayLargeFolder(1, 6);  // device_state == "repaired_all"
-    Mp3PlayLargeFolder(1, 2);  // device_state == "repaired_all"
+    Mp3PlayLargeFolderAndWait(1, 6, 8000);  // device_state == "repaired_all"
+    Mp3PlayLargeFolder(1, 2);               // device_state == "repaired_all"
     BlinkTimer.deleteTimer(blinkTimerId);
     AllNeoOn(BLUE);
     return;
   }
-  Mp3PlayLargeFolder(1, 4);  // device_state == "repaired"
+  Mp3PlayLargeFolderAndWait(1, 4, 8000);  // device_state == "repaired"
   LeftGenerator();
   AllNeoOn(BLUE);
   ptrCurrentMode = WaitFunc;
