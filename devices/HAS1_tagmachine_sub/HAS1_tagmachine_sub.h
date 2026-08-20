@@ -15,7 +15,7 @@ int gameTimerId;
 void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수
 
 //****************************************RFID SETUP****************************************************************
-Adafruit_PN532_Debug nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
+Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
 void RfidInit(void);
 void RfidLoopMain(void);
 bool rfid_init_complete = false;

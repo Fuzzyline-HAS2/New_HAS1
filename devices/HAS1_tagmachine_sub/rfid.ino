@@ -1,54 +1,4 @@
 
-// PN532 GetGeneralStatus(0x04) 응답의 Err 바이트를 이름으로 디코딩
-// (NXP PN532 User Manual Table 22: Error and Status Codes)
-String DecodePn532Status(uint8_t err) {
-    switch (err) {
-        case 0x00: return "OK";
-        case 0x01: return "TIMEOUT";
-        case 0x02: return "CRC";
-        case 0x03: return "PARITY";
-        case 0x04: return "BITCOUNT";     // 안티콜리전 중 비트 카운트 오류
-        case 0x05: return "FRAMING";
-        case 0x06: return "COLL";         // 비트 콜리전
-        case 0x07: return "BUFOVF";
-        case 0x09: return "RFBUFOVF";
-        case 0x0A: return "RFTIMEOUT";
-        case 0x0B: return "RFPROTO";
-        case 0x0D: return "TEMP";
-        case 0x0E: return "INTBUFOVF";
-        case 0x10: return "INVPARAM";
-        case 0x12: return "CMDINVALID";
-        case 0x13: return "FORMATERR";
-        case 0x14: return "AUTHERR";
-        case 0x23: return "UIDERR";
-        case 0x25: return "DEPSTATE";
-        case 0x26: return "NOTALLOWED";
-        case 0x27: return "CTXERR";
-        case 0x29: return "RELEASED";
-        case 0x2A: return "IDMISMATCH";
-        case 0x2B: return "DISAPPEARED";
-        case 0x2C: return "NFCIDMISMATCH";
-        case 0x2D: return "OVERCURRENT";
-        case 0x2E: return "NADMISSING";
-        default:   return "ERR0x" + String(err, HEX);
-    }
-}
-
-// PN532에게 GetGeneralStatus를 물어 방금 명령의 에러코드를 "D:" 접두사로 보드에 전달
-// (보드는 이 접두사를 태그 데이터와 구분해서 텔넷으로만 출력함)
-void SendPn532Status() {
-    uint8_t cmd[1] = { PN532_COMMAND_GETGENERALSTATUS };
-    if (!nfc.sendCommandCheckAck(cmd, 1)) {
-        fromSubSerial.println("D:NOACK");
-        return;
-    }
-    uint8_t resp[20];
-    nfc.readdata(resp, 20);
-    // 프레임: 00 00 FF LEN LCS D5 05 Err Field NbTg ...
-    uint8_t err = resp[7];
-    fromSubSerial.println("D:" + DecodePn532Status(err));
-}
-
 // ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (HAS1_generator/HAS1_itembox와 동일 대응) ──
 // 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
 // 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
@@ -139,9 +89,6 @@ void RfidLoopMain(void)
         } else {
             fromSubSerial.println("D:READPAGE_FAIL");
         }
-        // ntag 읽기까지 끝난 뒤에 상태를 조회해야 InListPassiveTarget/ReadPage의
-        // 응답 프레임과 뒤섞이지 않는다 (진행 중 명령 사이에 끼워넣지 않음)
-        SendPn532Status();
         // 카드를 안테나에 딱 붙여두면 계속 강하게 커플링된 채로 남아있어서,
         // loop()에 딜레이가 없는 상태로 바로 다음 InListPassiveTarget을 걸면
         // 아직 release되지 않은 같은 카드에 재-anticollision을 거는 꼴이 되어 COLL이 뜬다.
