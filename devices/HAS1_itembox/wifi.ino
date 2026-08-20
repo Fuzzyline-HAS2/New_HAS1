@@ -11,7 +11,7 @@ StaticJsonDocument<1000> myDoc;   // Core1 소유 JSON — xQueueReceive 후 des
 volatile bool otaRequested = false;  // Core1이 세팅, Core0이 소비
 
 // has2wifi·ota·tag 객체 — Core0 WifiTaskFunc 전용, Core1 직접 접근 금지
-HAS2_Wifi has2wifi("http://172.30.1.5:8080");
+HAS2_Wifi has2wifi("http://172.30.1.43");
 
 SecureOTA ota(
     "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_itembox/update.bin",
@@ -97,9 +97,11 @@ void WifiInit() {
     for (unsigned long t = millis(); WiFi.status() != WL_CONNECTED && millis() - t < 15000;)
         delay(100);
     // 이미 AP 인증 완료 상태이므로 Setup 내부 disconnect→reconnect가 즉시 성공.
-    // 임시 롤백: badland 테마 서버(172.30.1.43)가 응답하지 않아 고정 SSID/서버로 되돌림.
-    // (badland_ruins + 구서버 172.30.1.5:8080 — HAS1_generator와 동일한 임시 설정)
-    has2wifi.Setup((char*)WIFI_SSID, (char*)WIFI_PASSWORD);
+    // badland 테마: 주변 badland_* 후보(badland_ruins/auto/shoot) 중 RSSI가 가장 센 AP로
+    // 자동 연결하고, 서버 호스트도 badland용(172.30.1.43)으로 맞춘다 (HAS1_generator와 동일).
+    // 웜업은 WIFI_SSID(badland_ruins, badland 후보 중 하나)로 미리 붙여 Setup 내부
+    // disconnect→reconnect가 즉시 끝나게 해주므로, 테마로 바꿔도 그대로 유효하다.
+    has2wifi.Setup("badland");
     has2wifi.Send((const char*)my["device_name"], "esp_version", String(FIRMWARE_VER).c_str());
 
     // SecureOTA 콜백 — Core0 컨텍스트에서 실행되므로 has2wifi.Send() 직접 호출 가능
