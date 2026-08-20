@@ -13,7 +13,7 @@
 // "VER:<n>" 형태로 응답한다(beetle_ota.ino의 QueryBeetleVersion). GitHub Release에
 // 올라간 version.txt와 비교되므로, 배포할 때마다(scripts/deploy.py) 이 숫자를 올려야
 // TTGO가 업데이트를 인식한다.
-#define FIRMWARE_VER 1
+#define FIRMWARE_VER 2
 #include "HAS1_tagmachine_sub.h"
 
 void setup() {
