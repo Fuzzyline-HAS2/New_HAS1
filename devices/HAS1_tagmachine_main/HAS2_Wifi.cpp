@@ -638,6 +638,7 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request)
   //   int httpRequestCnt = 0;
   // ReRequsetHttp:
 
+  _has2DebugPrint->printf("GET -> %s\n", string_request.c_str());
   http.begin(string_request); // 요청을 PHP로 전송
   http.setReuse(true);        // 같은 서버로 가는 연속 요청은 TCP 연결 재사용(핸드셰이크 생략)으로 왕복 단축
 
