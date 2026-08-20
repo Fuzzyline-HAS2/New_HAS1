@@ -208,7 +208,7 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 void BatteryFinish()
 {
   has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
-  Mp3PlayLargeFolder(1, 1);  // TODO: PG_STARTER 음원 지정 ("wStaterOn.en=1" Nextion 위젯 토글은 제거함)
+  Mp3PlayLargeFolder(1, 3);  // device_state == "battery_max"
   delay(10);
   AllNeoOn(GREEN);
   Serial.println("Battery Finish Func!");
@@ -238,12 +238,13 @@ void StartFinish()
   if ((String)(const char*)my["device_state"] == "repaired_all") {
     ptrRfidMode = WaitFunc;
     ptrCurrentMode = WaitFunc;
-    Mp3PlayLargeFolder(1, 1);  // TODO: PG_ESCAPE_OPEN 음원 지정
+    Mp3PlayLargeFolder(1, 6);  // device_state == "repaired_all"
+    Mp3PlayLargeFolder(1, 2);  // device_state == "repaired_all"
     BlinkTimer.deleteTimer(blinkTimerId);
     AllNeoOn(BLUE);
     return;
   }
-  Mp3PlayLargeFolder(1, 1);  // TODO: PG_FIXED 음원 지정
+  Mp3PlayLargeFolder(1, 4);  // device_state == "repaired"
   LeftGenerator();
   AllNeoOn(BLUE);
   ptrCurrentMode = WaitFunc;
