@@ -40,14 +40,20 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
     myDFPlayer.playLargeFolder(folder_number, file_number);
 }
 
-// 트랙 재생이 끝날 때까지 대기한 뒤 리턴한다.
+// 트랙 재생이 끝날 때까지(최대 MP3_WAIT_TIMEOUT_MS) 대기한 뒤 리턴한다.
 // DFPlayer는 재생 중에 새 play 명령이 오면 즉시 트랙을 끊고 새 트랙으로 전환하므로,
 // 여러 음원을 순서대로 들려줘야 하는 자리(예: repaired_all에서 (1,6) 다음 (1,2))에서는
 // 앞 트랙을 그냥 Mp3PlayLargeFolder로 재생하면 뒤 호출이 곧바로 끊어버린다 — 이를 막기 위한 함수.
+// DFPlayerPlayFinished 신호가 끝내 안 오는 하드웨어 이상 상황에서도 기기가 영영 멈추지 않도록
+// timeout을 둔다.
+#define MP3_WAIT_TIMEOUT_MS 2000
 void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
     myDFPlayer.playLargeFolder(folder_number, file_number);
-    while (!(myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished)) {}
+    unsigned long start = millis();
+    while (millis() - start < MP3_WAIT_TIMEOUT_MS) {
+        if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) break;
+    }
 }
 
 // TODO: Nextion 제거하면서 옮겨온 자리표시자 — 원래 Nextion 디스플레이에 표시하던 발전기 잔여 개수.
