@@ -31,8 +31,9 @@ void setup() {
     // 아무 데도 안 찍힌다 — 이미 초기화된(+Telnet 미러링되는) DebugSerial로 돌려준다.
     has2wifi.SetDebugPrint(&Serial);
 //  has2wifi.Setup("city");
-    // badland 모드: 라이브러리가 주변 badland_* 중 RSSI 센 AP로 자동 연결
-    has2wifi.Setup("badland_ruins", "Code3824@");
+    // badland 테마: 라이브러리가 주변 badland_* 후보(badland_ruins/auto/shoot) 중
+    // RSSI가 가장 센 AP로 자동 연결하고, 서버 호스트도 badland용(172.30.1.43)으로 맞춘다.
+    has2wifi.Setup("badland");
     // 현재 펌웨어 버전을 서버 device.esp_version 컬럼에 보고 (부팅 시 1회)
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
     TelnetInit();
