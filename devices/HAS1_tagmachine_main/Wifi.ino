@@ -35,7 +35,15 @@ void DataChanged()
         digitalWrite(RELAY_PIN, HIGH);
         delay(1000);
         digitalWrite(RELAY_PIN, LOW);
-        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
+        // 뉴비모드는 상시 잠금이 원칙이라 open을 activate로 승격시키면 안 된다.
+        // NewbieTaggerUnlockTimerFunc/NewbiePlayerOpen/NewbieGhostOpen이 "open" 전송 직후
+        // 곧바로 "lock"을 다시 보내긴 하지만, 그 사이에 이 지점이 "open"을 관측하면(백그라운드
+        // WifiTimer 폴링 등) 아래처럼 무조건 activate로 덮어써버려 그 lock 재전송을 무력화한다.
+        if ((String)(const char*)my["mode"] == "easy") {
+            has2wifi.Send((String)(const char*)my["device_name"], "device_state", "lock");
+        } else {
+            has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
+        }
     }
     else if(deviceState == "activate"){
         strCurState = deviceState;
