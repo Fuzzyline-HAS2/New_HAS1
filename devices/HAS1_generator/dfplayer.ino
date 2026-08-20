@@ -54,5 +54,5 @@ void LeftGenerator() {
 // GAUGE 네오픽셀에 실물 배선 비율 표시 + 임시 음원(TODO: 실제 음원 매핑 필요).
 void BatteryPackSend() {
     BatteryGaugeShow((int)my["battery_pack"], (int)my["max_battery_pack"]);
-    Mp3PlayLargeFolder(1, 1);
+    Mp3PlayLargeFolder(1, 7);  // 배선이 하나 꽂힐 때마다 재생
 }

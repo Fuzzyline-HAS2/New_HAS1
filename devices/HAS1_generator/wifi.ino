@@ -72,7 +72,8 @@ void DataChanged()
         // 모든 발전기가 수리 완료 — 더 이상 할 일 없음, 탈출구 오픈 안내
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = WaitFunc;
-        Mp3PlayLargeFolder(1, 1);  // TODO: PG_ESCAPE_OPEN 음원 지정
+        Mp3PlayLargeFolder(1, 6);  // device_state == "repaired_all"
+        Mp3PlayLargeFolder(1, 2);  // device_state == "repaired_all"
         GameTimer.deleteTimer(gameTimerId);
 
         BlinkTimer.deleteTimer(blinkTimerId);
@@ -86,7 +87,7 @@ void DataChanged()
         GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료
         BlinkTimer.deleteTimer(blinkTimerId);
         Serial.println("Generator Fixed!");
-        Mp3PlayLargeFolder(1, 1);  // TODO: PG_FIXED 음원 지정
+        Mp3PlayLargeFolder(1, 4);  // device_state == "repaired"
         LeftGenerator();
         AllNeoOn(BLUE);
         ptrCurrentMode = WaitFunc;
@@ -160,7 +161,6 @@ void SettingFunc(void){
 void ActivateFunc(void){
     Serial.println("ACTIVATE");
     AllNeoOn(YELLOW);
-    Mp3PlayLargeFolder(1, 1);  // TODO: PG_UNLOCKED 음원 지정
     BatteryPackSend();
     EncoderDetach();
     GameTimer.deleteTimer(gameTimerId);
@@ -178,6 +178,8 @@ void ActivateFunc(void){
         BatteryFinish();
     }
     else{
+        // device_state == "activate" (배선 충전 시작 전 기본 상태)
+        Mp3PlayLargeFolder(1, 1);
         // 배터리팩 충전은 더 이상 RFID 태그가 아니라 물리 배선 4개(WIRE_PIN_1~4)로 실시간 반영됨
         WireResetTracking();
         ptrCurrentMode = WirePollMain;

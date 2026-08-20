@@ -12,9 +12,17 @@
 // 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
 // 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
 // MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
-// 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
-// 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+// 중거리(2~4cm)가 각각 커버되므로, 두 세팅을 상황에 따라 전환해 근접~4cm 전체 구간을 잇는다.
+// TX 출력(GsNOn/CWGsP)은 실측상 근거리 개선 기여가 낮아 PN532 기본값을 그대로 둔다.
 GainMode currentGain = GAIN_NEAR;
+
+static bool          rfid_tagLocked  = false;   // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
+static uint8_t       rfid_lockedData[32];        // 유지 중인 태그의 page7 데이터 — 동일 태그 판별 기준
+static unsigned long rfid_lastSeenMs = 0;        // 유지 중 태그를 마지막으로 확인한 시각
+
+// 유지 중이던 태그가 두 Gain 모두에서 이 시간 이상 연속으로 안 잡히면 그제서야 제거로 판정.
+// (단 한 번의 Read 실패로 바로 태그 제거 처리하지 않기 위한 디바운스 — 500~1000ms 범위에서 조정 가능)
+#define TAG_REMOVE_TIME_MS 500
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
 // PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
@@ -42,27 +50,83 @@ bool ApplyGain(int mode)
   return nfc[MAINPN532].sendCommandCheckAck(cmd, sizeof(cmd), 1000);
 }
 
-// 태그 유무만 확인(페이지 읽기 없음). 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도.
-// 성공한 Gain은 currentGain에 남아 다음 호출(및 뒤이은 ntag2xx_ReadPage)에도 유지된다.
-bool RfidPresenceCheck()
+// 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
+static bool DetectAndRead(uint8_t outData[32])
 {
   byte buf[64] = {0};
-  if (nfc[MAINPN532].sendCommandCheckAck(buf, 1) &&
-      nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A))
-    return true;
-
-  currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-  ApplyGain(currentGain);
-  return nfc[MAINPN532].sendCommandCheckAck(buf, 1) &&
-         nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
+  if (!nfc[MAINPN532].sendCommandCheckAck(buf, 1)) return false;
+  if (!nfc[MAINPN532].startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
+  return nfc[MAINPN532].ntag2xx_ReadPage(7, outData);
 }
 
-// 태그 감지 + 7번 페이지(사용자 데이터) 읽기까지 1회 수행. 감지 실패 시 반대 Gain으로 즉시 재시도.
+// 태그 유무 확인 + Gain lock-on 유지 + 500ms 디바운스(HAS1_itembox와 동일 알고리즘).
+// 탐색 모드(태그 미보유): 현재 Gain으로 1회 시도 → 실패하면 반대 Gain으로 즉시 재시도
+//   성공한 Gain으로 lock-on(rfid_tagLocked=true) 하고 유지.
+// 유지 모드(태그 보유): 현재 Gain으로 먼저 확인(UID 비교) → 실패하면 반대 Gain으로 즉시 재확인
+//   → 그래도 실패하면 TAG_REMOVE_TIME_MS 동안은 유지로 간주(단발성 미스 무시)
+//   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
+bool RfidPresenceCheck()
+{
+  uint8_t data[32];
+
+  if (!rfid_tagLocked)
+  {
+    if (!DetectAndRead(data))
+    {
+      currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+      ApplyGain(currentGain);
+      if (!DetectAndRead(data))
+        return false;
+    }
+    // 태그 발견 — 지금 이 Gain을 유지하며 락온
+    rfid_tagLocked = true;
+    memcpy(rfid_lockedData, data, 32);
+    rfid_lastSeenMs = millis();
+    return true;
+  }
+
+  bool found = DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0;
+  if (!found)
+  {
+    int otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+    ApplyGain(otherGain);
+    if (DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0)
+    {
+      currentGain = otherGain;  // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
+      found = true;
+    }
+    else
+    {
+      ApplyGain(currentGain);   // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
+    }
+  }
+
+  if (found)
+  {
+    rfid_lastSeenMs = millis();
+    return true;
+  }
+
+  if (millis() - rfid_lastSeenMs < TAG_REMOVE_TIME_MS)
+    return true;  // 유예시간 이내 — 단발성 미스로 보고 유지 상태 유지
+
+  // 유예시간 초과 — 태그 제거 확정, 탐색 모드로 복귀
+  rfid_tagLocked = false;
+  currentGain = GAIN_NEAR;
+  ApplyGain(currentGain);
+  return false;
+}
+
+// 태그 감지 + 7번 페이지(사용자 데이터) 읽기까지 1회 수행. 감지는 RfidPresenceCheck()에 위임.
+// 디바운스 유예시간 중이라 실제 재읽기가 실패한 프레임에는 락온된 마지막 데이터로 대체한다.
 bool RfidDetectTag(uint8_t outData[32])
 {
-  if (RfidPresenceCheck())
-    return nfc[MAINPN532].ntag2xx_ReadPage(7, outData);
-  return false;
+  if (!RfidPresenceCheck())
+    return false;
+
+  if (!nfc[MAINPN532].ntag2xx_ReadPage(7, outData))
+    memcpy(outData, rfid_lockedData, 32);
+  return true;
 }
 
 // setup()에서 1회 호출: PN532와 통신을 열고 SAM(Secure Access Module) 설정을 적용한다.
@@ -84,6 +148,7 @@ void RfidInit()
     rfid_init_complete[MAINPN532] = true;
     currentGain = GAIN_NEAR;
     ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
+    rfid_tagLocked = false;
   }
   delay(100);
 }
@@ -143,7 +208,7 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 void BatteryFinish()
 {
   has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
-  Mp3PlayLargeFolder(1, 1);  // TODO: PG_STARTER 음원 지정 ("wStaterOn.en=1" Nextion 위젯 토글은 제거함)
+  Mp3PlayLargeFolder(1, 3);  // device_state == "battery_max"
   delay(10);
   AllNeoOn(GREEN);
   Serial.println("Battery Finish Func!");
@@ -173,12 +238,13 @@ void StartFinish()
   if ((String)(const char*)my["device_state"] == "repaired_all") {
     ptrRfidMode = WaitFunc;
     ptrCurrentMode = WaitFunc;
-    Mp3PlayLargeFolder(1, 1);  // TODO: PG_ESCAPE_OPEN 음원 지정
+    Mp3PlayLargeFolder(1, 6);  // device_state == "repaired_all"
+    Mp3PlayLargeFolder(1, 2);  // device_state == "repaired_all"
     BlinkTimer.deleteTimer(blinkTimerId);
     AllNeoOn(BLUE);
     return;
   }
-  Mp3PlayLargeFolder(1, 1);  // TODO: PG_FIXED 음원 지정
+  Mp3PlayLargeFolder(1, 4);  // device_state == "repaired"
   LeftGenerator();
   AllNeoOn(BLUE);
   ptrCurrentMode = WaitFunc;

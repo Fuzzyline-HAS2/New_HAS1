@@ -1,6 +1,7 @@
 #include <HAS2_Wifi.h>
 #include <SecureOTA.h>
 #include <nvs_flash.h>
+#include <WiFi.h>
 
 /**
  * @file Done_Generator_code.ino
@@ -43,6 +44,19 @@ void setup() {
     // 후보 AP 중 신호가 가장 좋은 곳으로 자동 접속하고, 서버 호스트도 badland용(172.30.1.43)으로 설정된다.
     // 연결 직후 현재 펌웨어 버전을 서버에 보고한다.
     has2wifi.Setup("badland");
+
+    // ---- [실험용 디버깅] 어느 AP/서브넷에 붙었는지 확인용 (taewoo.kim 요청) ----
+    // GW가 172.30.1.1이 아니면 다른 망, GW는 맞는데 BSSID가 3C:78:95:E9:A0:0F 계열이 아니면
+    // 같은 대역을 쓰는 다른 매장/테마 AP에 붙은 것으로 의심. ESP IP가 172.30.1.130/.131
+    // 근처면 VLAN 분리 여부도 확인 필요.
+    Serial.printf("IP=%s GW=%s MASK=%s\n",
+        WiFi.localIP().toString().c_str(),
+        WiFi.gatewayIP().toString().c_str(),
+        WiFi.subnetMask().toString().c_str());
+    Serial.printf("SSID=%s BSSID=%s RSSI=%d\n",
+        WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), WiFi.RSSI());
+    // ---------------------------------------------------------------------
+
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
 
     // OTA 진행 로그를 시리얼로 출력하도록 설정
