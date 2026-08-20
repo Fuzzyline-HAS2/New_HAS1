@@ -4,4 +4,6 @@ ArduinoOutput/
 secrets.h
 devices/HAS1_itembox/scripts/secrets.py
 devices/HAS1_generator/scripts/secrets.py
+devices/HAS1_tagmachine_main/scripts/secrets.py
+devices/HAS1_tagmachine_sub/scripts/secrets.py
 __pycache__/
