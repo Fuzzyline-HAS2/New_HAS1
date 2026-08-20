@@ -60,6 +60,7 @@ void DataChanged()
     // 경로로, 현재는 서버 쪽에서 battery_pack이 바뀌는 다른 경로가 있을 경우를 대비한 안전망 성격이 크다.
     if(gameStateChanged == false && cur.containsKey("battery_pack") && (String)(const char*)my["game_state"] == "activate" && (int)my["battery_pack"] != (int)cur["battery_pack"]){
       BatteryPackSend();
+      if((int)my["battery_pack"] > (int)cur["battery_pack"]) Mp3PlayLargeFolder(1, 7);  // 늘어날 때만 재생
       if((int)my["battery_pack"] == (int)my["max_battery_pack"]){
         receiveMineOn = true;
         BatteryFinish();

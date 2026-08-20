@@ -67,8 +67,9 @@ void LeftGenerator() {
 }
 
 // 배선 개수 변화(WirePollMain) 및 상태 동기화(DataChanged, ActivateFunc)마다 호출됨.
-// GAUGE 네오픽셀에 실물 배선 비율 표시 + 임시 음원(TODO: 실제 음원 매핑 필요).
+// GAUGE 네오픽셀에 실물 배선 비율만 표시한다 — 게이지가 "차오를 때"(배선이 꽂혀 늘어날 때)만
+// 나야 하는 음원은 여기서 재생하지 않고, 늘어난 경우인지 판단 가능한 호출부(wire.ino의
+// WirePollMain 등)에서 직접 Mp3PlayLargeFolder(1, 7)을 호출한다.
 void BatteryPackSend() {
     BatteryGaugeShow((int)my["battery_pack"], (int)my["max_battery_pack"]);
-    Mp3PlayLargeFolder(1, 7);  // 배선이 하나 꽂힐 때마다 재생
 }
