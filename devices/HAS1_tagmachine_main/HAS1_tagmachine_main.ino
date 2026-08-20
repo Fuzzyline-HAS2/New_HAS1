@@ -26,6 +26,10 @@ void setup() {
     TimerInit();
     // Mp3_Setup();  // [DFPlayer 비활성화]
     pinMode(RELAY_PIN, OUTPUT);
+    // HAS2_Wifi 내부 로그("Try WiFi:", "WiFi connected", SSID/RSSI/IP 등)는 기본값이
+    // HAS2_Wifi.cpp 안에서 한 번도 begin()되지 않은 별도의 raw Serial(UART0) 객체라
+    // 아무 데도 안 찍힌다 — 이미 초기화된(+Telnet 미러링되는) DebugSerial로 돌려준다.
+    has2wifi.SetDebugPrint(&Serial);
 //  has2wifi.Setup("city");
     // badland 모드: 라이브러리가 주변 badland_* 중 RSSI 센 AP로 자동 연결
     has2wifi.Setup("badland_ruins", "Code3824@");
