@@ -246,11 +246,14 @@ void BatteryFinish()
     Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
     Serial.println("Battery Finish Func!");
+    // encoderValue/GameTimer 리셋도 최초 1회만 — tagger로 갔다가 battery_max로 되돌아와 이 함수가
+    // 다시 불릴 때는 리셋하면 안 된다. tagger 중에도 GameTimer(wifi.ino)를 멈추지 않았으므로
+    // encoderValue는 이미 그 시간만큼 자연스럽게 감소해 있고, 그 값을 그대로 이어받아야 한다.
+    encoderValue = 1;
+    gameTimerCnt = 0;
+    GameTimer.deleteTimer(gameTimerId);
+    gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 시작
   }
-  encoderValue = 1;
-  GameTimer.deleteTimer(gameTimerId);
-  gameTimerCnt = 0;
-  gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 재시작
   // GAUGE는 스타터 진행률 표시로 넘어가므로 초록(완충 표시), 나머지 3개는 파랑으로 전환
   NeoLightColor(GAUGE, color[GREEN]);
   NeoLightColor(STARTER, color[BLUE]);

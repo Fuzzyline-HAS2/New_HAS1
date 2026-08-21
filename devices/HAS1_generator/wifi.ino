@@ -146,7 +146,9 @@ void DataChanged()
         // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/ghost 태그 시 보라색 점멸은 TaggerRfidLoop에서 처리
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = TaggerRfidLoop;
-        GameTimer.deleteTimer(gameTimerId);
+        // GameTimer는 일부러 멈추지 않는다 — 스타터 진행 중(방치 감소 타이머가 이미 돌고 있던 경우)
+        // tagger로 인터럽트돼도 게이지가 시간 경과에 맞춰 계속 자연스럽게 줄어들게 하기 위함.
+        // battery_max로 돌아오면 BatteryFinish()가 encoderValue를 리셋하지 않고 그대로 이어받는다.
         BlinkTimer.deleteTimer(blinkTimerId);
         AllNeoOn(PURPLE);
       }
