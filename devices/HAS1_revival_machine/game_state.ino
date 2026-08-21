@@ -99,8 +99,9 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "tagger")
         {
-            // tagger 상태에서는 열리면 안 되므로 통전하지 않는다. 색상은 변경하지 않는다.
-            SolenoidOff();
+            NeopixelSet(purple);   // tagger - 네오픽셀 전체 보라색(고정)
+            SolenoidOff();         // tagger 상태에서는 열리면 안 되므로 통전하지 않는다.
+            NeoFunc = NeoNo;
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {

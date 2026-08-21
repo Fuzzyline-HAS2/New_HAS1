@@ -113,6 +113,7 @@ void NeopixelSet(int color[3]);
 void ApplyBrightness(int raw);
 void SetBrightness(int pct);
 void lightColor(Adafruit_NeoPixel &pixels, int color[3], int index);
+void NeoBlinkPurple(int times);  // tagger 상태에서 태그 시 "사용 불가" 알림으로 보라색 점멸
 
 //=============================== Solenoid ================================
 void SolenoidInit();

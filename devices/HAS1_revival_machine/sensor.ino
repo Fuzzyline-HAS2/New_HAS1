@@ -131,6 +131,15 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
+  // tagger(사용 불가) 상태: 생존자든 유령이든 태그하면 역할 상관없이 보라색으로
+  // 3번 점멸만 하고(사용 불가 알림) 열리거나 서버로 아무것도 보내지 않는다.
+  if ((String)(const char *)my["device_state"] == "tagger")
+  {
+    Serial.println("[RFID] Tag while device_state=tagger - blink only, no action");
+    NeoBlinkPurple(3);
+    return;
+  }
+
   String game_state_now = (String)(const char *)my["game_state"];
 
   // setting 상태: 역할 조회 없이, 유효한 형식(G#P#)의 태그면 누구든 태그 즉시 연다.
@@ -247,6 +256,20 @@ bool RfidNsecTag(int sec)
     nsec_tag_num++;
   }
   return false;
+}
+
+// tagger 상태에서 태그됐을 때 "사용 불가" 알림으로 보라색을 짧게 점멸시킨 뒤,
+// tagger 상태의 기본 색(보라색 고정)으로 되돌린다.
+void NeoBlinkPurple(int times)
+{
+  int neoOff[3] = {0, 0, 0};
+  for (int i = 0; i < times; i++)
+  {
+    NeopixelSet(neoOff);
+    delay(150);
+    NeopixelSet(purple);
+    delay(150);
+  }
 }
 
 //******************************************* Neopixel Helpers *******************************************
