@@ -63,8 +63,14 @@ void WirePollMain() {
     if (wireCandidateCnt == wireStableCnt) return;
     if (millis() - wireCandidateSince < WIRE_DEBOUNCE_MS) return;
 
-    // wireStableCnt가 아직 미확정(-1)이면 delta=0으로 취급(최초 확정은 증감 알림 없이 절대값만 반영)
-    int delta = wireCandidateCnt - (wireStableCnt < 0 ? wireCandidateCnt : wireStableCnt);
+    // wireStableCnt가 아직 미확정(-1, WireResetTracking 직후)이면 서버가 현재 알고 있는 값
+    // (my["battery_pack"], 즉 마지막 폴링에서 받아온 값)을 기준으로 delta를 계산한다.
+    // 예전에는 이 경우 delta=0("+0")으로 고정했는데, 그러면 "서버 값과 실제 배선 수가 이미
+    // 어긋난 상태"(예: battery_max에서 임의로 device_state="activate"로 되돌아온 경우 —
+    // 서버는 3을 들고 있지만 실제 배선은 2개)에서 서버 값이 전혀 보정되지 않고, 다음 폴링에
+    // 그 잘못된 3이 다시 내려와 로컬 값을 덮어써 버리는 문제가 있었다.
+    int prevKnown = (wireStableCnt < 0 ? (int)my["battery_pack"] : wireStableCnt);
+    int delta = wireCandidateCnt - prevKnown;
     wireStableCnt = wireCandidateCnt;
     my["battery_pack"] = wireStableCnt;
     SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
