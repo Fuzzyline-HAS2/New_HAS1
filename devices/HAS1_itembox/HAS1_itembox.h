@@ -44,6 +44,8 @@ enum GameState {
     GAME_ITEM_FAIL_ANIM, // 배터리팩 초과 오류 연출 (LED: RED 점멸) → GAME_BOX_OPEN
     GAME_USED,           // 아이템 수령 완료, 모든 입력 차단 (LED: BLUE)
     GAME_DONE,           // 게임 종료 (repaired_all / win / lose), 모든 입력 차단 (LED: BLUE)
+    GAME_TAGGER,         // device_state=tagger. 보라색 상시 점등, 외부 태그(player/ghost) 대기 (모터 미관여)
+    GAME_TAGGER_ANIM,    // 태그 연출 (LED: PURPLE 점멸) → 완료 후 GAME_TAGGER 복귀
 };
 GameState gameState = GAME_DONE;  // setup()의 ChangeGameState(GAME_SETTING)으로 덮어씀
 
@@ -61,6 +63,8 @@ const char* GameStateName(GameState s) {
         case GAME_ITEM_FAIL_ANIM: return "ITEM_FAIL_ANIM";
         case GAME_USED:           return "USED";
         case GAME_DONE:           return "DONE";
+        case GAME_TAGGER:         return "TAGGER";
+        case GAME_TAGGER_ANIM:    return "TAGGER_ANIM";
     }
     return "?";
 }

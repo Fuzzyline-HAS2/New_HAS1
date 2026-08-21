@@ -25,6 +25,7 @@ void ChangeGameState(GameState next) {
         case GAME_CORRECT_ANIM:
         case GAME_WRONG_ANIM:
         case GAME_ITEM_FAIL_ANIM:
+        case GAME_TAGGER_ANIM:
             blinkCnt = 0;
             blinkR.periodMs = 50;   // 기본 주기 복원
             break;
@@ -85,6 +86,16 @@ void ChangeGameState(GameState next) {
             NeoSetAll(BLUE);
             boxOpen();
             break;
+        case GAME_TAGGER:
+            NeoSetAll(PURPLE);
+            pendingTagUser = "";  // role 조회 대기 상태 초기화 (모터는 관여하지 않음)
+            break;
+        case GAME_TAGGER_ANIM:
+            blinkCnt = 0;
+            ledOn    = false;
+            blinkR.periodMs = 250;  // 점멸 주기 250ms (ON 250ms + OFF 250ms = 0.5s/cycle)
+            blinkR.lastRun  = 0;    // 진입 즉시 첫 점멸
+            break;
     }
 
     gameState = next;
@@ -105,6 +116,8 @@ void GameUpdate() {
         case GAME_ITEM_FAIL_ANIM: ItemFailAnimState();  break;
         case GAME_USED:                                 break;  // 서버 이벤트 대기 (DataChanged)
         case GAME_DONE:                                 break;  // 종료 상태, 입력 차단
+        case GAME_TAGGER:         TaggerState();        break;
+        case GAME_TAGGER_ANIM:    TaggerAnimState();    break;
     }
 }
 
@@ -180,6 +193,7 @@ void DataChanged() {
         else if (ds == "repaired_all" ||
                  ds == "player_win"   ||
                  ds == "player_lose") ChangeGameState(GAME_DONE);
+        else if (ds == "tagger")      ChangeGameState(GAME_TAGGER);
         else if (ds == "github")      otaRequested = true;  // Core0으로 OTA 트리거 전달
         // "solving" : HAS1에서 미사용 (Core0/1 분리로 WiFi 타이머 불필요) — 수신 시 무시
         prevDeviceState = ds;
@@ -247,6 +261,38 @@ void ActivateState() {
     pendingTagUser = tagUser;
     WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴
     Log("GAME", "role request sent for: " + tagUser);
+}
+
+//---------------------------------------- GAME_TAGGER ----------------------------------------
+// device_state=tagger 상태. 보라색 상시 점등, 외부 태그(player/ghost) 시 오디오+전체 점멸 연출만
+// 수행한다 (모터 개폐는 관여하지 않음). role 조회는 ActivateState와 동일하게 Core0 Queue 경유.
+void TaggerState() {
+    // (A) role 조회 응답 대기 중 — 결과 폴링
+    if (pendingTagUser != "") {
+        String role = WifiPollPlayerRole();  // 논블로킹, Core0 미완료 시 ""
+        if (role == "player" || role == "ghost") {
+            Log("GAME", "tagger effect by " + pendingTagUser + " (" + role + ")");
+            pendingTagUser = "";
+            Mp3PlayLargeFolder(1, 6);          // 오디오 먼저 트리거
+            ChangeGameState(GAME_TAGGER_ANIM); // 그 다음 보라색 점멸 연출
+        } else if (role != "") {
+            Log("GAME", "tagger: non-target role ignored (" + role + ")");
+            pendingTagUser = "";
+        }
+        return;
+    }
+
+    // (B) 신규 태그 감지 → role 조회 요청 투입
+    if (!RfidTagPresent()) return;
+    uint8_t data[32];
+    if (!RfidReadTag(data)) return;
+
+    String tagUser = "";
+    for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+    Log("GAME", "tagger tag: " + tagUser);
+
+    pendingTagUser = tagUser;
+    WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴
 }
 
 //---------------------------------------- GAME_PUZZLE ----------------------------------------
@@ -354,4 +400,15 @@ void ItemFailAnimState() {
     if (ledOn) blinkCnt++;
     if (blinkCnt < 8) return;
     ChangeGameState(GAME_BOX_OPEN);
+}
+
+//---------------------------------------- GAME_TAGGER_ANIM ----------------------------------------
+// 태그 연출. blinkR.due(250ms)마다 전체 네오픽셀을 보라색<->꺼짐으로 토글, 2회 점멸 후 GAME_TAGGER 복귀.
+void TaggerAnimState() {
+    if (!blinkR.due) return;
+    ledOn = !ledOn;
+    NeoSetAll(ledOn ? PURPLE : BLACK);
+    if (ledOn) blinkCnt++;
+    if (blinkCnt < 2) return;
+    ChangeGameState(GAME_TAGGER);
 }
