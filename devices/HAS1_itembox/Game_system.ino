@@ -182,8 +182,10 @@ void DataChanged() {
         else if (gs == "activate") ChangeGameState(GAME_ACTIVATE);
         prevGameState = gs;
     }
-    // activate는 중복 수신이어도 항상 닫기
-    if (gs == "activate") boxClose();
+    // activate 단계(태그 대기 중)에서만 안전망으로 항상 닫기. gameState 조건 없이 gs만 보면
+    // USED/DONE/TAGGER처럼 박스가 일부러 열려 있어야 하는 상태(game_state는 계속 "activate"로
+    // 유지됨)까지 매 폴링마다 닫아버리게 된다 — tagger 중 모터가 닫히던 원인이 이것.
+    if (gs == "activate" && gameState == GAME_ACTIVATE) boxClose();
 
     // device_state: 개별 기기 명령 (언제든지 수신 가능)
     String ds = myDoc["device_state"] | "";
