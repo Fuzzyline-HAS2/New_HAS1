@@ -13,6 +13,27 @@
 #define _DONE_ITEMBOX_CODE_
 
 #include "library_and_pin.h"
+
+// Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
+// 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로
+// USB 시리얼 + Telnet 클라이언트 양쪽에 동시 출력된다 (기존 호출부는 수정 불필요).
+class TelnetDebugConsole : public Stream {
+public:
+  void begin(unsigned long baud);
+  int available() override;
+  int read() override;
+  int peek() override;
+  void flush() override;
+  size_t write(uint8_t data) override;
+  size_t write(const uint8_t *buffer, size_t size) override;
+};
+extern HardwareSerial HardwareDebugSerial;
+extern TelnetDebugConsole DebugSerial;
+#define Serial DebugSerial
+
+void TelnetInit(); // Telnet 서버 시작 — WiFi 연결 완료 후 호출 (telnet.ino)
+void TelnetRun();  // 클라이언트 접속/데이터 처리 — loop()에서 매 프레임 호출 (telnet.ino)
+
 const int rfid_num = 1; // 설치된 pn532의 개수
 
 //****************************************WIFI****************************************************************

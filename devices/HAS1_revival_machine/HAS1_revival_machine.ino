@@ -20,6 +20,7 @@ void TempleInit()
 {
   has2wifi.Setup("badland");
   has2wifi.Send((String)(const char *)my["device_name"], "esp_version", String(FIRMWARE_VER));
+  TelnetInit(); // Telnet 서버 시작 (WiFi 연결 완료 후) — 이후 Serial.* 출력은 telnet.ino로 미러링됨
   LogMemoryStats("Wi-Fi connected");
   BleAdvertiserInit();
   ota.setLogStream(Serial);
@@ -57,6 +58,7 @@ void setup()
  */
 void loop()
 {
+  TelnetRun(); // Telnet 클라이언트 접속/데이터 처리
   TimerRun();
   NeoFunc();
   if (activate_bool)

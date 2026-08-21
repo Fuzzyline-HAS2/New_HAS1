@@ -59,6 +59,8 @@ void setup() {
 
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
 
+    TelnetInit(); // Telnet 서버 시작 (WiFi 연결 완료 후) — 이후 Serial.* 출력은 telnet.ino로 미러링됨
+
     // OTA 진행 로그를 시리얼로 출력하도록 설정
     ota.setLogStream(Serial);
 
@@ -99,6 +101,7 @@ void setup() {
 // 블로킹(delay 등)을 최소화해 WiFi 통신·네오픽셀 갱신·엔코더 반영이 최대한 끊기지 않게 한다.
 // ---------------------------------------------------------------------------------
 void loop() {
+    TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
     EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영
     ptrCurrentMode();  // 현재 모드 함수 실행 (예: WaitFunc / RfidLoopMain / WirePollMain / StarterActivate)
     TimerRun();         // WifiTimer / GameTimer / BlinkTimer 갱신 — 인터벌이 도래하면 콜백 실행
