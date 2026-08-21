@@ -123,6 +123,12 @@ void DataChanged()
         // 서버가 임의로 보낸 battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로 재동기화한다.
         WireResetTracking();
         ptrCurrentMode = WirePollMain;
+        // tagger 등 직전 상태에서 바뀌어 있던 STARTER/DEVICESTATE/CIRCUIT을 activate 진입색(YELLOW,
+        // ActivateFunc() 기본 분기와 동일)으로 복원한다. GAUGE는 건드리지 않음 — WirePollMain이 실제
+        // 배선 개수를 확정하는 대로 곧바로 자체적으로 갱신되므로 여기서 미리 손대면 오히려 깜빡임만 생김.
+        NeoLightColor(STARTER, color[YELLOW]);
+        NeoLightColor(DEVICESTATE, color[YELLOW]);
+        NeoLightColor(CIRCUIT, color[YELLOW]);
       }
       else if((String)(const char*)my["device_state"] == "player_win"){
         ptrRfidMode = WaitFunc;

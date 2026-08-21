@@ -235,20 +235,27 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 void BatteryFinish()
 {
   // WirePollMain(배선 완충 감지)과 DataChanged(device_state=="battery_max" 수신)가 같은 충전
-  // 완료를 각각 감지해 둘 다 이 함수를 부를 수 있다 — 오디오/상태 재전송이 중복되지 않도록 가드.
+  // 완료를 각각 감지해 둘 다 이 함수를 부를 수 있어, 오디오/상태 재전송은 한 번만 실행되도록 가드한다.
   // 다음 충전 사이클은 WireResetTracking()이 이 플래그를 다시 풀어줌.
-  if (batteryFinishDone) return;
-  batteryFinishDone = true;
-
-  Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
-  has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
-  AllNeoOn(GREEN);
-  Serial.println("Battery Finish Func!");
+  // 단, 아래 LED/모드 복원(ptrCurrentMode = StarterActivate 등)은 가드 없이 매번 다시 적용한다 —
+  // 그렇지 않으면 tagger 등 다른 상태로 갔다가 서버가 device_state를 다시 "battery_max"로
+  // 되돌렸을 때 batteryFinishDone이 이미 true라 함수가 그냥 리턴해버려서 ptrCurrentMode가
+  // StarterActivate로 복귀하지 못하고 직전 상태(예: TaggerRfidLoop)에 멈춰 있게 된다.
+  if (!batteryFinishDone) {
+    batteryFinishDone = true;
+    Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
+    has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
+    Serial.println("Battery Finish Func!");
+  }
   encoderValue = 1;
   GameTimer.deleteTimer(gameTimerId);
   gameTimerCnt = 0;
   gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 재시작
-  AllNeoOn(BLUE);
+  // GAUGE는 스타터 진행률 표시로 넘어가므로 초록(완충 표시), 나머지 3개는 파랑으로 전환
+  NeoLightColor(GAUGE, color[GREEN]);
+  NeoLightColor(STARTER, color[BLUE]);
+  NeoLightColor(DEVICESTATE, color[BLUE]);
+  NeoLightColor(CIRCUIT, color[BLUE]);
   EncoderAttach();  // 엔코더 카운팅 시작 — 이제부터 손잡이를 돌리면 encoderValue가 증가함
   delay(100);
   ptrCurrentMode = StarterActivate; // 다음 loop부터 스타터 미니게임 루프로 전환
