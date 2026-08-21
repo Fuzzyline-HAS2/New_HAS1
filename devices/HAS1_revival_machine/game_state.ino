@@ -5,7 +5,7 @@
  */
 void SettingFunc()
 {
-    activate_bool = false;
+    activate_bool = true;  // setting 상태에서도 카드 태그를 감지해야 함(RfidLoop 활성화)
     ghost_opened_local = false;  // 다음 라운드를 위해 로컬 잠금 해제
     NeoFunc = NeoNo;
     NeopixelSet(white);
@@ -18,9 +18,9 @@ void SettingFunc()
 
 void ReadyFunc()
 {
-    activate_bool = false;
+    activate_bool = false;  // ready 상태에서는 태그 감지도 하지 않음
     NeopixelSet(red);   // ready - 네오픽셀 전체 빨간색(고정)
-    SolenoidPulse();
+    SolenoidOff();      // ready 상태는 통전하지 않음
     NeoFunc = NeoNo;    // 호흡 애니메이션 없음
 }
 
@@ -88,7 +88,7 @@ void DataChange()
         {
             ghost_opened_local = false;   // 재무장 → 로컬 잠금 해제(다음 ghost 태그 허용)
             NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
-            SolenoidPulse();
+            SolenoidOff();         // 재무장 신호일 뿐 태그 이벤트가 아니므로 통전하지 않음
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
         }
         else if ((String)(const char *)my["device_state"] == "open")
@@ -97,10 +97,10 @@ void DataChange()
             SolenoidOff();
             NeoFunc = NeoNo;
         }
-        else if ((String)(const char *)my["device_state"] == "show_time")
+        else if ((String)(const char *)my["device_state"] == "tagger")
         {
-            // 이전 on/off 상태와 무관하게 강제로 펄스. 색상은 변경하지 않는다.
-            SolenoidPulse();
+            // tagger 상태에서는 열리면 안 되므로 통전하지 않는다. 색상은 변경하지 않는다.
+            SolenoidOff();
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {

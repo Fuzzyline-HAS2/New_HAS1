@@ -131,8 +131,31 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
+  String game_state_now = (String)(const char *)my["game_state"];
+
+  // setting 상태: 역할 조회 없이, 유효한 형식(G#P#)의 태그면 누구든 태그 즉시 연다.
+  if (game_state_now == "setting")
+  {
+    if (ghost_opened_local || (String)(const char *)my["device_state"] == "open")
+    {
+      return;  // 이번 라운드에 이미 열림 처리됨 → 중복 태그 무시
+    }
+
+    Serial.println("[RFID] Setting tag - opening");
+
+    // 서버 반영 전이라도 로컬 래치로 즉시 잠가 중복 전송을 막는다.
+    ghost_opened_local = true;
+
+    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "open");
+
+    NeopixelSet(blue);
+    SolenoidPulse();
+    NeoFunc = NeoNo;
+    return;
+  }
+
   // activate 상태가 아니거나 이미 열린 상태(서버 확정 또는 로컬 래치)면 ghost 태그를 무시한다.
-  if ((String)(const char *)my["game_state"] != "activate" ||
+  if (game_state_now != "activate" ||
       (String)(const char *)my["device_state"] == "open" ||
       ghost_opened_local)
   {
@@ -196,7 +219,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   has2wifi.Send((String)(const char *)my["device_name"], "game_state", "activate");
 
   NeopixelSet(blue);   // ghost 태그로 열림 - 네오픽셀 전체 파란색(고정)
-  SolenoidOff();
+  SolenoidPulse();
   NeoFunc = NeoNo;
 }
 
