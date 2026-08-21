@@ -268,15 +268,28 @@ void ActivateState() {
 //---------------------------------------- GAME_TAGGER ----------------------------------------
 // device_state=tagger 상태. 보라색 상시 점등, 외부 태그(player/ghost) 시 오디오+전체 점멸 연출만
 // 수행한다 (모터 개폐는 관여하지 않음). role 조회는 ActivateState와 동일하게 Core0 Queue 경유.
+// 같은 태그를 오래 얹어 두면 RfidHalUpdate(200ms)가 계속 재읽기해서 아래 role 조회가 반복
+// 트리거되는데, 그때마다 사운드가 울리면 시끄럽다 — 마지막 연출 이후 이 시간(ms) 안에는
+// 다시 태그가 감지돼도 사운드/점멸을 재실행하지 않는다.
+#define TAGGER_EFFECT_COOLDOWN_MS 3000
+
 void TaggerState() {
+    static unsigned long lastEffectMs = 0 - TAGGER_EFFECT_COOLDOWN_MS; // 최초 태그는 바로 재생되도록
+
     // (A) role 조회 응답 대기 중 — 결과 폴링
     if (pendingTagUser != "") {
         String role = WifiPollPlayerRole();  // 논블로킹, Core0 미완료 시 ""
         if (role == "player" || role == "ghost") {
-            Log("GAME", "tagger effect by " + pendingTagUser + " (" + role + ")");
+            String taggedUser = pendingTagUser;
             pendingTagUser = "";
-            Mp3PlayLargeFolder(1, 6);          // 오디오 먼저 트리거
-            ChangeGameState(GAME_TAGGER_ANIM); // 그 다음 보라색 점멸 연출
+            if (millis() - lastEffectMs < TAGGER_EFFECT_COOLDOWN_MS) {
+                Log("GAME", "tagger effect skipped (cooldown): " + taggedUser);
+            } else {
+                Log("GAME", "tagger effect by " + taggedUser + " (" + role + ")");
+                lastEffectMs = millis();
+                Mp3PlayLargeFolder(1, 6);          // 오디오 먼저 트리거
+                ChangeGameState(GAME_TAGGER_ANIM); // 그 다음 보라색 점멸 연출
+            }
         } else if (role != "") {
             Log("GAME", "tagger: non-target role ignored (" + role + ")");
             pendingTagUser = "";
