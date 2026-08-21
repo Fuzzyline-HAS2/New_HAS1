@@ -171,12 +171,12 @@ void RfidLoopMain()
   }
 }
 
-// device_state == "showtime"일 때 ptrCurrentMode로 등록됨.
+// device_state == "tagger"일 때 ptrCurrentMode로 등록됨.
 // player/ghost 태그가 새로 리더 위에 올라올 때마다 안내 음원(1,9)을 먼저 재생한 뒤
 // 4개 스트립을 보라색으로 2회 점멸하고 보라색 상시 점등으로 복귀한다.
 // 같은 태그가 리더 위에 계속 얹혀 있는 동안 반복 재생되지 않도록(StarterActivate와 동일한 방식으로)
 // 새로 올라온 순간(lastTagState: false->true)에만 처리한다.
-void ShowtimeRfidLoop()
+void TaggerRfidLoop()
 {
   static bool lastTagState = false;
   uint8_t data[32];
@@ -185,11 +185,11 @@ void ShowtimeRfidLoop()
   if (tagOnReader && !lastTagState){
     String tagUser = "";
     for(int i = 0; i < 4; i++) tagUser += (char)data[i];
-    Serial.println("Showtime tag_user_data : " + tagUser);
+    Serial.println("Tagger tag_user_data : " + tagUser);
     has2wifi.Receive(tagUser);
     String role = (String)(const char*)tag["role"];
     if (role == "player" || role == "ghost"){
-      Serial.println("Showtime Tag: " + role);
+      Serial.println("Tagger Tag: " + role);
       Mp3PlayLargeFolderAndWait(1, 9); // 오디오 우선 재생
       AllNeoBlink(PURPLE, 2, 400);     // 그 다음 보라색 2회 점멸
       AllNeoOn(PURPLE);                // 점멸 종료 후 보라색 상시 점등으로 복귀

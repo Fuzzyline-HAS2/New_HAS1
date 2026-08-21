@@ -136,7 +136,7 @@ enum GainMode { GAIN_NEAR, GAIN_FAR };
 // StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
 bool RfidPresenceCheck();
 void RfidLoop(void);   // (프로토타입만 존재 — 실제 정의는 RfidLoopMain()이라는 이름으로 rfid.ino에 있음)
-void ShowtimeRfidLoop(void); // device_state == "showtime"일 때 ptrCurrentMode로 등록 — player/ghost 태그 시 오디오+보라색 점멸 (rfid.ino)
+void TaggerRfidLoop(void); // device_state == "tagger"일 때 ptrCurrentMode로 등록 — player/ghost 태그 시 오디오+보라색 점멸 (rfid.ino)
 void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프로토타입만 존재 — 실제 정의는 rfid.ino의 CheckingPlayers(uint8_t rfidData[32])와 시그니처가 다름, 미사용 프로토타입으로 보임)
 
 
