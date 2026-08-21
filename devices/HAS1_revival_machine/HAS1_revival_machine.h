@@ -118,6 +118,7 @@ void lightColor(Adafruit_NeoPixel &pixels, int color[3], int index);
 void SolenoidInit();
 void SolenoidOn();
 void SolenoidOff();
+void SolenoidPulse();  // 상태 전환 순간에만 SOLENOID_PULSE_MS만큼 짧게 통전 후 자동으로 끔
 
 void NeoBeforeTagger();
 void NeoTagger();

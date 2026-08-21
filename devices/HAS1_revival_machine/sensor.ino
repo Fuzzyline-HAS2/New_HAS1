@@ -289,6 +289,15 @@ void SolenoidOff()
   digitalWrite(SOLENOID_PIN, LOW);
 }
 
+// 평소엔 통전하지 않고, 잠금/해제가 바뀌는 순간에만 SOLENOID_PULSE_MS 동안 짧게 통전한다.
+// (래치 없는 솔레노이드를 계속 통전 상태로 유지하면 장시간 발열/소손 위험이 있어 도입)
+void SolenoidPulse()
+{
+  SolenoidOn();
+  delay(SOLENOID_PULSE_MS);
+  SolenoidOff();
+}
+
 //******************************************* Neopixel *******************************************
 void NeoNo()
 {

@@ -20,7 +20,7 @@ void ReadyFunc()
 {
     activate_bool = false;
     NeopixelSet(red);   // ready - 네오픽셀 전체 빨간색(고정)
-    SolenoidOn();
+    SolenoidPulse();
     NeoFunc = NeoNo;    // 호흡 애니메이션 없음
 }
 
@@ -88,7 +88,7 @@ void DataChange()
         {
             ghost_opened_local = false;   // 재무장 → 로컬 잠금 해제(다음 ghost 태그 허용)
             NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
-            SolenoidOn();
+            SolenoidPulse();
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
         }
         else if ((String)(const char *)my["device_state"] == "open")
@@ -99,8 +99,8 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "show_time")
         {
-            // 이전 on/off 상태와 무관하게 강제로 on. 색상은 변경하지 않는다.
-            SolenoidOn();
+            // 이전 on/off 상태와 무관하게 강제로 펄스. 색상은 변경하지 않는다.
+            SolenoidPulse();
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
