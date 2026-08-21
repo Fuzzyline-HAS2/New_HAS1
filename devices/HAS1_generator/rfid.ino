@@ -234,9 +234,14 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 // 엔코더 값/타이머를 리셋해 다음 단계인 스타터(StarterActivate) 모드로 전환한다.
 void BatteryFinish()
 {
+  // WirePollMain(배선 완충 감지)과 DataChanged(device_state=="battery_max" 수신)가 같은 충전
+  // 완료를 각각 감지해 둘 다 이 함수를 부를 수 있다 — 오디오/상태 재전송이 중복되지 않도록 가드.
+  // 다음 충전 사이클은 WireResetTracking()이 이 플래그를 다시 풀어줌.
+  if (batteryFinishDone) return;
+  batteryFinishDone = true;
+
+  Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
   has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
-  Mp3PlayLargeFolder(1, 3);  // device_state == "battery_max"
-  delay(10);
   AllNeoOn(GREEN);
   Serial.println("Battery Finish Func!");
   encoderValue = 1;

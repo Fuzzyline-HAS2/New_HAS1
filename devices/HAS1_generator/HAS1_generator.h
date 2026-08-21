@@ -54,8 +54,11 @@ void DataChanged();     // 서버 데이터(my)가 바뀔 때마다 호출되어
 void SettingFunc(void); // game_state == "setting" 진입 시 처리 (wifi.ino)
 void ActivateFunc(void);// game_state == "activate" 진입 시 처리 (wifi.ino)
 void ReadyFunc(void);   // game_state == "ready" 진입 시 처리 (wifi.ino)
+void SyncBatteryPackCur(); // WirePollMain()이 my["battery_pack"]을 로컬 갱신한 직후 호출 — DataChanged()의
+                            // 비교 기준값(cur)도 맞춰서 같은 변화가 다음 폴링에서 중복 처리되지 않게 함 (wifi.ino)
 
 bool receiveMineOn = false; // true인 동안은 DataChanged()가 서버 폴링 결과로 상태를 다시 덮어쓰지 않도록 막는 플래그
+bool batteryFinishDone = false; // BatteryFinish()가 이번 충전 사이클에 이미 실행됐는지 — 중복 호출(오디오/상태 재전송) 방지용. WireResetTracking()이 다음 사이클에서 재무장
 //****************************************Game System****************************************************************
 void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수 — loop()에서 매 프레임 호출됨 (예: WaitFunc, RfidLoopMain, WirePollMain, StarterActivate)
 void (*ptrRfidMode)();      //rfid모드 저장용 포인터 함수 — RFID 태그 인식 성공 시 호출됨 (예: WaitFunc, StartFinish)

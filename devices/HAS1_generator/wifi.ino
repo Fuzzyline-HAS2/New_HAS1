@@ -15,13 +15,24 @@
 // WifiTimer에 의해 주기적으로 호출됨 (has2wifi.Loop 콜백).
 // 직전에 저장해둔 값(cur)과 새로 받아온 값(my)을 비교해서, 바뀐 항목에 해당하는 처리만 수행한다.
 // 이런 "diff 후 처리" 방식 덕분에 서버 폴링이 반복되어도 같은 동작이 중복 실행되지 않는다.
+// JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
+// 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
+// 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다. JsonDocument는 크기에 상관없이
+// 대입/set()이 되므로 어떤 환경에서도 안전하다.
+// DataChanged()에서만 쓰던 함수-지역 static이었으나, WirePollMain()이 로컬에서 my를 직접
+// 갱신한 뒤 SyncBatteryPackCur()로 이 cur도 같이 맞춰줘야 해서 파일 스코프로 옮김.
+JsonDocument cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
+
+// WirePollMain()이 배선 변화를 감지해 my["battery_pack"]을 로컬에서 직접 갱신한 직후 호출됨.
+// cur도 함께 동기화해두지 않으면, 그 값이 그대로 서버에 반영되어 돌아온 다음 폴링에서
+// DataChanged()의 battery_pack 안전망 분기가 "서버에서 새로 바뀐 값"으로 착각해 게이지
+// 오디오(1,7)와 BatteryFinish()를 중복 실행시킨다 (배선 꽂을 때 오디오가 2번 나오던 원인).
+void SyncBatteryPackCur() {
+    cur["battery_pack"] = my["battery_pack"];
+}
+
 void DataChanged()
 {
-  // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
-  // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
-  // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다. JsonDocument는 크기에 상관없이
-  // 대입/set()이 되므로 어떤 환경에서도 안전하다.
-  static JsonDocument cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
 
   // 서버에서 받은 스타터 설정값 동기화 (0 이하인 값은 아직 세팅 전이라 판단해 무시)
   if((int)my["starter_encoder_unit"] > 0)  starterEncoderUnit  = (int)my["starter_encoder_unit"];
@@ -105,6 +116,13 @@ void DataChanged()
       }
       else if((String)(const char*)my["device_state"] == "starter_finish"){
         // (별도 처리 없음 — 상태 값만 존재, 실제 전환은 ActivateFunc 진입 시 device_state 검사로 처리됨)
+      }
+      else if((String)(const char*)my["device_state"] == "activate"){
+        // 서버가 device_state를 충전 이전 단계("activate")로 되돌린 경우 — game_state는 이미
+        // "activate"라 ActivateFunc()이 재호출되지 않으므로 여기서 직접 배선 폴링을 재개해,
+        // 서버가 임의로 보낸 battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로 재동기화한다.
+        WireResetTracking();
+        ptrCurrentMode = WirePollMain;
       }
       else if((String)(const char*)my["device_state"] == "player_win"){
         ptrRfidMode = WaitFunc;

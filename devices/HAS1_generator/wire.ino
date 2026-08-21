@@ -37,6 +37,7 @@ int WireCountPlugged() {
 void WireResetTracking() {
     wireCandidateCnt = -1;
     wireStableCnt = -1;
+    batteryFinishDone = false; // 새 충전 사이클 시작 — BatteryFinish()가 다시 한 번 실행되도록 재무장
 }
 
 // ptrCurrentMode로 등록되어 loop()마다 호출됨 (기존 RfidLoopMain 자리)
@@ -66,6 +67,7 @@ void WirePollMain() {
     int delta = wireCandidateCnt - (wireStableCnt < 0 ? wireCandidateCnt : wireStableCnt);
     wireStableCnt = wireCandidateCnt;
     my["battery_pack"] = wireStableCnt;
+    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
     has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
     BatteryPackSend();
     if (delta > 0) Mp3PlayLargeFolder(1, 7);  // 배선이 꽂혀 게이지가 늘어날 때만 재생 (빠질 때는 재생 안 함)
