@@ -80,3 +80,14 @@ void AllNeoOn(int neoColor){
   for (int i = 0; i < NeopixelNum; ++i)
     NeoLightColor(i, color[neoColor]);
 }
+
+// 4개 스트립 전체를 동시에 neoColor로 cnt회 점멸시킨다 (blocking: delay 사용).
+// NeoBlink가 스트립 하나만 대상으로 하는 것과 달리, AllNeoOn 대상 전체를 함께 점멸한다.
+void AllNeoBlink(int neoColor, int cnt, int blinkTime){
+  for(int i = 0; i < cnt; i++){
+    AllNeoOn(BLACK);
+    delay(blinkTime);
+    AllNeoOn(neoColor);
+    delay(blinkTime);
+  }
+}

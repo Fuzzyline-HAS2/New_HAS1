@@ -118,6 +118,14 @@ void DataChanged()
         AllNeoOn(RED);
         Mp3PlayLargeFolder(1, 1);  // TODO: PG_PLAYER_LOSE 음원 지정
       }
+      else if((String)(const char*)my["device_state"] == "showtime"){
+        // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/ghost 태그 시 보라색 점멸은 ShowtimeRfidLoop에서 처리
+        ptrRfidMode = WaitFunc;
+        ptrCurrentMode = ShowtimeRfidLoop;
+        GameTimer.deleteTimer(gameTimerId);
+        BlinkTimer.deleteTimer(blinkTimerId);
+        AllNeoOn(PURPLE);
+      }
       else if((String)(const char*)my["device_state"] == "github"){
         // 서버가 원격으로 OTA 업데이트를 트리거하는 채널
         Serial.println("[OTA] OTA 업데이트 요청 수신");
