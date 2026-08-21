@@ -222,8 +222,8 @@ void ChangeGameState(GameState next) {
             lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼 상태 동기화
             rfidLastSeenTime  = millis();
             EncoderEnable();   // HAL — 내부에서 attachInterrupt
+            GameEventSend("device_state", "solving");  // 서버에 퍼즐 진행 중 상태 보고
             break;
-            // "solving" 전송 없음 — HAS1은 Core0/1 분리로 WiFi 폴링 항상 유지
         case GAME_PAUSED:
             NeoSetAll(YELLOW);
             pauseStartTime = millis();
@@ -400,8 +400,9 @@ Core0: xQueueReceive(sendQueue)
      → has2wifi.Send(...)          // HTTP POST (블로킹 OK)
 ```
 
-> **"solving" 미사용**: 3호점에서는 퍼즐 중 `WifiTimer`를 끊기 위해 `"solving"` 상태를 서버에 전송했지만,
-> HAS1은 Core0/1 분리로 WiFi 폴링이 항상 유지되므로 타이머 중단 자체가 불필요하다.
+> **"solving" 송신**: 3호점에서는 퍼즐 중 `WifiTimer`를 끊기 위해 `"solving"` 상태를 서버에 전송했다.
+> HAS1은 Core0/1 분리로 WiFi 폴링이 항상 유지되므로 타이머 중단 목적은 불필요하지만, 서버가 퍼즐
+> 진행 상태를 파악할 수 있도록 GAME_PUZZLE 진입 시(ChangeGameState entry action) 그대로 전송한다.
 
 ### 6.5 `my` JSON 소유권 규칙
 

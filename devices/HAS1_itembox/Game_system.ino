@@ -57,6 +57,7 @@ void ChangeGameState(GameState next) {
             lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼 상태 동기화
             rfidLastSeenTime  = millis();                  // 태그 이탈 판정 기준 초기화
             EncoderEnable();
+            GameEventSend("device_state", "solving");      // 서버에 퍼즐 진행 중 상태 보고
             break;
         case GAME_PAUSED:
             NeoSetAll(YELLOW);
@@ -89,6 +90,7 @@ void ChangeGameState(GameState next) {
         case GAME_TAGGER:
             NeoSetAll(PURPLE);
             pendingTagUser = "";  // role 조회 대기 상태 초기화 (모터는 관여하지 않음)
+            answerCnt = 0;        // 퍼즐 도중 태거가 끼어든 경우 — 태거 종료 후 퍼즐은 처음부터 다시 시작
             break;
         case GAME_TAGGER_ANIM:
             blinkCnt = 0;
