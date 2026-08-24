@@ -181,7 +181,6 @@ void WaitFunc(){
 // game_state == "setting" 진입 시 호출 — 다음 라운드를 준비하며 모든 진행 상태를 초기값으로 되돌린다.
 void SettingFunc(void){
     Serial.println("SETTING");
-    Mp3PlayLargeFolder(1, 1);  // TODO: PG_PRE_TAGGER 음원 지정
     AllNeoOn(WHITE);
     encoderValue = 100;
     EncoderDetach();
@@ -234,7 +233,6 @@ void ActivateFunc(void){
 void ReadyFunc(void){
     Serial.println("READY");
     AllNeoOn(RED);
-    Mp3PlayLargeFolder(1, 1);  // TODO: PG_PRE_TAGGER 음원 지정
     EncoderDetach();
     GameTimer.deleteTimer(gameTimerId);
 
