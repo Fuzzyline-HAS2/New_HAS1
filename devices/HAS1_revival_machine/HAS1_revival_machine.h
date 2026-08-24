@@ -77,7 +77,7 @@ void CardChecking(uint8_t rfidData[32]);
 //=============================== Neopixel ===============================
 #define NUMPIXELS_TOP 24
 #define NUMPIXELS_MID 16
-#define NUMPIXELS_BOT 8
+#define NUMPIXELS_BOT 16
 Adafruit_NeoPixel pixels_top(NUMPIXELS_TOP, NEOPIXEL_TOP_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel pixels_mid(NUMPIXELS_MID, NEOPIXEL_MID_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel pixels_bot(NUMPIXELS_BOT, NEOPIXEL_BOT_PIN, NEO_GRB + NEO_KHZ800);
