@@ -40,16 +40,35 @@ void StarterActivate(){
         lastTagState = tagOnReader;
     }
 
-    // 게이지는 "칸"(엔코더 starterEncoderUnit당 1칸) 단위로만 변하므로
-    // 칸 수가 바뀌면 즉시 갱신하고, 그 외에는 500ms마다 재전송만 한다
-    // (깨진 프레임 자동 복구용). 전송 횟수를 줄이면 깨질 기회도 줄어든다.
-    static unsigned long lastGaugeUpdate = 0;
-    static int lastGaugeNeoCnt = -1;
+    // 게이지 목표 칸 수(gaugeNeoCnt)는 encoderValue/starterEncoderUnit으로 즉시 계산되지만,
+    // 화면에 실제로 보여주는 칸 수(displayedGaugeNeoCnt)는 목표치로 한 번에 점프하지 않고
+    // 최소 GAUGE_STEP_INTERVAL_MS마다 1칸씩만 쫓아가도록 애니메이션한다.
+    // starterEncoderUnit을 작게 잡으면(예: 1000) 손잡이를 살짝만 돌려도 그 사이 loop 판독
+    // 한 번에 여러 칸이 한꺼번에 넘어가버려("한 번에 2~3칸씩") 화면이 끊겨 보이는데, 목표치와
+    // 표시 칸 수를 분리해두면 실제로는 여러 칸이 한 번에 찼더라도 화면에는 한 칸씩 순차적으로
+    // 이어져 보인다.
+    // displayedGaugeNeoCnt는 함수-지역 static이 아니라 전역(HAS1_generator.h) — BatteryFinish()가
+    // 새 충전 사이클마다 -1로 리셋해줘야, 이전 라운드에 다 찼던 값이 새 라운드까지 남아있지 않는다.
+    const unsigned long GAUGE_STEP_INTERVAL_MS = 35; // 작을수록 더 즉각적, 클수록 더 부드러움
+    static unsigned long lastGaugeStepTime = 0;
+    static unsigned long lastGaugeRefresh = 0;
     int gaugeNeoCnt = encoderValue / starterEncoderUnit;
-    if (gaugeNeoCnt != lastGaugeNeoCnt || millis() - lastGaugeUpdate >= 500){
-        lastGaugeUpdate = millis();
-        lastGaugeNeoCnt = gaugeNeoCnt;
-        EncoderNeopixelOn(gaugeNeoCnt); // GAUGE 스트립에 진행률 표시
+    if (gaugeNeoCnt > NumPixels[GAUGE]) gaugeNeoCnt = NumPixels[GAUGE];
+
+    bool needRender = false;
+    if (displayedGaugeNeoCnt < 0){
+        displayedGaugeNeoCnt = gaugeNeoCnt;
+        needRender = true;
+    }
+    else if (displayedGaugeNeoCnt != gaugeNeoCnt && millis() - lastGaugeStepTime >= GAUGE_STEP_INTERVAL_MS){
+        lastGaugeStepTime = millis();
+        displayedGaugeNeoCnt += (displayedGaugeNeoCnt < gaugeNeoCnt) ? 1 : -1;
+        needRender = true;
+    }
+    // 변화가 없어도 500ms마다 재전송(깨진 프레임 자동 복구용)
+    if (needRender || millis() - lastGaugeRefresh >= 500){
+        lastGaugeRefresh = millis();
+        EncoderNeopixelOn(displayedGaugeNeoCnt); // GAUGE 스트립에 진행률 표시
     }
 
     // 태그가 없거나 player가 아니면 엔코더 카운팅을 멈추고 즉시 리턴 (부정 진행 방지).
@@ -68,8 +87,10 @@ void StarterActivate(){
         Serial.println("raw: " + String(encoderValue));
     }
 
-    // 게이지가 가득 찼으면(모든 칸 점등) 수리 완료 처리로 전환
-    if(gaugeNeoCnt >= NumPixels[GAUGE]){
+    // 게이지가 가득 찼으면(모든 칸 점등) 수리 완료 처리로 전환.
+    // displayedGaugeNeoCnt(화면에 실제로 다 찬 시점) 기준으로 판정해, 애니메이션이 목표치를
+    // 미처 다 따라잡기도 전에 완료 처리가 먼저 튀어나오지 않게 한다.
+    if(displayedGaugeNeoCnt >= NumPixels[GAUGE]){
         EncoderDetach();
         // SendCmd("page pgFixed");  // (Nextion 시절 잔재 — 현재 미사용)
         StartFinish();                              // 서버에 repaired 알림 및 다음 상태 전환

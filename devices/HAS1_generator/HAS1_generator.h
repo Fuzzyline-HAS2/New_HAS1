@@ -181,4 +181,11 @@ bool encoderAttached = false; // EncoderInit()에서 true로 전환 — 현재 P
 
 long encoderValue = 0;     //현재 엔코더 값 — starterEncoderUnit으로 나눈 값이 스타터 게이지 칸 수가 됨
 
+// StarterActivate()(Game_system.ino)가 GAUGE에 실제로 보여주는 칸 수 — 목표 칸 수(encoderValue/
+// starterEncoderUnit)로 한 번에 점프하지 않고 한 칸씩 애니메이션하기 위한 상태값. -1이면 "아직
+// 렌더링 전"으로 취급해 목표치로 즉시 맞춘다. BatteryFinish()가 새 충전 사이클마다 -1로 리셋한다
+// (리셋하지 않으면 이전 라운드에 다 찼던 값이 그대로 남아 새 라운드를 시작하자마자 완료 판정이
+// 나버림).
+int displayedGaugeNeoCnt = -1;
+
 #endif

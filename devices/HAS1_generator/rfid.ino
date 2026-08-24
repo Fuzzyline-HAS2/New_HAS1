@@ -255,6 +255,7 @@ void BatteryFinish()
     // 다시 불릴 때는 리셋하면 안 된다. tagger 중에도 GameTimer(wifi.ino)를 멈추지 않았으므로
     // encoderValue는 이미 그 시간만큼 자연스럽게 감소해 있고, 그 값을 그대로 이어받아야 한다.
     encoderValue = 1;
+    displayedGaugeNeoCnt = -1; // 이전 라운드에 다 찼던 표시값이 새 라운드로 넘어오지 않게 리셋
     gameTimerCnt = 0;
     GameTimer.deleteTimer(gameTimerId);
     gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 시작
