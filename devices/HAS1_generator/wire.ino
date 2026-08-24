@@ -54,9 +54,12 @@ void WireResetTracking() {
     my["battery_pack"] = wireCnt;
     SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
 
+    // GAUGE 갱신(BatteryPackSend)은 delta와 무관하게 항상 호출한다. tagger 등 다른 상태가
+    // GAUGE를 다른 색(예: 보라색)으로 덮어놓고 activate로 돌아왔을 때, 배선 개수 자체는
+    // 안 바뀌어(delta==0) 있으면 이 호출이 안 일어나서 엉뚱한 색이 그대로 남아있던 문제가 있었다.
+    BatteryPackSend();
     if (delta != 0) {
         has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
-        BatteryPackSend();
         if (delta > 0) Mp3PlayLargeFolder(1, 7);
     }
 
