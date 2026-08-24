@@ -74,7 +74,9 @@ void DataChanged()
       if((int)my["battery_pack"] > (int)cur["battery_pack"]) Mp3PlayLargeFolder(1, 7);  // 늘어날 때만 재생
       if((int)my["battery_pack"] == (int)my["max_battery_pack"]){
         receiveMineOn = true;
-        BatteryFinish();
+        // 이 안전망도 DataChanged()(has2wifi.Loop() 콜백) 안에서 실행되므로, 블로킹 오디오 재생+Send를
+        // 포함한 BatteryFinish()를 직접 부르지 않고 다음 loop 반복으로 미룬다.
+        ptrCurrentMode = BatteryFinish;
       }
     }
 
@@ -129,11 +131,9 @@ void DataChanged()
         NeoLightColor(CIRCUIT, color[YELLOW]);
         // 서버가 임의로 보낸(직전 라운드의) battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로
         // 즉시 재동기화한다. 이미 가득 꽂혀 있는 채로(예: battery_max에서 device_state만 "activate"로
-        // 되돌아온 경우) 재진입했다면, WirePollMain의 디바운스(최대 100ms)를 기다리지 않고
-        // 여기서 바로 완충 처리로 넘어간다.
-        if (WireResetTracking()){
-            BatteryFinish();
-        }
+        // 되돌아온 경우) 재진입했다면, WireResetTracking()이 ptrCurrentMode를 BatteryFinish로 바꿔서
+        // WirePollMain의 디바운스(최대 100ms)를 기다리지 않고 다음 loop에서 바로 완충 처리로 넘어간다.
+        WireResetTracking();
       }
       else if((String)(const char*)my["device_state"] == "player_win"){
         ptrRfidMode = WaitFunc;
@@ -214,7 +214,9 @@ void ActivateFunc(void){
         BlinkTimerStart(CIRCUIT, YELLOW); // 진행 중임을 알리기 위해 CIRCUIT 스트립을 노란색으로 점멸
     }
     else if((String)(const char*)my["device_state"] == "battery_max"){
-        BatteryFinish();
+        // ActivateFunc()은 has2wifi.Loop()의 콜백(DataChanged()) 안에서 호출되므로, 블로킹 오디오
+        // 재생+Send를 포함한 BatteryFinish()를 여기서 직접 부르지 않고 다음 loop 반복으로 미룬다.
+        ptrCurrentMode = BatteryFinish;
     }
     else{
         // device_state == "activate" (배선 충전 시작 전 기본 상태)
@@ -222,10 +224,9 @@ void ActivateFunc(void){
         // 배터리팩 충전은 더 이상 RFID 태그가 아니라 물리 배선 4개(WIRE_PIN_1~4)로 실시간 반영됨
         ptrCurrentMode = WirePollMain;
         // 서버가 들고 있던 my["battery_pack"]는 직전 라운드의 값일 수 있어 그대로 신뢰하지 않고,
-        // WireResetTracking()이 지금 이 순간의 실물 배선 개수로 즉시 재동기화한 결과로 판단한다.
-        if (WireResetTracking()){
-            BatteryFinish();
-        }
+        // WireResetTracking()이 지금 이 순간의 실물 배선 개수로 즉시 재동기화한다. 이미 최대치면
+        // WireResetTracking()이 ptrCurrentMode를 BatteryFinish로 바꿔서 다음 loop에서 처리한다.
+        WireResetTracking();
     }
 }
 

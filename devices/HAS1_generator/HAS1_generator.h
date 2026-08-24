@@ -168,7 +168,7 @@ void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프�
 // 배선 4개 감지로 배터리팩 충전 — 기존 RFID 태그 방식(BatteryPackCharge) 대체
 void WireInit();          // 배선 감지 핀 4개를 INPUT_PULLUP으로 설정 (wire.ino)
 int  WireCountPlugged();  // 현재 꽂혀 있는(LOW인) 배선 개수를 반환 (wire.ino)
-bool WireResetTracking(); // 충전 단계 (재)진입 시 호출 — 실물 배선 개수로 즉시 재동기화 후 이미 최대치인지 반환 (wire.ino)
+void WireResetTracking(); // 충전 단계 (재)진입 시 호출 — 실물 배선 개수로 즉시 재동기화. 이미 최대치면 ptrCurrentMode=BatteryFinish로 다음 loop에서 처리되게 함 (wire.ino)
 void WirePollMain();      // loop()에서 매 프레임 호출되어 배선 개수 변화를 디바운스 후 반영 (wire.ino)
 
 //****************************************ENCODER SETUP****************************************************************

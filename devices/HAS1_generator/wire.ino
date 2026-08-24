@@ -37,9 +37,13 @@ int WireCountPlugged() {
 // WIRE_DEBOUNCE_MS 뒤)에 맡겼는데, 그 사이 my["battery_pack"]는 여전히 직전 라운드의(서버가
 // 들고 있던) 값이라 호출부가 그 값만 보고 판단하면 실물 배선 수와 어긋난 채로 완충 처리를
 // 하거나(예: 배선을 뺐는데도 여전히 가득 찬 걸로 인식) 반대로 완충 판정이 누락되는 문제가 있었다.
-// 그래서 여기서 바로 실물 배선 개수를 읽어 my["battery_pack"]/서버/게이지까지 즉시 맞추고,
-// 이미 최대치인지 여부를 반환해 호출부가 곧바로 BatteryFinish() 여부를 결정할 수 있게 한다.
-bool WireResetTracking() {
+// 그래서 여기서 바로 실물 배선 개수를 읽어 my["battery_pack"]/서버/게이지까지 즉시 맞춘다.
+// 이미 최대치라면 BatteryFinish()를 직접 부르지 않고 ptrCurrentMode에 대입만 해둔다 — 이 함수는
+// 대개 has2wifi.Loop()의 콜백(DataChanged()) 안에서 실행되는데, BatteryFinish()는 블로킹 오디오
+// 재생(Mp3PlayLargeFolderAndWait)과 has2wifi.Send()를 포함하고 있어 콜백 안에서 곧바로 실행하면
+// 재진입 블로킹으로 와이파이 연결이 불안정해진다. ptrCurrentMode에 대입해두면 다음 loop() 반복에서
+// loop()가 콜백 밖의 컨텍스트로 안전하게 실행해준다(BatteryFinish도 void() 시그니처라 그대로 대입 가능).
+void WireResetTracking() {
     int wireCnt = WireCountPlugged();
     int prevKnown = (int)my["battery_pack"];
     int delta = wireCnt - prevKnown;
@@ -57,7 +61,9 @@ bool WireResetTracking() {
     }
 
     batteryFinishDone = false; // 새 충전 사이클 시작 — BatteryFinish()가 다시 한 번 실행되도록 재무장
-    return wireCnt >= (int)my["max_battery_pack"];
+    if (wireCnt >= (int)my["max_battery_pack"]) {
+        ptrCurrentMode = BatteryFinish;
+    }
 }
 
 // ptrCurrentMode로 등록되어 loop()마다 호출됨 (기존 RfidLoopMain 자리)
