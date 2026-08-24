@@ -56,13 +56,13 @@ void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     }
 }
 
-// TODO: Nextion 제거하면서 옮겨온 자리표시자 — 원래 Nextion 디스플레이에 표시하던 발전기 잔여 개수.
-// 지금은 무조건 (폴더1, 트랙1) 재생만 함 — 실제 음원 매핑 필요.
+// 남은 발전기 개수 안내 — 맞는 음원 트랙이 없어서(재생하면 StartFinish()가 직전에 튼 (1,4)
+// "수리 완료" 안내와 겹치거나 엉뚱한 (1,1) "수리 가능" 안내가 이어지던 문제가 있었음) 오디오 재생은
+// 하지 않고 로그만 남긴다.
 // my["left_generator"]가 1~5 범위를 벗어나면(아직 값이 세팅 안 됐거나 잘못된 값이면) 아무 것도 하지 않는다.
 void LeftGenerator() {
     int gen = (int)my["left_generator"];
     if (gen < 1 || gen > 5) return;
-    Mp3PlayLargeFolder(1, 1);
     Serial.println("left Generator " + String(gen));
 }
 
