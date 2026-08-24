@@ -32,12 +32,32 @@ int WireCountPlugged() {
     return cnt;
 }
 
-// ActivateFunc()이 배선 충전 단계로 들어갈 때마다 호출 — 이전 기억을 버리고
-// 다음 WirePollMain() 호출에서 실물 배선 상태로 강제 재동기화되게 함
-void WireResetTracking() {
-    wireCandidateCnt = -1;
-    wireStableCnt = -1;
+// ActivateFunc()/DataChanged()가 배선 충전 단계로 (재)진입할 때마다 호출.
+// 예전에는 여기서 디바운스 상태만 초기화하고 실제 재동기화는 다음 WirePollMain() 호출(최소
+// WIRE_DEBOUNCE_MS 뒤)에 맡겼는데, 그 사이 my["battery_pack"]는 여전히 직전 라운드의(서버가
+// 들고 있던) 값이라 호출부가 그 값만 보고 판단하면 실물 배선 수와 어긋난 채로 완충 처리를
+// 하거나(예: 배선을 뺐는데도 여전히 가득 찬 걸로 인식) 반대로 완충 판정이 누락되는 문제가 있었다.
+// 그래서 여기서 바로 실물 배선 개수를 읽어 my["battery_pack"]/서버/게이지까지 즉시 맞추고,
+// 이미 최대치인지 여부를 반환해 호출부가 곧바로 BatteryFinish() 여부를 결정할 수 있게 한다.
+bool WireResetTracking() {
+    int wireCnt = WireCountPlugged();
+    int prevKnown = (int)my["battery_pack"];
+    int delta = wireCnt - prevKnown;
+
+    wireCandidateCnt = wireCnt;
+    wireCandidateSince = millis();
+    wireStableCnt = wireCnt;
+    my["battery_pack"] = wireCnt;
+    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
+
+    if (delta != 0) {
+        has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
+        BatteryPackSend();
+        if (delta > 0) Mp3PlayLargeFolder(1, 7);
+    }
+
     batteryFinishDone = false; // 새 충전 사이클 시작 — BatteryFinish()가 다시 한 번 실행되도록 재무장
+    return wireCnt >= (int)my["max_battery_pack"];
 }
 
 // ptrCurrentMode로 등록되어 loop()마다 호출됨 (기존 RfidLoopMain 자리)

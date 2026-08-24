@@ -172,7 +172,7 @@ void RfidLoopMain()
 }
 
 // device_state == "tagger"일 때 ptrCurrentMode로 등록됨.
-// player/ghost 태그가 새로 리더 위에 올라올 때마다 안내 음원(1,9)을 먼저 재생한 뒤
+// player/revival 태그가 새로 리더 위에 올라올 때마다 안내 음원(1,9)을 먼저 재생한 뒤
 // 4개 스트립을 보라색으로 2회 점멸하고 보라색 상시 점등으로 복귀한다.
 // 같은 태그가 리더 위에 계속 얹혀 있는 동안 반복 재생되지 않도록(StarterActivate와 동일한 방식으로)
 // 새로 올라온 순간(lastTagState: false->true)에만 처리한다.
@@ -188,7 +188,7 @@ void TaggerRfidLoop()
     Serial.println("Tagger tag_user_data : " + tagUser);
     has2wifi.Receive(tagUser);
     String role = (String)(const char*)tag["role"];
-    if (role == "player" || role == "ghost"){
+    if (role == "player" || role == "revival"){
       Serial.println("Tagger Tag: " + role);
       Mp3PlayLargeFolderAndWait(1, 9); // 오디오 우선 재생
       AllNeoBlink(PURPLE, 2, 400);     // 그 다음 보라색 2회 점멸
@@ -199,10 +199,10 @@ void TaggerRfidLoop()
 }
 
 // 태그에서 읽어온 4바이트("GxPx" 형식의 그룹/플레이어 코드)를 문자열로 조립하고,
-// 서버(has2wifi.Receive)에 조회해 그 사용자의 역할(role: player/tagger/ghost)을 받아온 뒤 분기 처리한다.
+// 서버(has2wifi.Receive)에 조회해 그 사용자의 역할(role: player/tagger/revival)을 받아온 뒤 분기 처리한다.
 // - "MMMM" 태그는 스태프용 마스터 카드로, 태그되면 기기를 즉시 재부팅한다(디버깅/리셋용).
 // - role이 "player"인 경우에만 ptrRfidMode()를 호출해 실제 게임 진행(예: StartFinish)을 트리거한다.
-// - tagger/ghost/그 외 값은 로그만 남기고 별도 동작은 하지 않는다.
+// - tagger/revival/그 외 값은 로그만 남기고 별도 동작은 하지 않는다.
 void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 확인용
 {
   String tagUser = "";
@@ -220,8 +220,8 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
   else if((String)(const char*)tag["role"] == "tagger"){ // 3. 태그한 사용자가 플레이어고
     Serial.println("Tagger Tagged");
   }
-  else if((String)(const char*)tag["role"] == "ghost"){ // 3. 태그한 사용자가 플레이어고
-    Serial.println("Ghost Tagged");
+  else if((String)(const char*)tag["role"] == "revival"){ // 3. 태그한 사용자가 플레이어고
+    Serial.println("Revival Tagged");
   }
   else{
     Serial.println("Wrong TAG");
@@ -245,6 +245,11 @@ void BatteryFinish()
     batteryFinishDone = true;
     Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
+    // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
+    // 이걸 "새로 바뀐 값"으로 착각해 ActivateFunc()->BatteryFinish()를 또 호출하는 걸 막는다.
+    // (has2wifi.Loop() 콜백 안에서 이 함수가 불린 경우 — 예: activate 재진입으로 바로 완충 판정된 경우 —
+    // 이 중복 호출은 콜백 안에서 has2wifi.Send()를 재진입 호출하게 되어 와이파이 연결이 불안정해졌었다.)
+    receiveMineOn = true;
     Serial.println("Battery Finish Func!");
     // encoderValue/GameTimer 리셋도 최초 1회만 — tagger로 갔다가 battery_max로 되돌아와 이 함수가
     // 다시 불릴 때는 리셋하면 안 된다. tagger 중에도 GameTimer(wifi.ino)를 멈추지 않았으므로

@@ -7,7 +7,7 @@
 //
 // 진행 방식: 플레이어가 RFID 리더에 본인 카드를 올려둔 상태를 유지하면서 손잡이(엔코더)를 돌리면
 // encoderValue가 증가하고, starterEncoderUnit 단위로 게이지가 한 칸씩 찬다.
-// 카드를 떼거나 플레이어가 아닌(ghost 등) 카드가 올라오면 엔코더 카운팅을 멈춰(EncoderDetach)
+// 카드를 떼거나 플레이어가 아닌(revival 등) 카드가 올라오면 엔코더 카운팅을 멈춰(EncoderDetach)
 // 부정 진행을 막는다. 게이지가 가득 차면 StartFinish()를 호출해 수리 완료 처리로 넘어간다.
 // =================================================================================
 void StarterActivate(){
@@ -29,7 +29,7 @@ void StarterActivate(){
                     for(int i = 0; i < 4; i++) tagUser += (char)data[i];
                     has2wifi.Receive(tagUser); // 서버에 조회해 tag["role"]을 채움
                     isPlayerTagged = ((String)(const char*)tag["role"] == "player");
-                    Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Ghost Blocked");
+                    Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Revival Blocked");
                 } else {
                     isPlayerTagged = false;
                 }

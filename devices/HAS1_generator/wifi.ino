@@ -119,16 +119,21 @@ void DataChanged()
       }
       else if((String)(const char*)my["device_state"] == "activate"){
         // 서버가 device_state를 충전 이전 단계("activate")로 되돌린 경우 — game_state는 이미
-        // "activate"라 ActivateFunc()이 재호출되지 않으므로 여기서 직접 배선 폴링을 재개해,
-        // 서버가 임의로 보낸 battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로 재동기화한다.
-        WireResetTracking();
+        // "activate"라 ActivateFunc()이 재호출되지 않으므로 여기서 직접 배선 폴링을 재개한다.
         ptrCurrentMode = WirePollMain;
         // tagger 등 직전 상태에서 바뀌어 있던 STARTER/DEVICESTATE/CIRCUIT을 activate 진입색(YELLOW,
-        // ActivateFunc() 기본 분기와 동일)으로 복원한다. GAUGE는 건드리지 않음 — WirePollMain이 실제
-        // 배선 개수를 확정하는 대로 곧바로 자체적으로 갱신되므로 여기서 미리 손대면 오히려 깜빡임만 생김.
+        // ActivateFunc() 기본 분기와 동일)으로 복원한다. GAUGE는 건드리지 않음 — WireResetTracking()이
+        // 실제 배선 개수로 곧바로 갱신하므로 여기서 미리 손대면 오히려 깜빡임만 생김.
         NeoLightColor(STARTER, color[YELLOW]);
         NeoLightColor(DEVICESTATE, color[YELLOW]);
         NeoLightColor(CIRCUIT, color[YELLOW]);
+        // 서버가 임의로 보낸(직전 라운드의) battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로
+        // 즉시 재동기화한다. 이미 가득 꽂혀 있는 채로(예: battery_max에서 device_state만 "activate"로
+        // 되돌아온 경우) 재진입했다면, WirePollMain의 디바운스(최대 100ms)를 기다리지 않고
+        // 여기서 바로 완충 처리로 넘어간다.
+        if (WireResetTracking()){
+            BatteryFinish();
+        }
       }
       else if((String)(const char*)my["device_state"] == "player_win"){
         ptrRfidMode = WaitFunc;
@@ -143,7 +148,7 @@ void DataChanged()
         Mp3PlayLargeFolder(1, 1);  // TODO: PG_PLAYER_LOSE 음원 지정
       }
       else if((String)(const char*)my["device_state"] == "tagger"){
-        // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/ghost 태그 시 보라색 점멸은 TaggerRfidLoop에서 처리
+        // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/revival 태그 시 보라색 점멸은 TaggerRfidLoop에서 처리
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = TaggerRfidLoop;
         // GameTimer는 일부러 멈추지 않는다 — 스타터 진행 중(방치 감소 타이머가 이미 돌고 있던 경우)
@@ -216,9 +221,10 @@ void ActivateFunc(void){
         // device_state == "activate" (배선 충전 시작 전 기본 상태)
         Mp3PlayLargeFolder(1, 1);
         // 배터리팩 충전은 더 이상 RFID 태그가 아니라 물리 배선 4개(WIRE_PIN_1~4)로 실시간 반영됨
-        WireResetTracking();
         ptrCurrentMode = WirePollMain;
-        if((int)my["battery_pack"] == (int)my["max_battery_pack"]){
+        // 서버가 들고 있던 my["battery_pack"]는 직전 라운드의 값일 수 있어 그대로 신뢰하지 않고,
+        // WireResetTracking()이 지금 이 순간의 실물 배선 개수로 즉시 재동기화한 결과로 판단한다.
+        if (WireResetTracking()){
             BatteryFinish();
         }
     }

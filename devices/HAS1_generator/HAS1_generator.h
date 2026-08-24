@@ -160,7 +160,7 @@ enum GainMode { GAIN_NEAR, GAIN_FAR };
 // StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
 bool RfidPresenceCheck();
 void RfidLoop(void);   // (프로토타입만 존재 — 실제 정의는 RfidLoopMain()이라는 이름으로 rfid.ino에 있음)
-void TaggerRfidLoop(void); // device_state == "tagger"일 때 ptrCurrentMode로 등록 — player/ghost 태그 시 오디오+보라색 점멸 (rfid.ino)
+void TaggerRfidLoop(void); // device_state == "tagger"일 때 ptrCurrentMode로 등록 — player/revival 태그 시 오디오+보라색 점멸 (rfid.ino)
 void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프로토타입만 존재 — 실제 정의는 rfid.ino의 CheckingPlayers(uint8_t rfidData[32])와 시그니처가 다름, 미사용 프로토타입으로 보임)
 
 
@@ -168,7 +168,7 @@ void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프�
 // 배선 4개 감지로 배터리팩 충전 — 기존 RFID 태그 방식(BatteryPackCharge) 대체
 void WireInit();          // 배선 감지 핀 4개를 INPUT_PULLUP으로 설정 (wire.ino)
 int  WireCountPlugged();  // 현재 꽂혀 있는(LOW인) 배선 개수를 반환 (wire.ino)
-void WireResetTracking(); // 디바운스 추적 상태 초기화 — 충전 단계 진입 시 호출 (wire.ino)
+bool WireResetTracking(); // 충전 단계 (재)진입 시 호출 — 실물 배선 개수로 즉시 재동기화 후 이미 최대치인지 반환 (wire.ino)
 void WirePollMain();      // loop()에서 매 프레임 호출되어 배선 개수 변화를 디바운스 후 반영 (wire.ino)
 
 //****************************************ENCODER SETUP****************************************************************
