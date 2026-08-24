@@ -142,27 +142,17 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
 
   String game_state_now = (String)(const char *)my["game_state"];
 
-  // setting 상태: 역할 조회 없이, 유효한 형식(G#P#)의 태그면 누구든 태그 즉시 연다.
-  // device_state는 그대로 두고(서버에 open 전송 안 함) game_state=setting 상태를 유지한다.
+  // setting 상태: 역할 조회 없이, 유효한 형식(G#P#)의 태그면 누구든 태그할 때마다 연다.
+  // 색상은 흰색 그대로 유지하고, device_state/game_state 모두 setting 그대로 둔다(서버 전송 없음).
+  // 매번 다시 태그해도 또 열려야 하므로 중복 방지 래치를 걸지 않는다.
   if (game_state_now == "setting")
   {
-    if (ghost_opened_local)
-    {
-      return;  // 이번 라운드에 이미 열림 처리됨 → 중복 태그 무시
-    }
-
     Serial.println("[RFID] Setting tag - opening");
-
-    // 중복 펄스 방지용 로컬 래치 (서버로는 아무것도 보내지 않음)
-    ghost_opened_local = true;
-
-    NeopixelSet(blue);
     SolenoidPulse();
-    NeoFunc = NeoNo;
     return;
   }
 
-  // activate 상태가 아니거나 이미 열린 상태(서버 확정 또는 로컬 래치)면 ghost 태그를 무시한다.
+  // activate 상태가 아니거나 이미 열린 상태(서버 확정 또는 로컬 래치)면 revival 태그를 무시한다.
   if (game_state_now != "activate" ||
       (String)(const char *)my["device_state"] == "open" ||
       ghost_opened_local)
@@ -170,7 +160,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
-  // 태그한 사용자의 role을 읽어와 ghost 여부 확인.
+  // 태그한 사용자의 role을 읽어와 revival 여부 확인.
   // Receive가 성공 여부를 반환하지 않으므로, 매 시도 전 tag를 비우고
   // 응답 device_name이 실제 태그값과 같을 때만 성공으로 판정한다.
   const int tag_lookup_attempts = 3; // 최초 1회 + 재시도 2회
@@ -208,17 +198,18 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
 
   if (!tag_lookup_succeeded)
   {
-    Serial.println("[RFID] Tag lookup failed; ghost tag ignored");
+    Serial.println("[RFID] Tag lookup failed; revival tag ignored");
     return;
   }
 
-  if ((String)(const char *)tag["role"] != "ghost")
+  String tag_role = (String)(const char *)tag["role"];
+  if (tag_role != "revival")
   {
-    Serial.println("[RFID] Not a ghost tag; ignored");
+    Serial.printf("[RFID] Not a revival tag; ignored (role=\"%s\")\n", tag_role.c_str());
     return;
   }
 
-  Serial.println("[RFID] Ghost tagged - opening");
+  Serial.println("[RFID] Revival tagged - opening");
 
   // 서버 반영 전이라도 로컬 래치로 즉시 잠가 중복 전송을 막는다.
   ghost_opened_local = true;
@@ -226,8 +217,8 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   has2wifi.Send((String)(const char *)my["device_name"], "device_state", "open");
   has2wifi.Send((String)(const char *)my["device_name"], "game_state", "activate");
 
-  NeopixelSet(blue);   // ghost 태그로 열림 - 네오픽셀 전체 파란색(고정)
-  SolenoidPulse();
+  NeopixelSet(blue);   // revival 태그로 열림 - 네오픽셀 전체 파란색(고정)
+  SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // revival은 넉넉하게 5초 통전
   NeoFunc = NeoNo;
 }
 
@@ -334,12 +325,17 @@ void SolenoidOff()
   digitalWrite(SOLENOID_PIN, LOW);
 }
 
-// 평소엔 통전하지 않고, 잠금/해제가 바뀌는 순간에만 SOLENOID_PULSE_MS 동안 짧게 통전한다.
+// 평소엔 통전하지 않고, 잠금/해제가 바뀌는 순간에만 짧게 통전한다.
 // (래치 없는 솔레노이드를 계속 통전 상태로 유지하면 장시간 발열/소손 위험이 있어 도입)
 void SolenoidPulse()
 {
+  SolenoidPulse(SOLENOID_PULSE_MS);
+}
+
+void SolenoidPulse(unsigned long ms)
+{
   SolenoidOn();
-  delay(SOLENOID_PULSE_MS);
+  delay(ms);
   SolenoidOff();
 }
 
