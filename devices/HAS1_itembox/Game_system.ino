@@ -57,6 +57,7 @@ void ChangeGameState(GameState next) {
             lastButtonPressed = isEncoderButtonPressed();  // 진입 순간 버튼 상태 동기화
             rfidLastSeenTime  = millis();                  // 태그 이탈 판정 기준 초기화
             EncoderEnable();
+            displayedEncoderPos = -1;                       // 새 라운드마다 이전 위치에서 애니메이션 시작하지 않도록 즉시 동기화
             GameEventSend("device_state", "solving");      // 서버에 퍼즐 진행 중 상태 보고
             break;
         case GAME_PAUSED:
@@ -123,9 +124,19 @@ void GameUpdate() {
     }
 }
 
+// range 위에서 a→b의 부호 있는 최단 거리 (-range/2, range/2]
+static int ringDelta(int a, int b, int range) {
+    int d = ((b - a) % range + range) % range;
+    if (d > range / 2) d -= range;
+    return d;
+}
+static int ringDistance(int a, int b, int range) {
+    return abs(ringDelta(a, b, range));
+}
+
 // 엔코더 위치와 정답 거리에 따라 진동 세기 설정 — 게임 로직, HAL 호출만 함
 static void setVibrationByProximity(int answer, long encValue) {
-    int diff  = abs(answer - (int)encValue);
+    int diff  = ringDistance(answer, (int)encValue, ENCODER_RANGE);
     int aRange = modeValue[RANGE][ANSWER_RANGE];
     int vRange = modeValue[RANGE][VIBRATION_RANGE];
     int grade;
@@ -330,22 +341,33 @@ void PuzzleState() {
         return;
     }
 
-    long encValue = readEncoderValue();
-    NeoEncoderUpdate(encValue);
-    setVibrationByProximity(currentAnswer, encValue);
+    // 실제 회전이 아무리 빨라도 포인터는 POINTER_STEP_INTERVAL_MS마다 링 위에서 최단 방향으로
+    // 1칸씩만 이동 (StarterActivate의 displayedGaugeNeoCnt와 동일한 속도 캡 기법 + 링 방향 계산).
+    // 정답 판정·진동도 이 속도 제한된 위치를 기준으로 해서, 화면에 보이는 것과 판정이 항상 일치한다.
+    const unsigned long POINTER_STEP_INTERVAL_MS = 15; // 작을수록 최대 속도 빠름 (15ms=96칸/약1.44초)
+    int rawPos = (int)readEncoderValue();
+    if (displayedEncoderPos < 0) {
+        displayedEncoderPos = rawPos;
+    } else if (displayedEncoderPos != rawPos && millis() - lastPointerStepTime >= POINTER_STEP_INTERVAL_MS) {
+        lastPointerStepTime = millis();
+        int step = (ringDelta(displayedEncoderPos, rawPos, ENCODER_RANGE) > 0) ? 1 : -1;
+        displayedEncoderPos = (displayedEncoderPos + step + ENCODER_RANGE) % ENCODER_RANGE;
+    }
+    NeoEncoderUpdate(displayedEncoderPos);
+    setVibrationByProximity(currentAnswer, displayedEncoderPos);
 
     bool pressed      = isEncoderButtonPressed();
     bool justPressed  = pressed && !lastButtonPressed;
     lastButtonPressed = pressed;
     if (!justPressed) return;
 
-    int diff = abs(currentAnswer - (int)readEncoderValue());
+    int diff = ringDistance(currentAnswer, displayedEncoderPos, ENCODER_RANGE);
     if (diff < modeValue[RANGE][ANSWER_RANGE]) {
         answerCnt++;
         Log("GAME", "answer " + String(answerCnt) + "/" + String(modeValue[RANGE][ANSWER_CNT]) + " correct");
         ChangeGameState(GAME_CORRECT_ANIM);
     } else {
-        Log("GAME", "wrong (enc=" + String(readEncoderValue()) + " target=" + String(currentAnswer) + ")");
+        Log("GAME", "wrong (enc=" + String(displayedEncoderPos) + " target=" + String(currentAnswer) + ")");
         ChangeGameState(GAME_WRONG_ANIM);
     }
 }

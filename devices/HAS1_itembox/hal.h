@@ -30,6 +30,10 @@ bool RfidTagPresent();
 bool RfidReadTag(uint8_t data[32]);
 
 // ── Encoder ──────────────────────────────────────────────────────────────
+#define ENCODER_MAX 95
+#define ENCODER_MIN 0
+#define ENCODER_RANGE (ENCODER_MAX - ENCODER_MIN + 1)  // 링 전체 칸 수 (96)
+
 void EncoderInit();
 void EncoderHalUpdate();
 void EncoderEnable();

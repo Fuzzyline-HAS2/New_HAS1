@@ -87,6 +87,9 @@ Runnable rfidR    = { 200, 0, false };  // RfidHalUpdate   200ms
 int  answerCnt        = 0;
 bool lastButtonPressed = false;
 
+int displayedEncoderPos = -1;         // 속도 제한된 표시/판정용 위치. -1 = 아직 미초기화(퍼즐 진입 시 즉시 동기화)
+unsigned long lastPointerStepTime = 0;
+
 unsigned long rfidLastSeenTime  = 0;
 const unsigned long RFID_PUZZLE_TIMEOUT = 500;
 
