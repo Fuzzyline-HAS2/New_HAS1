@@ -9,6 +9,7 @@ void SettingFunc()
     NeoFunc = NeoNo;
     NeopixelSet(white);
     SolenoidOff();
+    SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);
 }
 
 /**
@@ -21,6 +22,7 @@ void ReadyFunc()
     NeopixelSet(red);   // ready - 네오픽셀 전체 빨간색(고정)
     SolenoidOff();      // ready 상태는 통전하지 않음
     NeoFunc = NeoNo;    // 호흡 애니메이션 없음
+    SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);
 }
 
 /**
@@ -37,6 +39,9 @@ void ActivateFunc()
 void ActivateRunOnce()
 {
     activate_bool = true;
+    // activate 상태(태그로 문이 열릴 수 있는 구간)에서만 폴링을 300ms로 좁혀
+    // device_state="open"이 반영되는 최악 지연을 2초에서 300ms로 줄인다.
+    SetWifiPollInterval(WIFI_POLL_INTERVAL_ACTIVATE_MS);
 }
 
 void DataChange()

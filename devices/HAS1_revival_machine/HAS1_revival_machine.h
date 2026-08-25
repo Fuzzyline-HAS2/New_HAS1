@@ -148,6 +148,7 @@ bool nsec_tag_bool;
 
 void TimerInit();
 void TimerRun();
+void SetWifiPollInterval(unsigned long ms);
 void RfidTimerAssess();
 void RfidTagTimerFunc();
 void WifiTimerFunc();

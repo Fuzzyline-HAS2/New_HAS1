@@ -1,8 +1,21 @@
 #include "HAS1_revival_machine.h"
 
+static unsigned long wifi_poll_interval_ms = WIFI_POLL_INTERVAL_DEFAULT_MS;
+
 void TimerInit()
 {
-  wifi_timer_id = wifi_timer.setInterval(2000, WifiTimerFunc);
+  wifi_timer_id = wifi_timer.setInterval(wifi_poll_interval_ms, WifiTimerFunc);
+}
+
+// SimpleTimer는 기존 타이머의 주기를 바꾸는 API가 없어서, 타이머를 지우고 같은 콜백으로
+// 다시 등록하는 방식으로 주기를 바꾼다. game_state가 activate로 바뀔 때만 짧게(300ms)
+// 좁혀서 device_state="open" 반영 지연을 줄이고, 벗어나면 기본(2초)으로 되돌려 서버 부하를 아낀다.
+void SetWifiPollInterval(unsigned long ms)
+{
+  if (ms == wifi_poll_interval_ms) return;
+  wifi_poll_interval_ms = ms;
+  wifi_timer.deleteTimer(wifi_timer_id);
+  wifi_timer_id = wifi_timer.setInterval(wifi_poll_interval_ms, WifiTimerFunc);
 }
 /**
  * @brief 타이머 동작
