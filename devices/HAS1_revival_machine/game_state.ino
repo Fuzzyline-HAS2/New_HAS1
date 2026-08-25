@@ -6,7 +6,6 @@
 void SettingFunc()
 {
     activate_bool = true;  // setting 상태에서도 카드 태그를 감지해야 함(RfidLoop 활성화)
-    ghost_opened_local = false;  // 다음 라운드를 위해 로컬 잠금 해제
     NeoFunc = NeoNo;
     NeopixelSet(white);
     SolenoidOff();
@@ -86,15 +85,14 @@ void DataChange()
     {
         if ((String)(const char *)my["device_state"] == "activate")
         {
-            ghost_opened_local = false;   // 재무장 → 로컬 잠금 해제(다음 ghost 태그 허용)
             NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
             SolenoidOff();         // 재무장 신호일 뿐 태그 이벤트가 아니므로 통전하지 않음
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
         }
         else if ((String)(const char *)my["device_state"] == "open")
         {
-            NeopixelSet(blue);   // ghost 태그로 열림 - 네오픽셀 전체 파란색(고정)
-            SolenoidOff();
+            NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
+            SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // 승인 확정 시점에 실제로 문을 연다
             NeoFunc = NeoNo;
         }
         else if ((String)(const char *)my["device_state"] == "tagger")

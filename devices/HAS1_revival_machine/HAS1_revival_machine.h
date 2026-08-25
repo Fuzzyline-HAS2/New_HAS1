@@ -146,13 +146,6 @@ int wifi_timer_id;
 int nsec_tag_num;
 bool nsec_tag_bool;
 
-//=========================== Open 잠금 ===========================
-// ghost 태그로 열림이 로컬에서 커밋된 순간 즉시 잠그는 로컬 래치.
-// device_state="open" 은 서버 왕복 후에야 반영되는데, 그 사이(서버 반영 지연 구간)에
-// ghost 태그를 다시 대면 device_state 가 아직 "open" 이 아니라 가드를 통과해 중복 전송이 발생한다.
-// 이 래치로 그 구간을 막고, device_state 가 "activate" 로 (재)전환될 때 해제한다.
-bool ghost_opened_local = false;
-
 void TimerInit();
 void TimerRun();
 void RfidTimerAssess();

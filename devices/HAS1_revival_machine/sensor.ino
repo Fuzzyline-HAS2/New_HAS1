@@ -152,74 +152,18 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
-  // activate 상태가 아니거나 이미 열린 상태(서버 확정 또는 로컬 래치)면 revival 태그를 무시한다.
+  // activate 상태가 아니거나 이미 열린 상태(서버 확정)면 태그를 무시한다.
   if (game_state_now != "activate" ||
-      (String)(const char *)my["device_state"] == "open" ||
-      ghost_opened_local)
+      (String)(const char *)my["device_state"] == "open")
   {
     return;
   }
 
-  // 태그한 사용자의 role을 읽어와 revival 여부 확인.
-  // Receive가 성공 여부를 반환하지 않으므로, 매 시도 전 tag를 비우고
-  // 응답 device_name이 실제 태그값과 같을 때만 성공으로 판정한다.
-  const int tag_lookup_attempts = 3; // 최초 1회 + 재시도 2회
-  const int tag_lookup_retry_delay_ms = 200;
-  bool tag_lookup_succeeded = false;
-
-  for (int attempt = 1; attempt <= tag_lookup_attempts; attempt++)
-  {
-    tag.clear();
-    Serial.printf("[RFID] Tag lookup attempt %d/%d: %s\n",
-                  attempt, tag_lookup_attempts, tagUser.c_str());
-    has2wifi.Receive(tagUser);
-
-    const char *received_device_name = (const char *)tag["device_name"];
-    if (received_device_name != nullptr && tagUser == received_device_name)
-    {
-      tag_lookup_succeeded = true;
-      Serial.printf("[RFID] Tag lookup success: %s\n", tagUser.c_str());
-      break;
-    }
-
-    if (received_device_name == nullptr || received_device_name[0] == '\0')
-    {
-      Serial.println("[RFID] Tag lookup failed: device_name missing");
-    }
-    else
-    {
-      Serial.printf("[RFID] Tag lookup mismatch: expected=%s, received=%s\n",
-                    tagUser.c_str(), received_device_name);
-    }
-
-    if (attempt < tag_lookup_attempts)
-      delay(tag_lookup_retry_delay_ms);
-  }
-
-  if (!tag_lookup_succeeded)
-  {
-    Serial.println("[RFID] Tag lookup failed; revival tag ignored");
-    return;
-  }
-
-  String tag_role = (String)(const char *)tag["role"];
-  if (tag_role != "revival")
-  {
-    Serial.printf("[RFID] Not a revival tag; ignored (role=\"%s\")\n", tag_role.c_str());
-    return;
-  }
-
-  Serial.println("[RFID] Revival tagged - opening");
-
-  // 서버 반영 전이라도 로컬 래치로 즉시 잠가 중복 전송을 막는다.
-  ghost_opened_local = true;
-
-  has2wifi.Send((String)(const char *)my["device_name"], "device_state", "open");
-  has2wifi.Send((String)(const char *)my["device_name"], "game_state", "activate");
-
-  NeopixelSet(blue);   // revival 태그로 열림 - 네오픽셀 전체 파란색(고정)
-  SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // revival은 넉넉하게 5초 통전
-  NeoFunc = NeoNo;
+  // 활성화 여부/역할(ghost·revival)/쿨다운/최초사용 여부는 모두 서버가 판단한다.
+  // 이 기기는 태그 이벤트만 전달하고, 통과 시 device_state="open"이 폴링으로
+  // 내려올 때(game_state.ino DataChange)에야 실제로 문을 연다.
+  Serial.println("[RFID] Tag detected - sending situation to server: " + tagUser);
+  has2wifi.Situation(tagUser, "revival_machine");
 }
 
 bool RfidNsecTag(int sec)
