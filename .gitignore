@@ -6,4 +6,5 @@ secrets.h
 devices/HAS1_itembox/scripts/secrets.py
 devices/HAS1_generator/scripts/secrets.py
 devices/HAS1_revival_machine/scripts/secrets.py
+devices/HAS1_altar/scripts/secrets.py
 __pycache__/
