@@ -12,7 +12,7 @@ void (*NeoFunc)() = NeoNo;
 void TelnetInit();
 void TelnetLoop();
 
-HAS2_Wifi has2wifi("http://172.30.1.43");
+HAS2_Wifi has2wifi("http://172.30.1.46:8080");
 
 SecureOTA ota(
   "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_altar/update.bin",
@@ -70,16 +70,9 @@ byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용�
 
 bool send_nfc_err = false;
 
-// 술래 활성화(pn532 태그) + 생명칩 투입/회전(IR+마이크로스위치) 대기 상태.
-// 어느 쪽이 먼저 일어나도 상관없이 나머지 하나를 무기한 대기(타임아웃 없음).
-bool tagger_tag_pending = false;    // pn532 태그(술래 확인)는 됐고 칩+회전 대기 중
-bool tagger_crank_pending = false;  // 칩+회전(마이크로스위치 확인)은 됐고 pn532 태그 대기 중
-String pending_tagger_device_name = "";
-
 void RfidInit(void);
 void RfidLoop(void);
 void CardChecking(uint8_t rfidData[32]);
-void ActivateTaggerWithChipDrop(); // 술래 태그 + 생명칩 투입/회전이 둘 다 확인됐을 때 호출
 
 //=============================== Neopixel ===============================
 // TODO 네오픽셀 개수 확인
@@ -101,6 +94,7 @@ int red[3] = {20, 0, 0};
 int yellow[3] = {20, 20, 0};
 int green[3] = {0, 20, 0};
 int purple[3] = {20, 0, 20};
+int purple_white[3] = {20, 10, 20}; // purple + white 중간톤 (blink 진입 시 side용)
 
 void applyBrightness();
 void lightColor(Adafruit_NeoPixel &pixels, int color[3]);
@@ -114,7 +108,6 @@ void NeoTagger();
 void NeoTaggerTag();
 void NeoAfterTagger();
 void NeoGaming();
-void NeoTaggerActivateGauge(); // blink: 술래 태그(활성화) 시 round+square가 아래->위로 차오르는 게이지
 void NeoChipGaugeBlink();      // blink: 생명칩 태그 시 round+square가 함께 차오르는 게이지
 void NeoChipBlinkActivate();   // activate: 생명칩 태그(+1) 시 round+square가 깜빡임
 void NeoTakenChip();

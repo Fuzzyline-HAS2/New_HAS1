@@ -31,12 +31,12 @@ void RfidInit(void)
   nfc.begin(); // nfc 함수 시작
   if (!(nfc.getFirmwareVersion()))
   {
-    Serial.println("!!!RFID 연결실패!!! - 계속 진행");
+    Serial.println("!!!RFID connect failed!!! - continuing anyway");
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
     return;
   }
   nfc.SAMConfig(); // configure board to read RFID tags
-  Serial.println("RFID 연결성공");
+  Serial.println("RFID connected successfully");
 }
 
 /**
@@ -53,13 +53,11 @@ void RfidLoop()
   {
     return;
   }
-  uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
-  uint8_t uidLength;                     // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
   uint8_t data[32];
-  char user_data[5];
   byte pn532_packetbuffer11[64];
   pn532_packetbuffer11[0] = 0x00;
   BREADCRUMB("RfidLoop:sendCmd");
+  bool tag_present = false;
   if (nfc.sendCommandCheckAck(pn532_packetbuffer11, 1))
   { // rfid 통신 가능한 상태인지 확인
     BREADCRUMB("RfidLoop:detectTarget");
@@ -67,8 +65,18 @@ void RfidLoop()
     {                                    // rfid에 tag 찍혔는지 확인용 //데이터 들어오면 uid정보 가져오기
       BREADCRUMB("RfidLoop:readPage");
       if (nfc.ntag2xx_ReadPage(7, data)) // ntag 데이터에 접근해서 불러와서 data행열에 저장
+      {
+        tag_present = true;
         CardChecking(data);
+      }
     }
+  }
+
+  // Tagger left the reader without inserting a chip - reset and ignore.
+  if (!tag_present && tag_active)
+  {
+    Serial.println("[RFID] Tag left reader - reset, ignored");
+    tag_active = false;
   }
   BREADCRUMB("RfidLoop:done");
 }
@@ -78,41 +86,16 @@ void RfidLoop()
  *
  * @param rfidData 태그된 NFC의 데이터
  */
-// 술래 활성화(pn532 태그) + 생명칩 투입/회전(IR+마이크로스위치), 둘 다 충족돼야 발동.
-// 어느 쪽이 먼저 일어나도 상관없이 나머지 하나를 무기한 대기한다(타임아웃 없음).
-// (tagger_tag_pending/tagger_crank_pending/pending_tagger_device_name은
-// game_state.ino의 DataChange()에서도 리셋해야 해서 HAS1_altar.h에 선언돼 있음)
-
-// 둘 다 충족된 순간 호출 — 술래 활성화 브로드캐스트 + 솔레노이드 개방을 함께 처리.
-void ActivateTaggerWithChipDrop()
-{
-  Serial.println("[Altar] 술래 태그 + 생명칩 확인 완료 -> 술래 활성화 + 솔레노이드 개방");
-
-  SolenoidPulse();
-
-  BREADCRUMB("CardChecking:taggerSend");
-  has2wifi.Send((String)(const char *)my["device_name"], "device_state", "activate");
-  has2wifi.Send(pending_tagger_device_name, "device_state", "activate");
-
-  String tagger_group = pending_tagger_device_name.substring(0, 2);
-  for (int i = 1; i < 9; ++i)
-  {
-    // TODO 전체 플레이어에게 술래 정보를 전달
-    String player_name = tagger_group + "P" + String(i);
-    Serial.println(player_name);
-    has2wifi.Send(player_name, "tagger_name", pending_tagger_device_name);
-  }
-
-  // 애니메이션은 delay()로 막지 않고 NeoFunc()가 매 loop마다 조금씩 진행시킨다
-  // (술래 활성화 처리 중에도 IrSensorLoop/MicroSwLoop가 계속 돌아야 하므로).
-  NeoFunc = NeoTaggerActivateGauge; // round + square(1,2)가 아래->위로 차오르는 게이지
-}
+// 술래 활성화(pn532 태그) + 생명칩 투입(IR센서), 둘 다 충족돼야 발동. 어느 쪽이
+// 먼저든 상관없이, 태그가 리더에 붙어있는 동안(tag_active) 칩이 감지되면 즉시
+// 성공 처리한다. device_state는 항상 "activate"로 고정 - 여기서 바꾸지 않는다.
+static bool tag_active = false;
+static unsigned long tag_start_time = 0;
 
 void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확인용
 {
   BREADCRUMB("CardChecking:recv");
   String tagUser = "";
-  static String cur_tag_user = "";
   for (int i = 0; i < 4; i++) // GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
   Serial.println("tag_user_data : " + tagUser);
@@ -120,23 +103,18 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기
   has2wifi.Receive(tagUser);
 
-  // 2. 술래인지, 플레이어인지 구분
-  if ((String)(const char *)my["game_state"] == "activate" && (String)(const char *)my["device_state"] == "blink" && (String)(const char *)tag["role"] == "tagger")
+  // 2. 술래 태그 확인 - device_state/서버 호출 없이 내부 플래그만 세운다.
+  // 태그가 계속 붙어있는 동안 반복 감지돼도(리더가 ~1초마다 다시 읽음) 한 번만 처리.
+  if ((String)(const char *)my["game_state"] == "activate" && (String)(const char *)tag["role"] == "tagger")
   {
-    if (tagger_crank_pending)
+    if (!tag_active)
     {
-      // 생명칩+회전은 이미 확인된 상태 -> 지금 태그로 완성
+      tag_active = true;
+      tag_start_time = millis();
       pending_tagger_device_name = (String)(const char *)tag["device_name"];
-      tagger_crank_pending = false;
-      ActivateTaggerWithChipDrop();
+      Serial.println("[Altar] Tagger tag detected, waiting for chip insertion: " + pending_tagger_device_name);
     }
-    else if (!tagger_tag_pending)
-    {
-      Serial.println("[Altar] 술래 태그 확인 -> 생명칩 투입+회전 대기");
-      pending_tagger_device_name = (String)(const char *)tag["device_name"];
-      tagger_tag_pending = true;
-    }
-    // 이미 tagger_tag_pending인 상태에서 또 태그되면(재태그) 대기 상태 유지, 무시.
+    // already tag_active -> do nothing, avoid re-running while tag stays on reader
   }
 
   if ((String)(const char *)tag["role"] == "tagger" && (int)tag["taken_chip"] > 0)
@@ -179,7 +157,7 @@ bool RfidNsecTag(int sec)
 
   if (nsec_tag_num >= sec && nsec_tag_bool)
   {
-    Serial.println("태그 성공");
+    Serial.println("Tag success");
     nsec_tag_timer.deleteTimer(nsec_tag_timer_id);
     nsec_tag_bool = false;
     nsec_tag_timer_id = nsec_tag_timer.setTimeout(2000, NsecTagTimerSuccessFunc);
@@ -328,42 +306,6 @@ void NeoGaming()
   lightColor(pixels_square, gauge_purple); // square + square2
 }
 
-// blink: 술래 태그(활성화) 시 round + square(1,2)가 아래->위로 차오르는 게이지.
-// index가 0부터 커지는 방향이 물리적으로 "아래->위"라는 가정 — 실제로 반대면
-// 여기 step 계산만 (NUMPIXELS_ROUND - step)으로 뒤집으면 된다.
-void NeoTaggerActivateGauge()
-{
-  static int step = 0;
-  static unsigned long next_ms = 0;
-
-  if (millis() < next_ms) return;
-  next_ms = millis() + 50;
-
-  if (step == 0)
-  {
-    pixels_round.clear();
-    pixels_square.clear();
-    pixels_square2.clear();
-  }
-
-  lightColor(pixels_round, purple, step);
-  lightColor(pixels_square, purple, step * NUMPIXELS_SQUARE / NUMPIXELS_ROUND);
-
-  if (++step > NUMPIXELS_ROUND)
-  {
-    step = 0;
-    pixels_round.clear();
-    pixels_round.show();
-    pixels_square.clear();
-    pixels_square.show();
-    pixels_square2.clear();
-    pixels_square2.show();
-    // 곧 서버가 device_state="activate" 확정을 내려주면 DataChange()가
-    // NeoGaming으로 전환한다 — 그때까진 꺼둔다.
-    NeoFunc = NeoNo;
-  }
-}
-
 // blink: 생명칩 태그 시 round + square(1,2)가 비율 맞춰 함께 차오르는 게이지.
 // delay() 대신 NeoFunc()가 매 loop마다 한 칸씩만 진행시켜 논블로킹으로 동작한다.
 void NeoChipGaugeBlink()
@@ -505,11 +447,8 @@ void SolenoidPulse(unsigned long ms)
 }
 
 //****************************************** IR Sensor *******************************************
-// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. 여기서는 솔레노이드를 직접
-// 건드리지 않고 "칩이 들어왔다"는 대기 플래그만 세운다 — 실제 개방은 그 다음 마이크로
-// 스위치가 눌리는 시점에 MicroSwLoop()가 담당한다.
-static bool ir_chip_pending = false;
-
+// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. tag_active(태그가 리더에
+// 붙어있는 상태)일 때만 성공 처리 - 태그 없이 칩만 감지되면 노이즈로 무시한다.
 void IrSensorInit()
 {
   pinMode(IR_SENSOR_PIN, INPUT);
@@ -531,15 +470,37 @@ void IrSensorLoop()
     lockout_until_ms = millis() + IR_SENSOR_DEBOUNCE_MS;
     if (stable)
     {
-      Serial.println("[IrSensor] 생명칩 감지");
-      ir_chip_pending = true;
-      has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
+      if (tag_active)
+      {
+        Serial.println("[Altar] Tag + chip confirmed together -> success");
+        SolenoidPulse();
+        has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
+
+        String tagger_group = pending_tagger_device_name.substring(0, 2);
+        for (int i = 1; i < 9; ++i)
+        {
+          // TODO 전체 플레이어에게 술래 정보를 전달
+          String player_name = tagger_group + "P" + String(i);
+          has2wifi.Send(player_name, "tagger_name", pending_tagger_device_name);
+        }
+
+        // 애니메이션은 delay() 없이 NeoFunc()가 매 loop마다 조금씩 진행시킨다.
+        // device_state는 항상 "activate"라 이 연출 하나로 고정.
+        NeoFunc = NeoChipBlinkActivate;
+
+        tag_active = false;
+      }
+      else
+      {
+        Serial.println("[IrSensor] Chip detected but no active tag - ignored (noise)");
+      }
     }
   }
 }
 
 //****************************************** Micro Switch *****************************************
-// 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW)
+// 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
+// 솔레노이드와는 무관 - 딸깍 소리(MP3) 재생만 담당한다.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -547,18 +508,6 @@ void MicroSwInit()
 
 void MicroSwLoop()
 {
-  // TODO(임시 디버그): 딸깍이 왜 자주 안 잡히는지 확인용 — 디바운스/락아웃을 거치지 않고
-  // GPIO35 raw 값이 실제로 바뀔 때마다 무조건 찍는다. 원인 확인되면 이 블록은 제거할 것.
-  {
-    static bool debug_last_raw = false;
-    bool raw_now = (digitalRead(MICRO_SW_PIN) == LOW);
-    if (raw_now != debug_last_raw)
-    {
-      debug_last_raw = raw_now;
-      Serial.printf("[MicroSw][RAW] %s (t=%lu)\n", raw_now ? "LOW(눌림)" : "HIGH(안눌림)", millis());
-    }
-  }
-
   static bool stable = false;
   static unsigned long lockout_until_ms = 0;
 
@@ -571,35 +520,8 @@ void MicroSwLoop()
     lockout_until_ms = millis() + MICRO_SW_DEBOUNCE_MS;
     if (stable)
     {
-      Serial.println("[MicroSw] micro switch on");
+      Serial.println("[MicroSw] Click detected");
       Mp3PlayLargeFolder(1, 1); // 성공음 (임시 폴더1/파일1 — 실제 SD 구성 확정되면 교체)
-
-      // IR센서로 칩이 들어온 걸 이미 확인했을 때만 처리한다(빈 회전에는 반응 안 함).
-      if (ir_chip_pending)
-      {
-        ir_chip_pending = false;
-
-        if ((String)(const char *)my["device_state"] == "blink")
-        {
-          // blink(제단 활성화 대기) 중엔 술래 태그(pn532)까지 같이 확인돼야 문이 열린다.
-          if (tagger_tag_pending)
-          {
-            tagger_tag_pending = false;
-            ActivateTaggerWithChipDrop();
-          }
-          else
-          {
-            Serial.println("[MicroSw] 생명칩+회전 확인 -> 술래 태그 대기");
-            tagger_crank_pending = true;
-          }
-        }
-        else
-        {
-          // blink가 아닐 때(setting/activate 등)는 기존과 동일하게 즉시 개방.
-          Serial.println("[MicroSw] 생명칩 확인 -> 솔레노이드 개방");
-          SolenoidPulse();
-        }
-      }
     }
   }
 }

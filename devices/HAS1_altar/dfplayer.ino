@@ -17,11 +17,11 @@ void Mp3_Init()
     myDFPlayer.volume(30);
     myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
     myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
-    Serial.println("DFPlayer 연결성공");
+    Serial.println("DFPlayer connected successfully");
   }
   else
   {
-    Serial.println("!!!DFPlayer 연결실패!!! - 계속 진행");
+    Serial.println("!!!DFPlayer connect failed!!! - continuing anyway");
   }
 }
 

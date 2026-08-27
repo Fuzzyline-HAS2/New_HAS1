@@ -43,13 +43,13 @@ void WifiTimerFunc()
 
 void NsecTagTimerFailFunc()
 {
-  Serial.println("태그 실패");
+  Serial.println("Tag failed");
   nsec_tag_num = 0;
   nsec_tag_bool = false;
 }
 
 void NsecTagTimerSuccessFunc()
 {
-  Serial.println("태그 성공 후 2초");
+  Serial.println("Tag success, 2s elapsed");
   nsec_tag_num = 0;
 }

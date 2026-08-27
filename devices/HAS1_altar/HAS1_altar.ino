@@ -11,7 +11,6 @@
 #define FIRMWARE_VER 27
 #define PARTITION_VER 3
 #include "HAS1_altar.h"
-
 // loopTask 기본 스택(8KB)으로는 WiFi+BLE+RFID+DFPlayer+Neopixel x5 조합의 setup()
 // 호출 체인에서 스택 오버플로우(Stack canary watchpoint triggered)가 발생해 16KB로 증설.
 // arduino-esp32 core의 weak 심볼을 오버라이드하는 방식 (시그니처 반드시 일치해야 함).
@@ -27,8 +26,8 @@ size_t getArduinoLoopTaskStackSize(void)
 void TempleInit()
 {
   has2wifi.SetDebugPrint(&SerialMirror);  // 라이브러리 내부 로그도 Serial+Telnet 양쪽으로
-  // has2wifi.Setup("KT_GiGA_6C64", "ed46zx1198");                     j// 와이파이 세팅
-  has2wifi.Setup("badland");
+  has2wifi.Setup("badland_ruins", "Code3824@");                   // 와이파이 세팅
+  //has2wifi.Setup("badland");
   LogMemoryStats("Wi-Fi connected");
   TelnetInit();
   BleAdvertiserInit();

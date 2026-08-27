@@ -45,7 +45,7 @@ void DataChange()
 
     if (!device_name)
     {
-        Serial.println("[DataChange] 서버 데이터 없음, 스킵");
+        Serial.println("[DataChange] No server data yet, skipping");
         return;
     }
 
@@ -115,9 +115,8 @@ void DataChange()
         {
             NeoFunc = NeoTagger;
             activate_bool = true;
-            // 새 활성화 세션 시작 — 이전 세션에서 못 끝낸 대기 상태가 남아있지 않게 리셋.
-            tagger_tag_pending = false;
-            tagger_crank_pending = false;
+            // blink 진입 시 side를 보라+흰색 중간톤으로 한 번만 켜둔다(NeoTagger는 side를 안 건드림).
+            lightColor(pixels_side, purple_white);
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
