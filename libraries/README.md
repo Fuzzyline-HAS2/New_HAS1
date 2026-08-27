@@ -20,7 +20,7 @@ IDE로 개발할 때 편하게 쓰라고 넣어둔 **스냅샷 사본**이라, `
 ### 로컬 개발 환경 세팅
 
 Arduino IDE가 스케치북 `libraries/` 폴더에서 라이브러리를 찾으므로, 이 폴더를
-그쪽으로 복사(또는 심볼릭 링크)해야 한다:
+그쪽으로 복사해야 한다:
 
 ```powershell
 # 예시 (Windows, PowerShell)
@@ -29,3 +29,9 @@ Copy-Item -Recurse -Force "libraries\HAS2_Wifi" "$env:USERPROFILE\Documents\Ardu
 
 New_HAS1을 새로 clone했을 때 한 번 해주면 되고, 이 폴더가 나중에 업데이트되면 다시
 복사해줄 것.
+
+**주의**: 스케치북 `libraries/` 폴더엔 `HAS2_Wifi`라는 이름의 폴더가 하나만 있을 수
+있다. 한 컴퓨터에서 다른 매장(`third_store` 등) 장치도 같이 빌드한다면, 지금
+`libraries/HAS2_Wifi`에 어느 브랜치 사본이 들어있는지 확인하지 않고 그대로 쓰면 안
+된다 — New_HAS1 작업할 땐 반드시 이 저장소의 `first_store` 사본으로 되어 있는지
+확인할 것.
