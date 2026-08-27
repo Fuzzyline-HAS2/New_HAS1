@@ -29,7 +29,7 @@ void NeoNo();
 void (*NeoFunc)() = NeoNo;
 
 //================================ Wifi ==================================
-HAS2_Wifi has2wifi("http://172.30.1.43");
+HAS2_Wifi has2wifi("http://172.30.1.46:8080");
 
 SecureOTA ota(
   "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_revival_machine/update.bin",
