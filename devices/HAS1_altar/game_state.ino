@@ -101,10 +101,11 @@ void DataChange()
         if ((String)(const char *)my["device_state"] == "activate")
         {
             NeoFunc = NeoGaming;
-            // 태그 지점(pn532)은 activate 진입 시 한 번만 보라색으로 고정한다.
+            // 태그 지점(pn532)/side는 activate 진입 시 한 번만 보라색으로 고정한다.
             // NeoGaming() 안에서 매 loop마다 다시 켜면(반복 재전송) 깜빡여 보이는
             // 문제가 있어서, round/square 애니메이션과 분리해 여기서 한 번만 설정.
             lightColor(pixels_pn532, purple);
+            lightColor(pixels_side, purple);
         }
         else if ((String)(const char *)my["device_state"] == "player_win")
         {

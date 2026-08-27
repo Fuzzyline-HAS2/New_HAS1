@@ -116,7 +116,12 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       tag_start_time = millis();
       pending_tagger_device_name = (String)(const char *)tag["device_name"];
       Serial.println("[Altar] Tagger tag detected, waiting for chip insertion: " + pending_tagger_device_name);
-      Mp3PlayLargeFolder(1, 2); // 술래 활성화(태그 확인) 알림음
+      // (1,2)는 blink(술래 활성화 대기) 상태에서 태그될 때만 재생. activate(이미
+      // 활성화된 술래가 생명칩 바치는 루틴)일 때는 태그 자체는 조용히 처리.
+      if ((String)(const char *)my["device_state"] == "blink")
+      {
+        Mp3PlayLargeFolder(1, 2); // 술래 활성화(태그 확인) 알림음
+      }
     }
     // already tag_active -> do nothing, avoid re-running while tag stays on reader
   }
@@ -454,13 +459,16 @@ void SolenoidPulse(unsigned long ms)
 
 //****************************************** IR Sensor *******************************************
 // 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. 두 가지 독립된 일을 한다:
-// 1) ir_chip_pending = true - 솔레노이드 개방은 예전과 동일하게 그 다음 마이크로
-//    스위치가 돌아갈 때(MicroSwLoop) 처리 - 태그 여부와 무관하게 항상 동작.
+// 1) ir_chip_pending = true - 실제 솔레노이드 개방은 그 다음 마이크로스위치가
+//    돌아갈 때(MicroSwLoop) 처리한다. 단, 태그 없이 칩만 넣고 돌리면 열리면 안
+//    되므로, "이 칩이 태그 확인 상태에서 들어왔는지"를 ir_chip_tag_confirmed에
+//    같이 기록해뒀다가 MicroSwLoop에서 그걸로 개방 여부를 판단한다.
 // 2) tag_active(태그가 리더에 붙어있는 상태)면 태그+칩이 동시에 확인된 것이므로
 //    taken_chip 갱신/tagger_name 브로드캐스트/애니메이션을 여기서 바로 처리한다.
 //    성공음(1,1)만은 재생하지 않고 pending_success_sound로 남겨서, 실제로
 //    마이크로스위치까지 딸깍했을 때(칩이 물리적으로 떨어지는 순간) 재생한다.
 static bool ir_chip_pending = false;
+static bool ir_chip_tag_confirmed = false;
 static bool pending_success_sound = false;
 
 void IrSensorInit()
@@ -485,7 +493,10 @@ void IrSensorLoop()
     if (stable)
     {
       Serial.println("[IrSensor] Chip detected");
-      ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당(예전과 동일)
+      ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당
+      // 이 칩이 "role=tagger가 태그한 상태 + device_state=activate"에서 들어왔을
+      // 때만 나중에 솔레노이드가 열리도록 지금 시점 상태를 스냅샷해둔다.
+      ir_chip_tag_confirmed = tag_active && ((String)(const char *)my["device_state"] == "activate");
 
       if (tag_active)
       {
@@ -504,12 +515,17 @@ void IrSensorLoop()
         // device_state는 항상 "activate"라 이 연출 하나로 고정.
         NeoFunc = NeoChipBlinkActivate;
 
-        pending_success_sound = true; // 사운드는 마이크로스위치 클릭까지 대기
+        // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
+        // 마이크로스위치가 눌려도 재생하지 않는다.
+        if ((String)(const char *)my["device_state"] == "activate")
+        {
+          pending_success_sound = true; // 사운드는 마이크로스위치 클릭까지 대기
+        }
         tag_active = false;
       }
       else
       {
-        Serial.println("[IrSensor] No active tag - taken_chip/broadcast skipped (drop still works via MicroSw)");
+        Serial.println("[IrSensor] No active tag - taken_chip/broadcast skipped, solenoid won't open either");
       }
     }
   }
@@ -517,8 +533,9 @@ void IrSensorLoop()
 
 //****************************************** Micro Switch *****************************************
 // 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
-// 예전과 동일하게: IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외)
-// 솔레노이드를 짧게 연다(태그 여부 무관). pending_success_sound가 서있으면
+// IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외) 처리하되, 솔레노이드는
+// ir_chip_tag_confirmed(태그+activate 상태에서 들어온 칩)일 때만 실제로 연다 -
+// 태그 없이 칩만 넣고 돌리면 열리지 않는다. pending_success_sound가 서있으면
 // (태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
 void MicroSwInit()
 {
@@ -543,9 +560,17 @@ void MicroSwLoop()
 
       if (ir_chip_pending)
       {
-        Serial.println("[MicroSw] Chip confirmed -> solenoid open");
-        SolenoidPulse();
+        if (ir_chip_tag_confirmed)
+        {
+          Serial.println("[MicroSw] Tag + chip confirmed -> solenoid open");
+          SolenoidPulse();
+        }
+        else
+        {
+          Serial.println("[MicroSw] Chip present but no confirmed tag - solenoid stays closed");
+        }
         ir_chip_pending = false;
+        ir_chip_tag_confirmed = false;
 
         if (pending_success_sound)
         {
