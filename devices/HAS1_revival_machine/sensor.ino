@@ -159,10 +159,21 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
+  // is_open은 생명장치가 아니라 태그한 iotGlove 쪽 필드. 이미 true면(이 iotGlove가
+  // 생명장치를 이미 연 적 있으면) 서버로 보내지 않고 사용 불가로 처리한다.
+  has2wifi.Receive(tagUser);
+  if ((int)tag["is_open"] != 0)
+  {
+    Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
+    NeoBlinkPurple(3);
+    return;
+  }
+
   // 활성화 여부/역할(ghost·revival)/쿨다운/최초사용 여부는 모두 서버가 판단한다.
   // 이 기기는 태그 이벤트만 전달하고, 통과 시 device_state="open"이 폴링으로
   // 내려올 때(game_state.ino DataChange)에야 실제로 문을 연다.
   Serial.println("[RFID] Tag detected - sending situation to server: " + tagUser);
+  last_open_tag_user = tagUser;  // DataChange()에서 open 확정 시 이 iotGlove의 is_open을 true로 쓰기 위해 기억
   has2wifi.Situation(tagUser, "revival_machine");
 }
 
