@@ -250,8 +250,10 @@ void NeoBeforeTagger()
 
 void NeoTagger()
 {
-  ClearRound();
-  lightColor(pixels_square, white);
+  // ClearRound()는 버퍼만 지우고 show()를 안 불러서 이전 색(ready의 빨간색)이
+  // 화면에 그대로 남아있었다 - 흰색을 명시적으로 켜서 실제로 반영되게 한다.
+  lightColor(pixels_round, white);  // round + pn532
+  lightColor(pixels_square, white); // square + square2
 }
 
 void NeoTaggerTag()
@@ -450,8 +452,14 @@ void SolenoidPulse(unsigned long ms)
 }
 
 //****************************************** IR Sensor *******************************************
-// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. tag_active(태그가 리더에
-// 붙어있는 상태)일 때만 성공 처리 - 태그 없이 칩만 감지되면 노이즈로 무시한다.
+// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. 두 가지 독립된 일을 한다:
+// 1) ir_chip_pending = true - 물리적으로 칩이 들어왔다는 표시. 실제로 솔레노이드가
+//    열려 칩이 떨어지는 건 그 다음 마이크로스위치가 돌아갈 때(MicroSwLoop, 예전과
+//    동일한 방식) - 태그 여부와 무관하게 항상 동작.
+// 2) tag_active(태그가 리더에 붙어있는 상태)면 태그+칩이 동시에 확인된 것이므로
+//    taken_chip 갱신/tagger_name 브로드캐스트를 여기서 바로 처리한다.
+static bool ir_chip_pending = false;
+
 void IrSensorInit()
 {
   pinMode(IR_SENSOR_PIN, INPUT);
@@ -473,10 +481,12 @@ void IrSensorLoop()
     lockout_until_ms = millis() + IR_SENSOR_DEBOUNCE_MS;
     if (stable)
     {
+      Serial.println("[IrSensor] Chip detected");
+      ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당(예전과 동일)
+
       if (tag_active)
       {
         Serial.println("[Altar] Tag + chip confirmed together -> success");
-        SolenoidPulse();
         has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
 
         String tagger_group = pending_tagger_device_name.substring(0, 2);
@@ -495,7 +505,7 @@ void IrSensorLoop()
       }
       else
       {
-        Serial.println("[IrSensor] Chip detected but no active tag - ignored (noise)");
+        Serial.println("[IrSensor] No active tag - taken_chip/broadcast skipped (drop still works via MicroSw)");
       }
     }
   }
@@ -503,7 +513,8 @@ void IrSensorLoop()
 
 //****************************************** Micro Switch *****************************************
 // 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
-// 솔레노이드와는 무관 - 딸깍 소리(MP3) 재생만 담당한다.
+// 예전과 동일하게: IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외)
+// 솔레노이드를 짧게 연다. 태그 여부와는 무관.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -525,6 +536,13 @@ void MicroSwLoop()
     {
       Serial.println("[MicroSw] Click detected");
       Mp3PlayLargeFolder(1, 1); // 성공음 (임시 폴더1/파일1 — 실제 SD 구성 확정되면 교체)
+
+      if (ir_chip_pending)
+      {
+        Serial.println("[MicroSw] Chip confirmed -> solenoid open");
+        SolenoidPulse();
+        ir_chip_pending = false;
+      }
     }
   }
 }
