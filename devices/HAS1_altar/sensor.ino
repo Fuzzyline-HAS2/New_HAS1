@@ -454,12 +454,14 @@ void SolenoidPulse(unsigned long ms)
 
 //****************************************** IR Sensor *******************************************
 // 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. 두 가지 독립된 일을 한다:
-// 1) ir_chip_pending = true - 물리적으로 칩이 들어왔다는 표시. 실제로 솔레노이드가
-//    열려 칩이 떨어지는 건 그 다음 마이크로스위치가 돌아갈 때(MicroSwLoop, 예전과
-//    동일한 방식) - 태그 여부와 무관하게 항상 동작.
+// 1) ir_chip_pending = true - 솔레노이드 개방은 예전과 동일하게 그 다음 마이크로
+//    스위치가 돌아갈 때(MicroSwLoop) 처리 - 태그 여부와 무관하게 항상 동작.
 // 2) tag_active(태그가 리더에 붙어있는 상태)면 태그+칩이 동시에 확인된 것이므로
-//    taken_chip 갱신/tagger_name 브로드캐스트를 여기서 바로 처리한다.
+//    taken_chip 갱신/tagger_name 브로드캐스트/애니메이션을 여기서 바로 처리한다.
+//    성공음(1,1)만은 재생하지 않고 pending_success_sound로 남겨서, 실제로
+//    마이크로스위치까지 딸깍했을 때(칩이 물리적으로 떨어지는 순간) 재생한다.
 static bool ir_chip_pending = false;
+static bool pending_success_sound = false;
 
 void IrSensorInit()
 {
@@ -488,7 +490,6 @@ void IrSensorLoop()
       if (tag_active)
       {
         Serial.println("[Altar] Tag + chip confirmed together -> success");
-        Mp3PlayLargeFolder(1, 1); // 성공음 - 서버 전송보다 먼저 재생
         has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
 
         String tagger_group = pending_tagger_device_name.substring(0, 2);
@@ -503,6 +504,7 @@ void IrSensorLoop()
         // device_state는 항상 "activate"라 이 연출 하나로 고정.
         NeoFunc = NeoChipBlinkActivate;
 
+        pending_success_sound = true; // 사운드는 마이크로스위치 클릭까지 대기
         tag_active = false;
       }
       else
@@ -516,7 +518,8 @@ void IrSensorLoop()
 //****************************************** Micro Switch *****************************************
 // 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
 // 예전과 동일하게: IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외)
-// 솔레노이드를 짧게 연다. 태그 여부와는 무관.
+// 솔레노이드를 짧게 연다(태그 여부 무관). pending_success_sound가 서있으면
+// (태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -537,14 +540,18 @@ void MicroSwLoop()
     if (stable)
     {
       Serial.println("[MicroSw] Click detected");
-      // 소리는 여기서 재생 안 함 - 실제로 taken_chip이 +1 되는 순간(IrSensorLoop의
-      // tag_active 성공 분기)에만 재생하도록 옮김.
 
       if (ir_chip_pending)
       {
         Serial.println("[MicroSw] Chip confirmed -> solenoid open");
         SolenoidPulse();
         ir_chip_pending = false;
+
+        if (pending_success_sound)
+        {
+          Mp3PlayLargeFolder(1, 1); // 성공음 - 태그+IR+크랭크가 다 확인된 시점
+          pending_success_sound = false;
+        }
       }
     }
   }
