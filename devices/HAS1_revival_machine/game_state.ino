@@ -39,9 +39,8 @@ void ActivateFunc()
 void ActivateRunOnce()
 {
     activate_bool = true;
-    // activate 상태(태그로 문이 열릴 수 있는 구간)에서만 폴링을 300ms로 좁혀
-    // device_state="open"이 반영되는 최악 지연을 2초에서 300ms로 줄인다.
-    SetWifiPollInterval(WIFI_POLL_INTERVAL_ACTIVATE_MS);
+    // 폴링 주기는 game_state가 아니라 device_state == "activate" 여부로 결정한다
+    // (DataChange() 하단 device_state 분기 참고).
 }
 
 void DataChange()
@@ -93,18 +92,23 @@ void DataChange()
             NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
             SolenoidOff();         // 재무장 신호일 뿐 태그 이벤트가 아니므로 통전하지 않음
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
+            // 태그로 문이 열릴 수 있는 구간이므로 폴링을 300ms로 좁혀
+            // device_state="open" 반영 지연을 줄인다.
+            SetWifiPollInterval(WIFI_POLL_INTERVAL_ACTIVATE_MS);
         }
         else if ((String)(const char *)my["device_state"] == "open")
         {
             NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
             SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // 승인 확정 시점에 실제로 문을 연다
             NeoFunc = NeoNo;
+            SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 이미 확정됐으니 폴링 다시 완화
         }
         else if ((String)(const char *)my["device_state"] == "tagger")
         {
             NeopixelSet(purple);   // tagger - 네오픽셀 전체 보라색(고정)
             SolenoidOff();         // tagger 상태에서는 열리면 안 되므로 통전하지 않는다.
             NeoFunc = NeoNo;
+            SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 사용 불가 상태라 급하게 폴링할 필요 없음
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
