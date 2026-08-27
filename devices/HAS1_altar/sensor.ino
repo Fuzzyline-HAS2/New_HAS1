@@ -1,13 +1,49 @@
 #include "HAS1_altar.h"
 
 // 술래 활성화(pn532 태그) + 생명칩 투입(IR센서), 둘 다 충족돼야 발동. 어느 쪽이
-// 먼저든 상관없이, 태그가 리더에 붙어있는 동안(tag_active) 칩이 감지되면 즉시
-// 성공 처리한다. device_state는 항상 "activate"로 고정 - 여기서 바꾸지 않는다.
-// (RfidLoop보다 먼저 선언돼야 함 - Arduino는 함수 프로토타입만 자동 생성하고
-// 변수는 안 해줘서, 사용부보다 파일 앞쪽에 있어야 한다.)
+// 먼저든 상관없이(RFID는 ~1초마다만 폴링되므로 IR감지가 먼저 올 수도 있다) 나중에
+// 확인되는 쪽에서 성공 처리한다. device_state는 항상 "activate"로 고정 - 여기서
+// 바꾸지 않는다. (RfidLoop/CardChecking보다 먼저 선언돼야 함 - Arduino는 함수
+// 프로토타입만 자동 생성하고 변수는 안 해줘서, 사용부보다 파일 앞쪽에 있어야 한다.)
 static bool tag_active = false;
 static unsigned long tag_start_time = 0;
 static String pending_tagger_device_name = "";
+static bool ir_chip_pending = false;          // IR센서가 칩을 감지해서 크랭크 대기 중
+static bool ir_chip_tag_confirmed = false;    // 위 칩이 태그 확인 상태에서 들어온 것으로 확인됨
+static bool ir_chip_success_processed = false; // 이 칩(ir_chip_pending 세션)에 대해 RunAltarSuccess를 이미 실행했는지
+static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로스위치 클릭까지 대기
+// 술래가 훔친 칩을 반납하는 기존 메커닉(아래 두번째 분기)도 태그가 붙어있는 동안
+// 디바운스 없이 매초(RfidLoop 폴링 주기) 블로킹 HTTP 3개(has2wifi.Send)를 반복
+// 발사했었다 - 그동안 loop()가 막혀 MicroSw 클릭을 놓치는 원인이 됐다. 한 번만
+// 처리하도록 tag_active와 같은 방식으로 게이트.
+static bool chip_return_processed = false;
+
+// 태그+칩이 (순서 상관없이) 둘 다 확인된 순간 공통으로 처리 — taken_chip 갱신/
+// tagger_name 브로드캐스트/애니메이션. 실제 솔레노이드 개방 여부는 호출부에서
+// ir_chip_tag_confirmed로 별도 표시해두고 MicroSwLoop가 그걸 보고 결정한다.
+void RunAltarSuccess()
+{
+  Serial.println("[Altar] Tag + chip confirmed together -> success");
+  has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
+
+  String tagger_group = pending_tagger_device_name.substring(0, 2);
+  for (int i = 1; i < 9; ++i)
+  {
+    // TODO 전체 플레이어에게 술래 정보를 전달
+    String player_name = tagger_group + "P" + String(i);
+    has2wifi.Send(player_name, "tagger_name", pending_tagger_device_name);
+  }
+
+  // 애니메이션은 delay() 없이 NeoFunc()가 매 loop마다 조금씩 진행시킨다.
+  NeoFunc = NeoChipBlinkActivate;
+
+  // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
+  // 마이크로스위치가 눌려도 재생하지 않는다.
+  if ((String)(const char *)my["device_state"] == "activate")
+  {
+    pending_success_sound = true;
+  }
+}
 
 //****************************************** Initialize ******************************************
 void SensorInit()
@@ -87,6 +123,11 @@ void RfidLoop()
     Serial.println("[RFID] Tag left reader - reset, ignored");
     tag_active = false;
   }
+  // 태그가 리더에서 떠났으면 반납 처리 게이트도 같이 리셋 (다음에 다시 태그하면 재처리 가능해야 함).
+  if (!tag_present)
+  {
+    chip_return_processed = false;
+  }
   BREADCRUMB("RfidLoop:done");
 }
 
@@ -116,21 +157,30 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       tag_start_time = millis();
       pending_tagger_device_name = (String)(const char *)tag["device_name"];
       Serial.println("[Altar] Tagger tag detected, waiting for chip insertion: " + pending_tagger_device_name);
-      // (1,2)는 blink(술래 활성화 대기) 상태에서 태그될 때만 재생. activate(이미
-      // 활성화된 술래가 생명칩 바치는 루틴)일 때는 태그 자체는 조용히 처리.
-      if ((String)(const char *)my["device_state"] == "blink")
+
+      // 칩이 태그보다 먼저 감지돼서 이미 대기 중이었다면(RFID는 ~1초마다만 폴링돼서
+      // IR감지가 먼저 올 수 있음), 지금 태그로 뒤늦게 완성된 것 - 바로 성공 처리.
+      // (game_state=="activate"는 이미 위에서 확인됨 - device_state는 blink든
+      // activate든 상관없이 태그+칩+크랭크면 열려야 한다.)
+      // tag_active는 여기서 false로 되돌리지 않는다 - 태그는 여전히 리더에 붙어있고,
+      // 되돌리면 다음 폴링(~1초 뒤)에 "새로 태그됨"으로 오인해서 RunAltarSuccess가
+      // (블로킹 HTTP 9개와 함께) 매초 반복 발화하는 버그가 있었다.
+      if (ir_chip_pending && !ir_chip_success_processed)
       {
-        Mp3PlayLargeFolder(1, 2); // 술래 활성화(태그 확인) 알림음
+        ir_chip_tag_confirmed = true;
+        ir_chip_success_processed = true;
+        RunAltarSuccess();
       }
     }
     // already tag_active -> do nothing, avoid re-running while tag stays on reader
   }
 
-  if ((String)(const char *)tag["role"] == "tagger" && (int)tag["taken_chip"] > 0)
+  if (!chip_return_processed && (String)(const char *)tag["role"] == "tagger" && (int)tag["taken_chip"] > 0)
   {
     // if(RfidNsecTag(2))
     // {
     // 3. 태그한 사용자가 술래이면서 빼앗은 칩을 1개 이상 가지고 있다면
+    chip_return_processed = true; // 태그가 붙어있는 동안 반복 실행(블로킹 HTTP 반복 발사) 방지
     String altar_state = (String)(const char *)my["device_state"];
 
     BREADCRUMB("CardChecking:chipSend");
@@ -458,19 +508,10 @@ void SolenoidPulse(unsigned long ms)
 }
 
 //****************************************** IR Sensor *******************************************
-// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. 두 가지 독립된 일을 한다:
-// 1) ir_chip_pending = true - 실제 솔레노이드 개방은 그 다음 마이크로스위치가
-//    돌아갈 때(MicroSwLoop) 처리한다. 단, 태그 없이 칩만 넣고 돌리면 열리면 안
-//    되므로, "이 칩이 태그 확인 상태에서 들어왔는지"를 ir_chip_tag_confirmed에
-//    같이 기록해뒀다가 MicroSwLoop에서 그걸로 개방 여부를 판단한다.
-// 2) tag_active(태그가 리더에 붙어있는 상태)면 태그+칩이 동시에 확인된 것이므로
-//    taken_chip 갱신/tagger_name 브로드캐스트/애니메이션을 여기서 바로 처리한다.
-//    성공음(1,1)만은 재생하지 않고 pending_success_sound로 남겨서, 실제로
-//    마이크로스위치까지 딸깍했을 때(칩이 물리적으로 떨어지는 순간) 재생한다.
-static bool ir_chip_pending = false;
-static bool ir_chip_tag_confirmed = false;
-static bool pending_success_sound = false;
-
+// 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. ir_chip_pending을 세우고,
+// 이미 태그가 확인된 상태(tag_active)면 태그+칩이 (이 순서로) 동시에 확인된
+// 것이므로 RunAltarSuccess()로 성공 처리한다. 반대 순서(칩이 먼저 온 경우)는
+// CardChecking() 쪽에서 태그가 뒤늦게 확인될 때 처리한다.
 void IrSensorInit()
 {
   pinMode(IR_SENSOR_PIN, INPUT);
@@ -494,38 +535,22 @@ void IrSensorLoop()
     {
       Serial.println("[IrSensor] Chip detected");
       ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당
-      // 이 칩이 "role=tagger가 태그한 상태 + device_state=activate"에서 들어왔을
-      // 때만 나중에 솔레노이드가 열리도록 지금 시점 상태를 스냅샷해둔다.
-      ir_chip_tag_confirmed = tag_active && ((String)(const char *)my["device_state"] == "activate");
+      ir_chip_success_processed = false; // 새 칩 세션 시작
+      // 이 칩이 "role=tagger가 태그한 상태"에서 들어왔을 때만 나중에 솔레노이드가
+      // 열리도록 지금 시점 상태를 스냅샷해둔다 (device_state=blink/activate 무관 -
+      // tag_active 자체가 이미 game_state=="activate"를 전제로 함).
+      ir_chip_tag_confirmed = tag_active;
 
       if (tag_active)
       {
-        Serial.println("[Altar] Tag + chip confirmed together -> success");
-        has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
-
-        String tagger_group = pending_tagger_device_name.substring(0, 2);
-        for (int i = 1; i < 9; ++i)
-        {
-          // TODO 전체 플레이어에게 술래 정보를 전달
-          String player_name = tagger_group + "P" + String(i);
-          has2wifi.Send(player_name, "tagger_name", pending_tagger_device_name);
-        }
-
-        // 애니메이션은 delay() 없이 NeoFunc()가 매 loop마다 조금씩 진행시킨다.
-        // device_state는 항상 "activate"라 이 연출 하나로 고정.
-        NeoFunc = NeoChipBlinkActivate;
-
-        // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
-        // 마이크로스위치가 눌려도 재생하지 않는다.
-        if ((String)(const char *)my["device_state"] == "activate")
-        {
-          pending_success_sound = true; // 사운드는 마이크로스위치 클릭까지 대기
-        }
-        tag_active = false;
+        ir_chip_success_processed = true;
+        RunAltarSuccess();
+        // tag_active는 여기서 false로 되돌리지 않는다 - 태그는 여전히 리더에
+        // 붙어있고, 되돌리면 다음 폴링 때 재태그로 오인해 성공 처리가 반복된다.
       }
       else
       {
-        Serial.println("[IrSensor] No active tag - taken_chip/broadcast skipped, solenoid won't open either");
+        Serial.println("[IrSensor] No active tag yet - solenoid stays closed unless a tag catches up before the crank click");
       }
     }
   }
@@ -534,7 +559,8 @@ void IrSensorLoop()
 //****************************************** Micro Switch *****************************************
 // 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
 // IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외) 처리하되, 솔레노이드는
-// ir_chip_tag_confirmed(태그+activate 상태에서 들어온 칩)일 때만 실제로 연다 -
+// ir_chip_tag_confirmed(태그가 확인된 상태에서 들어온 칩 - blink/activate 무관)일
+// 때만 실제로 연다 -
 // 태그 없이 칩만 넣고 돌리면 열리지 않는다. pending_success_sound가 서있으면
 // (태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
 void MicroSwInit()
@@ -564,18 +590,22 @@ void MicroSwLoop()
         {
           Serial.println("[MicroSw] Tag + chip confirmed -> solenoid open");
           SolenoidPulse();
+          // 실제로 열렸을 때만 대기 상태를 소비한다 - 태그가 늦게 도착해서
+          // 아직 확인 안 된 채로 클릭이 먼저 지나가도(빈 회전 아님, 그냥 아직
+          // 대기 중) ir_chip_pending을 꺼버리면 나중에 태그가 와도 이미 늦어버림.
+          ir_chip_pending = false;
+          ir_chip_tag_confirmed = false;
+          ir_chip_success_processed = false;
+
+          if (pending_success_sound)
+          {
+            Mp3PlayLargeFolder(1, 1); // 성공음 - 태그+IR+크랭크가 다 확인된 시점
+            pending_success_sound = false;
+          }
         }
         else
         {
-          Serial.println("[MicroSw] Chip present but no confirmed tag - solenoid stays closed");
-        }
-        ir_chip_pending = false;
-        ir_chip_tag_confirmed = false;
-
-        if (pending_success_sound)
-        {
-          Mp3PlayLargeFolder(1, 1); // 성공음 - 태그+IR+크랭크가 다 확인된 시점
-          pending_success_sound = false;
+          Serial.println("[MicroSw] Chip present but no confirmed tag yet - keep waiting");
         }
       }
     }

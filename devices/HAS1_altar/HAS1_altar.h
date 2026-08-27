@@ -73,6 +73,7 @@ bool send_nfc_err = false;
 void RfidInit(void);
 void RfidLoop(void);
 void CardChecking(uint8_t rfidData[32]);
+void RunAltarSuccess(); // 태그+칩이 확인됐을 때 공통 처리 (순서 무관하게 CardChecking/IrSensorLoop에서 호출)
 
 //=============================== Neopixel ===============================
 // TODO 네오픽셀 개수 확인
