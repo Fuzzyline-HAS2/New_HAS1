@@ -102,14 +102,14 @@ jobs:
             "ESP32Encoder@5.0.0" \
             "EspSoftwareSerial@8.1.0"
 
-      - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi, SimpleTimer — 전부 public repo)
+      - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi, SimpleTimer)
         run: |
           LIB_DIR="$HOME/Arduino/libraries"
           mkdir -p "$LIB_DIR"
           git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
-          # TODO: first_store 브랜치가 Fuzzyline-HAS/libraries의 main으로 머지되면 --branch 옵션 제거할 것
-          git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
-          cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
+          # HAS2_Wifi는 New_HAS1(first_store) 전용으로 이 저장소 libraries/ 폴더에 내장돼 있음
+          # (공용 Fuzzyline-HAS/libraries의 main과는 갈라진 상태 - libraries/README.md 참고).
+          cp -r "$GITHUB_WORKSPACE/libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
           git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
           cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
           echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
