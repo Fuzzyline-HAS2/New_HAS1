@@ -107,7 +107,8 @@ jobs:
           LIB_DIR="$HOME/Arduino/libraries"
           mkdir -p "$LIB_DIR"
           git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
-          git clone --depth 1 https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
+          # TODO: first_store 브랜치가 Fuzzyline-HAS/libraries의 main으로 머지되면 --branch 옵션 제거할 것
+          git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
           cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
           git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
           cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"

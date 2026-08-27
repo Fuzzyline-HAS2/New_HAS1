@@ -25,9 +25,7 @@ size_t getArduinoLoopTaskStackSize(void)
  */
 void TempleInit()
 {
-  // has2wifi.SetDebugPrint(&SerialMirror); // CI가 클론하는 공개 HAS2_Wifi 라이브러리엔
-  // 아직 이 메서드가 없어서 컴파일이 깨짐(로컬 사본에만 있음) — 그 라이브러리 저장소에
-  // 반영되면 다시 켤 것.
+  has2wifi.SetDebugPrint(&SerialMirror);  // 라이브러리 내부 로그도 Serial+Telnet 양쪽으로
   has2wifi.Setup("badland_ruins", "Code3824@");                   // 와이파이 세팅
   //has2wifi.Setup("badland");
   LogMemoryStats("Wi-Fi connected");
