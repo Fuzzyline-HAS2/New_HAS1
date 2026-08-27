@@ -98,6 +98,10 @@ void DataChange()
         if ((String)(const char *)my["device_state"] == "activate")
         {
             NeoFunc = NeoGaming;
+            // 태그 지점(pn532)은 activate 진입 시 한 번만 보라색으로 고정한다.
+            // NeoGaming() 안에서 매 loop마다 다시 켜면(반복 재전송) 깜빡여 보이는
+            // 문제가 있어서, round/square 애니메이션과 분리해 여기서 한 번만 설정.
+            lightColor(pixels_pn532, purple);
         }
         else if ((String)(const char *)my["device_state"] == "player_win")
         {
@@ -111,6 +115,9 @@ void DataChange()
         {
             NeoFunc = NeoTagger;
             activate_bool = true;
+            // 새 활성화 세션 시작 — 이전 세션에서 못 끝낸 대기 상태가 남아있지 않게 리셋.
+            tagger_tag_pending = false;
+            tagger_crank_pending = false;
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
