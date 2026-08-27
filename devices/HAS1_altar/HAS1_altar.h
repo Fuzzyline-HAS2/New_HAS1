@@ -12,7 +12,7 @@ void (*NeoFunc)() = NeoNo;
 void TelnetInit();
 void TelnetLoop();
 
-HAS2_Wifi has2wifi("http://172.30.1.46:8080");
+HAS2_Wifi has2wifi("http://192.168.45.57:8080");
 
 SecureOTA ota(
   "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_altar/update.bin",
