@@ -1,5 +1,14 @@
 #include "HAS1_altar.h"
 
+// 술래 활성화(pn532 태그) + 생명칩 투입(IR센서), 둘 다 충족돼야 발동. 어느 쪽이
+// 먼저든 상관없이, 태그가 리더에 붙어있는 동안(tag_active) 칩이 감지되면 즉시
+// 성공 처리한다. device_state는 항상 "activate"로 고정 - 여기서 바꾸지 않는다.
+// (RfidLoop보다 먼저 선언돼야 함 - Arduino는 함수 프로토타입만 자동 생성하고
+// 변수는 안 해줘서, 사용부보다 파일 앞쪽에 있어야 한다.)
+static bool tag_active = false;
+static unsigned long tag_start_time = 0;
+static String pending_tagger_device_name = "";
+
 //****************************************** Initialize ******************************************
 void SensorInit()
 {
@@ -86,12 +95,6 @@ void RfidLoop()
  *
  * @param rfidData 태그된 NFC의 데이터
  */
-// 술래 활성화(pn532 태그) + 생명칩 투입(IR센서), 둘 다 충족돼야 발동. 어느 쪽이
-// 먼저든 상관없이, 태그가 리더에 붙어있는 동안(tag_active) 칩이 감지되면 즉시
-// 성공 처리한다. device_state는 항상 "activate"로 고정 - 여기서 바꾸지 않는다.
-static bool tag_active = false;
-static unsigned long tag_start_time = 0;
-
 void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확인용
 {
   BREADCRUMB("CardChecking:recv");
