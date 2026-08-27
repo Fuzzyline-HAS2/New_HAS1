@@ -107,9 +107,12 @@ jobs:
           LIB_DIR="$HOME/Arduino/libraries"
           mkdir -p "$LIB_DIR"
           git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
-          # HAS2_Wifi는 New_HAS1(first_store) 전용으로 이 저장소 libraries/ 폴더에 내장돼 있음
-          # (공용 Fuzzyline-HAS/libraries의 main과는 갈라진 상태 - libraries/README.md 참고).
-          cp -r "$GITHUB_WORKSPACE/libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
+          # Fuzzyline-HAS/libraries는 여러 저장소(다른 store들)가 공용으로 쓰고, 각자
+          # 자기 브랜치(New_HAS1=first_store, 다른 저장소=third_store 등)를 갖고 있다.
+          # CI는 항상 first_store의 최신 커밋을 새로 받아온다 (로컬 개발용 사본은
+          # libraries/HAS2_Wifi에 별도로 있음 - libraries/README.md 참고).
+          git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
+          cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
           git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
           cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
           echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
