@@ -107,7 +107,9 @@ void DataChange()
             // (is_open은 생명장치가 아니라 iotGlove 쪽 필드).
             if (last_open_tag_user.length())
             {
+                Serial.println("[GameState] device_state=open confirmed - marking is_open=1 for iotGlove: " + last_open_tag_user);
                 has2wifi.Send(last_open_tag_user, "is_open", "1");
+                Serial.println("[GameState] is_open=1 write request sent for: " + last_open_tag_user);
                 last_open_tag_user = "";
             }
         }
