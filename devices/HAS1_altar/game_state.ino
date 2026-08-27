@@ -49,7 +49,10 @@ void DataChange()
         return;
     }
 
-    static StaticJsonDocument<2048> cur;
+    // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
+    // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
+    // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다(다른 device들과 동일 이슈).
+    static JsonDocument cur;
 
     bool any_change = false;
 
