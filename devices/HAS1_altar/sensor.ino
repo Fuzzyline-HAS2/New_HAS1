@@ -116,6 +116,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       tag_start_time = millis();
       pending_tagger_device_name = (String)(const char *)tag["device_name"];
       Serial.println("[Altar] Tagger tag detected, waiting for chip insertion: " + pending_tagger_device_name);
+      Mp3PlayLargeFolder(1, 2); // 술래 활성화(태그 확인) 알림음
     }
     // already tag_active -> do nothing, avoid re-running while tag stays on reader
   }
@@ -487,6 +488,7 @@ void IrSensorLoop()
       if (tag_active)
       {
         Serial.println("[Altar] Tag + chip confirmed together -> success");
+        Mp3PlayLargeFolder(1, 1); // 성공음 - 서버 전송보다 먼저 재생
         has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
 
         String tagger_group = pending_tagger_device_name.substring(0, 2);
@@ -535,7 +537,8 @@ void MicroSwLoop()
     if (stable)
     {
       Serial.println("[MicroSw] Click detected");
-      Mp3PlayLargeFolder(1, 1); // 성공음 (임시 폴더1/파일1 — 실제 SD 구성 확정되면 교체)
+      // 소리는 여기서 재생 안 함 - 실제로 taken_chip이 +1 되는 순간(IrSensorLoop의
+      // tag_active 성공 분기)에만 재생하도록 옮김.
 
       if (ir_chip_pending)
       {
