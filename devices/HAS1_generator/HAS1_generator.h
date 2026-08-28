@@ -170,6 +170,7 @@ void WireInit();          // 배선 감지 핀 4개를 INPUT_PULLUP으로 설정
 int  WireCountPlugged();  // 현재 꽂혀 있는(LOW인) 배선 개수를 반환 (wire.ino)
 void WireResetTracking(); // 충전 단계 (재)진입 시 호출 — 실물 배선 개수로 즉시 재동기화. 이미 최대치면 ptrCurrentMode=BatteryFinish로 다음 loop에서 처리되게 함 (wire.ino)
 void WirePollMain();      // loop()에서 매 프레임 호출되어 배선 개수 변화를 디바운스 후 반영 (wire.ino)
+void WireTheftMonitorLoop(); // battery_max/starter_finish/repaired 단계에서도 배선이 빠지면 감지해 서버에 반영 (ptrCurrentMode와 무관하게 loop()에서 매 프레임 호출) (wire.ino)
 
 //****************************************ENCODER SETUP****************************************************************
 // 인터럽트(ISR) 대신 ESP32 하드웨어 펄스 카운터(PCNT) 사용

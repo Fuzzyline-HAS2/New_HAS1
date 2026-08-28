@@ -584,11 +584,19 @@ void MicroSwLoop()
     {
       Serial.println("[MicroSw] Click detected");
 
+      // setting 상태에서는 태그 확인이 애초에 불가능하므로(CardChecking의 tag_active는
+      // game_state=="activate"일 때만 세워짐), 역할 태그 없이 그냥 IR센서가 칩을
+      // 감지한 상태(ir_chip_pending)라면 마이크로스위치가 눌릴 때 바로 배출한다
+      // (스태프가 세팅 중 넣어본 생명칩을 태그 없이 다시 꺼낼 수 있어야 함).
+      bool setting_state = (String)(const char *)my["game_state"] == "setting";
+
       if (ir_chip_pending)
       {
-        if (ir_chip_tag_confirmed)
+        if (ir_chip_tag_confirmed || setting_state)
         {
-          Serial.println("[MicroSw] Tag + chip confirmed -> solenoid open");
+          Serial.println(setting_state
+              ? "[MicroSw] Setting mode - chip present, solenoid open (no tag needed)"
+              : "[MicroSw] Tag + chip confirmed -> solenoid open");
           SolenoidPulse();
           // 실제로 열렸을 때만 대기 상태를 소비한다 - 태그가 늦게 도착해서
           // 아직 확인 안 된 채로 클릭이 먼저 지나가도(빈 회전 아님, 그냥 아직

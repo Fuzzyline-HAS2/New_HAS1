@@ -111,3 +111,55 @@ void WirePollMain() {
         BatteryFinish();
     }
 }
+
+// =================================================================================
+// battery_max/starter_finish/repaired 단계 배선 감시
+// ---------------------------------------------------------------------------------
+// 이 세 device_state에서는 ptrCurrentMode가 WirePollMain이 아니어서(BatteryFinish/
+// StarterActivate/WaitFunc 등) 배선 폴링이 끊긴다. 그 틈에 이미 확정된 battery_pack의
+// 배선을 뽑아가도 감지가 안 되던 문제 - HAS1_generator.ino의 loop()에서 ptrCurrentMode와
+// 무관하게 매 프레임 호출해 이 세 상태에서만 감시를 이어간다.
+//
+// activate 충전 단계(WirePollMain)는 실시간성이 중요해 20ms 주기를 그대로 유지하지만,
+// 여기서는 "이미 확정된 battery_pack을 몰래 빼가는지"만 확인하면 되므로 1초 주기로 충분
+// 하다 — WirePollMain과는 별도의 게이트(theftLastSampleTime)를 써서 서로 영향을 주지
+// 않는다. 1초 간격이면 커넥터 접점의 기계식 채터링(수십 ms)은 이미 가라앉아 있으므로
+// WirePollMain 같은 별도 디바운스 단계 없이 바로 비교해도 된다.
+// device_state 비교도 String 대신 const char*+strcmp로 처리해 감시 대상이 아닌 상태에서는
+// 힙 할당이 없다. 서버 전송(has2wifi.Send)도 배선 개수가 실제로 바뀌었을 때만 호출되므로,
+// 아무도 배선을 안 건드리면 1초에 한 번 GPIO 4개 읽는 것 외에는 아무 통신도 일으키지 않는다.
+// =================================================================================
+static unsigned long theftLastSampleTime = 0;
+static int           theftStableCnt      = -1; // -1이면 감시 구간 재진입 시 my["battery_pack"] 기준으로 재동기화 필요
+
+void WireTheftMonitorLoop() {
+    const char* deviceState = (const char*)my["device_state"];
+    bool watch = deviceState && (
+        strcmp(deviceState, "battery_max") == 0 ||
+        strcmp(deviceState, "starter_finish") == 0 ||
+        strcmp(deviceState, "repaired") == 0);
+    if (!watch) {
+        theftStableCnt = -1; // 다음에 감시 구간에 들어올 때 그 시점의 my["battery_pack"]로 새로 기준을 잡는다
+        return;
+    }
+
+    if (millis() - theftLastSampleTime < 1000) return;
+    theftLastSampleTime = millis();
+
+    int wireCnt = WireCountPlugged();
+    if (theftStableCnt < 0) theftStableCnt = (int)my["battery_pack"]; // 감시 구간 진입 후 첫 확인 - 서버가 알고 있는 값을 기준으로 삼는다
+    if (wireCnt == theftStableCnt) return;
+
+    int delta = wireCnt - theftStableCnt;
+    theftStableCnt = wireCnt;
+    my["battery_pack"] = theftStableCnt;
+    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
+
+    Serial.print("[WireTheft] battery_pack changed during ");
+    Serial.print(deviceState);
+    Serial.print(": ");
+    Serial.println(delta);
+    has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
+    // 이 단계부터 GAUGE LED는 배터리 개수가 아니라 스타터 진행률/완료 표시로 의미가
+    // 바뀌어 있으므로(BatteryFinish 참고) BatteryPackSend()로 덮어쓰지 않는다.
+}
