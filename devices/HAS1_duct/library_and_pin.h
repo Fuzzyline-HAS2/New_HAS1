@@ -10,7 +10,6 @@
 #include <HAS2_Wifi.h>
 
 #include <Adafruit_NeoPixel.h>
-#include <Nextion.h>
 #include <Adafruit_PN532.h>
 #include <DFRobotDFPlayerMini.h>
 
