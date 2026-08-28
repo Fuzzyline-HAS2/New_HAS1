@@ -9,7 +9,7 @@
  *
  */
 
-#define FIRMWARE_VER 7
+#define FIRMWARE_VER 8
 #include "HAS1_tagmachine_main.h"
 // #include <esp_task_wdt.h>  // [WDT 비활성화]
 
