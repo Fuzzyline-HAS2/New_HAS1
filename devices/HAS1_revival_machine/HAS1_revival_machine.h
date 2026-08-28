@@ -62,6 +62,10 @@ Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
 
+// Situation() 전송 시점의 tagUser를 기억해뒀다가, 서버 승인으로 device_state="open"이
+// 확정되는 시점(game_state.ino DataChange)에 그 iotGlove의 is_open을 true로 기록하는 데 쓴다.
+String last_open_tag_user = "";
+
 bool send_nfc_err = false;
 
 // 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현) — GainMode는 currentGain 등

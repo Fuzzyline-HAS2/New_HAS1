@@ -102,6 +102,16 @@ void DataChange()
             SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // 승인 확정 시점에 실제로 문을 연다
             NeoFunc = NeoNo;
             SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 이미 확정됐으니 폴링 다시 완화
+
+            // 생존자가 생명장치를 열었으므로, 태그했던 iotGlove의 is_open을 true로 기록한다
+            // (is_open은 생명장치가 아니라 iotGlove 쪽 필드).
+            if (last_open_tag_user.length())
+            {
+                Serial.println("[GameState] device_state=open confirmed - marking is_open=1 for iotGlove: " + last_open_tag_user);
+                has2wifi.Send(last_open_tag_user, "is_open", "1");
+                Serial.println("[GameState] is_open=1 write request sent for: " + last_open_tag_user);
+                last_open_tag_user = "";
+            }
         }
         else if ((String)(const char *)my["device_state"] == "tagger")
         {
