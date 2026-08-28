@@ -157,7 +157,7 @@ void DuctKill()
         if ((String)(const char *)tag["role"] == "player")
         {
             Serial.println("Duct Kill!");
-            Mp3PlayLargeFolder(4, 3);
+            Mp3PlayLargeFolder(4, 1);
 
             // 덕트킬은 tagger("이로운 효과")와 완전히 동일하게 동작한다.
             // UI를 먼저 즉시 반영(EnterTaggerMode)한 뒤 서버에 device_state=tagger로 알린다.
