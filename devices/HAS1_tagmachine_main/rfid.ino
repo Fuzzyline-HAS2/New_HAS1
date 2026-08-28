@@ -119,7 +119,7 @@ void LoginTimerSelector(char role) {
       AllNeoOn(PURPLE);
       ReturnNormalState();
     } else {                          // 'P' 또는 'G' = 술래 외
-      NeoBlink(ROUND, RED, 3, 500);   // 적색 점멸 3초
+      NeoBlink(ROUND, PURPLE, 3, 500); // 보라색 점멸 3초
       AllNeoOn(PURPLE);               // 보라색 복귀
       ReturnNormalState();
     }

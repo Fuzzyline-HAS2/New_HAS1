@@ -260,6 +260,8 @@ void NewbieTaggerUnlockTimerFunc(){
             GhostDoorOpen();
             if(TaggerOverrideCheck()) return; // 연출 중 tagger 수신 시 lock으로 덮어쓰지 않음
             has2wifi.Send((String)(const char*)my["device_name"], "device_state", "lock");
+            my["device_state"] = "lock";  // NewbiePlayerOpen 참고: Send()는 로컬 my를 안 갱신하므로 직접 동기화
+            strCurState = "lock";
             AllNeoOn(GREEN);
             SubSerialFlush();
             MainSerialFlush();

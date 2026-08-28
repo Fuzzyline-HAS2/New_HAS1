@@ -38,6 +38,13 @@ void NewbiePlayerOpen() {
     GhostDoorOpen();
     if(TaggerOverrideCheck()) return; // 연출 중 tagger 수신 시 lock으로 덮어쓰지 않음
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "lock");
+    // Send()는 서버 전송만 하고 로컬 my를 갱신하지 않으며, 뒤이은 Loop(DataChanged)도
+    // shift_machine 플래그가 안 서면 my를 안 갱신한다. 그대로 두면 TaggerOverrideCheck의
+    // ReceiveMine()이 방금 보낸 "open"을 로컬 my에 남긴 채로 굳어버려, 다음 태그 판정
+    // (LoginTimerSelector)이 "lock"이 아닌 것으로 보고 일반 모드의 즉시 오픈 분기로 새어
+    // 타이머 없이 바로 문이 열리고 activate로 전송되는 버그가 난다.
+    my["device_state"] = "lock";
+    strCurState = "lock";
     AllNeoOn(GREEN);
     SubSerialFlush();
     MainSerialFlush();
@@ -55,6 +62,8 @@ void NewbieGhostOpen() {
     GhostDoorOpen();
     if(TaggerOverrideCheck()) return; // 연출 중 tagger 수신 시 lock으로 덮어쓰지 않음
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "lock");
+    my["device_state"] = "lock";  // NewbiePlayerOpen 참고: Send()는 로컬 my를 안 갱신하므로 직접 동기화
+    strCurState = "lock";
     AllNeoOn(GREEN);
     SubSerialFlush();
     MainSerialFlush();
