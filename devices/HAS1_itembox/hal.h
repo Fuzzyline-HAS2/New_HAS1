@@ -28,6 +28,7 @@ void RfidInit();
 void RfidHalUpdate();
 bool RfidTagPresent();
 bool RfidReadTag(uint8_t data[32]);
+bool RfidPeekTag(uint8_t data[32]);
 
 // ── Encoder ──────────────────────────────────────────────────────────────
 #define ENCODER_MAX 95

@@ -151,3 +151,11 @@ bool RfidReadTag(uint8_t data[32]) {
     rfid_dataReady = false;
     return true;
 }
+
+// RfidReadTag()와 동일하지만 소비 마킹을 하지 않는다 — 상태 무관 전역 체크(예: MMMM 관리자
+// 카드)가 내용만 훑어보고, 소비는 그 태그가 실제로 자신이 처리할 대상일 때만 하도록 하기 위함.
+bool RfidPeekTag(uint8_t data[32]) {
+    if (!rfid_dataReady) return false;
+    memcpy(data, rfid_tagData, 32);
+    return true;
+}

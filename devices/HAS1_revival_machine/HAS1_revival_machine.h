@@ -77,6 +77,7 @@ enum GainMode { GAIN_NEAR, GAIN_FAR };
 void RfidInit(void);
 void RfidLoop(void);
 void CardChecking(uint8_t rfidData[32]);
+void AdminCardPollReady(void);  // ready 상태(activate_bool=false) 전용 — MMMM 관리자 카드만 인식
 
 //=============================== Neopixel ===============================
 #define NUMPIXELS_TOP 24

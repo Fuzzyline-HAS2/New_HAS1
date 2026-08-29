@@ -222,6 +222,17 @@ void MmmmOpen()
     if (mmmm_open) return;
     mmmm_open = true;
 
+    // 봉쇄(tagger_mode) 중: DuctOpen()의 스위치 분기(TaggerSwitchClose)와 동일한 원칙으로,
+    // 문만 열고/닫을 뿐 색상·duct_available·서버 보고는 절대 건드리지 않는다. back을 받아
+    // ExitTaggerMode가 호출되기 전까지는 보라색 봉쇄 표시와 실제 봉쇄 상태가 그대로 유지된다.
+    if (tagger_mode)
+    {
+        switch_available = false;
+        digitalWrite(RELAY_PIN, HIGH);
+        duct_close_timer_id = duct_close_timer.setTimeout(4000, MmmmTaggerClose);
+        return;
+    }
+
     mmmm_prev_duct_available     = duct_available;
     mmmm_prev_cooltime_running   = cooltime_timer.isEnabled(cooltime_timer_id);
     mmmm_prev_current_time       = current_time;
@@ -240,6 +251,18 @@ void MmmmOpen()
     duct_close_timer_id = duct_close_timer.setTimeout(4000, MmmmClose);
 }
 
+/**
+ * @brief 봉쇄(tagger_mode) 중 MMMM으로 열었던 도어를 닫는다.
+ *        TaggerSwitchClose()와 동일하게 duct_available/색상/서버 보고는 손대지 않는다 —
+ *        back 수신 시 ExitTaggerMode()가 ApplyCurrentNeopixel()로 알맞은 색을 되돌려준다.
+ */
+void MmmmTaggerClose()
+{
+    digitalWrite(RELAY_PIN, LOW);
+    switch_available = true;
+    mmmm_open        = false;
+}
+
 void MmmmClose()
 {
     digitalWrite(RELAY_PIN, LOW);
@@ -250,9 +273,9 @@ void MmmmClose()
     {
         duct_available    = true;
         cool_time_neo_bool = false;
-        pixels_line.lightColor(line_yellow);
-        pixels_round.lightColor(yellow);
-        pixels_switch.lightColor(yellow);
+        // MMMM은 game_state와 무관하게 열릴 수 있으므로, activate 전용 노란색을 하드코딩하는 대신
+        // 현재 game_state에 맞는 색으로 복원한다(setting=흰색/ready=빨강/activate=노랑).
+        ApplyCurrentNeopixel();
     }
     else
     {

@@ -52,6 +52,7 @@ void TaggerBlinkStep();
 void TaggerSwitchBlocked();
 void MmmmOpen();
 void MmmmClose();
+void MmmmTaggerClose();
 
 //*=============================== Sensor ===============================*
 /**
