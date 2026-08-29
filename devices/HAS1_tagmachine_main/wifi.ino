@@ -40,6 +40,8 @@ void DataChanged()
         delay(1000);
         digitalWrite(RELAY_PIN, LOW);
         has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
+        my["device_state"] = "activate";  // Send()는 로컬 my를 안 갱신하므로 직접 동기화 (안 하면 다음 태그가 "activate"가 아닌 걸로 오판)
+        strCurState = "activate";
     }
     else if(deviceState == "activate"){
         strCurState = deviceState;

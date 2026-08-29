@@ -12,6 +12,11 @@ void DoorOpen(){
     else{
         if(TaggerOverrideCheck()) return; // 전송 직전 tagger 수신 시 activate로 덮어쓰지 않음
         has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
+        // Send()는 로컬 my를 갱신하지 않는다. TaggerOverrideCheck()의 ReceiveMine()이 방금
+        // 보낸 "open"을 my에 남긴 채로 굳으면, 뒤이은 태그가 "activate"가 아닌 것으로 오판해
+        // Player/GhostLockTimerFunc가 CancelTagProgress로 새거나 else 분기로 즉시 열리는 문제가 있다.
+        my["device_state"] = "activate";
+        strCurState = "activate";
         RoundNeoEffectDown(BLACK);
         has2wifi.Loop(DataChanged); //LOCK -> ACTIVATE 바뀐것을 업데이트 받기 위함
         if(strCurState == "tagger") return; // Loop에서 tagger 적용 시 노랑/도어잠금으로 덮어쓰지 않음
