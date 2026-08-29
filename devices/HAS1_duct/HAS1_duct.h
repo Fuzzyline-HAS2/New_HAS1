@@ -60,7 +60,7 @@ void MmmmClose();
 void SensorInit();
 
 //================================ Wifi ==================================
-HAS2_Wifi has2wifi("http://172.30.1.44");
+HAS2_Wifi has2wifi("http://172.30.1.43");
 
 SecureOTA ota(
   "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_duct/update.bin",

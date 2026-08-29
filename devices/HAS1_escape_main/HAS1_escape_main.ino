@@ -18,7 +18,7 @@ void setup() {
     Serial.begin(115200);
     toSubSerial.begin(115200, SERIAL_8N1, HWSERIAL_RX, HWSERIAL_TX);
 //    has2wifi.Setup("city");
-    has2wifi.Setup("bdaland");
+    has2wifi.Setup("badland");
     ota.setLogStream(DebugSerial);
     ota.setOnSuccess([]() {
         ClearGithubOtaState();
