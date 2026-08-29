@@ -1,4 +1,4 @@
-#define FIRMWARE_VER 6
+#define FIRMWARE_VER 7
 #define PARTITION_VER 2
 #include "HAS1_itembox.h"
 
