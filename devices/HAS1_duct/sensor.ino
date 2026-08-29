@@ -99,13 +99,15 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   }
   Serial.println("tag_user_data : " + tagUser);
 
+  // MMMM 관리자 카드: game_state/tagger_mode(봉쇄) 상태와 무관하게 최우선으로 항상 연다.
+  if (tagUser == "MMMM")
+  {
+    MmmmOpen();
+    return;
+  }
+
   if (game_state == activate)
   {
-    if (tagUser == "MMMM")
-    {
-      MmmmOpen();
-      return;
-    }
     // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기
     has2wifi.Receive(tagUser);
     // 2. 술래인지, 플레이어인지 구분

@@ -104,8 +104,33 @@ void ChangeGameState(GameState next) {
     gameState = next;
 }
 
+// ── MMMM 관리자 카드 ───────────────────────────────────────────────────────────────────
+// 어떤 gameState에서든(퍼즐 진행 중 포함) 최우선으로 처리 — 열려 있으면 닫고, 닫혀 있으면 연다.
+// RfidPeekTag()로 내용만 먼저 확인하고, MMMM일 때만 RfidReadTag()로 소비해 각 상태 함수가
+// 같은 태그를 다시 역할 조회 등으로 처리하지 않도록 한다.
+#define ADMIN_TOGGLE_COOLDOWN_MS 3000
+static bool AdminCardToggle() {
+    static unsigned long lastToggleMs = 0 - ADMIN_TOGGLE_COOLDOWN_MS;  // 최초 태그는 바로 처리
+
+    uint8_t peekData[32];
+    if (!RfidPeekTag(peekData)) return false;
+    if (memcmp(peekData, "MMMM", 4) != 0) return false;
+
+    uint8_t consumedData[32];
+    RfidReadTag(consumedData);  // 소비 처리 — 상태별 로직이 같은 태그를 재처리하지 않도록
+
+    if (millis() - lastToggleMs < ADMIN_TOGGLE_COOLDOWN_MS) return true;  // 태그 유지 중 재토글 방지
+    lastToggleMs = millis();
+
+    Log("GAME", String("admin card -> box ") + (isBoxOpened() ? "close" : "open"));
+    if (isBoxOpened()) boxClose(); else boxOpen();
+    return true;
+}
+
 // ── 메인 디스패처 ──────────────────────────────────────────────────────────────────────
 void GameUpdate() {
+    if (AdminCardToggle()) return;
+
     switch (gameState) {
         case GAME_SETTING:        SettingState();       break;
         case GAME_READY:          ReadyState();         break;
@@ -270,8 +295,6 @@ void ActivateState() {
     String tagUser = "";
     for (int i = 0; i < 4; i++) tagUser += (char)data[i];
     Log("GAME", "tag: " + tagUser);
-
-    if (tagUser == "MMMM") { Log("GAME", "admin card -> restart"); ESP.restart(); return; }
 
     pendingTagUser = tagUser;
     WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴

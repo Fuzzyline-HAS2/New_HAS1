@@ -109,6 +109,36 @@ void RfidLoop()
 }
 
 /**
+ * @brief ready 상태(activate_bool=false) 전용 경량 RFID 폴링.
+ *        ready에서는 일반 게임 태그(G#P#)를 받지 않도록 RfidLoop() 자체가 꺼져 있으므로,
+ *        MMMM 관리자 카드만은 상태 무관으로 열려야 한다는 요구를 이 함수가 별도로 담당한다.
+ *        MMMM이 아니면 CardChecking()으로 넘기지 않고 조용히 무시 — ready의 기존 "태그 비활성"
+ *        동작은 MMMM 외에는 그대로 유지된다. rfid_tag/rfid_timer는 RfidLoop()과 동일한 디바운스
+ *        상태를 공유하지만, activate_bool로 loop()에서 상호 배타적으로만 호출되므로 안전하다.
+ */
+void AdminCardPollReady()
+{
+  if (!rfid_tag)
+  {
+    rfid_tag = true;
+    rfid_timer_id = rfid_timer.setTimeout(1000, RfidTagTimerFunc);
+  }
+  else
+  {
+    return;
+  }
+
+  uint8_t data[32];
+  if (!DetectWithGainSwitch(data)) return;
+
+  String tagUser = "";
+  for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+  if (tagUser != "MMMM") return;  // ready 상태에서는 MMMM 외 태그는 계속 무시
+
+  CardChecking(data);
+}
+
+/**
  * @brief RFID에 태그된 NFC의 데이터에 따른 코드 동작
  *
  * @param rfidData 태그된 NFC의 데이터
@@ -119,6 +149,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   for (int i = 0; i < 4; i++) // GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
   Serial.println("tag_user_data : " + tagUser);
+
+  // MMMM 관리자 카드: game_state/device_state(tagger 봉쇄 포함)와 무관하게 최우선으로 항상 연다.
+  if (tagUser == "MMMM")
+  {
+    Serial.println("[RFID] admin card - opening (state-independent)");
+    SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);
+    return;
+  }
 
   // 잘못 읽힌 카드가 임의의 서버 key로 전송되지 않도록 G#P# 형식을 검증한다.
   bool valid_tag_user =

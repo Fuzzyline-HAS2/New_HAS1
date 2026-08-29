@@ -65,4 +65,8 @@ void loop()
   {
     ActivateFunc();
   }
+  else
+  {
+    AdminCardPollReady();  // ready 등 태그 비활성 상태에서도 MMMM 관리자 카드는 열려야 함
+  }
 }
