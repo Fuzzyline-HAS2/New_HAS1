@@ -26,8 +26,7 @@ size_t getArduinoLoopTaskStackSize(void)
 void TempleInit()
 {
   has2wifi.SetDebugPrint(&SerialMirror);  // 라이브러리 내부 로그도 Serial+Telnet 양쪽으로
-  has2wifi.Setup("SK_DA20_2.4G", "GGA48@6587");                   // 와이파이 세팅
-  //has2wifi.Setup("badland");
+  has2wifi.Setup("badland");                                      // 와이파이 세팅
   LogMemoryStats("Wi-Fi connected");
   TelnetInit();
   BleAdvertiserInit();
