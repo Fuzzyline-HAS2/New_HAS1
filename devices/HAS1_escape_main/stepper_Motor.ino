@@ -6,7 +6,7 @@ void StepMotorInit(){
 
 void EscapeClose(){
     digitalWrite(DIR_PIN, LOW); // 모터 역방향
-    digitalWrite(RELAY_PIN, LOW); // 모터 전원 ON (HIGH=OFF라 구동 전엔 반드시 LOW 필요)
+    digitalWrite(RELAY_PIN, HIGH); // 모터 전원 ON (HIGH=ON, LOW=OFF)
     Serial.println("Escapse Close");
 
     while(digitalRead(SW_PIN) == LOW)
@@ -16,7 +16,7 @@ void EscapeClose(){
         digitalWrite(STEP_PIN, HIGH);
         delayMicroseconds(2000);
     }
-    digitalWrite(RELAY_PIN, HIGH); // 닫힘 완료 후 모터 전원 OFF
+    digitalWrite(RELAY_PIN, LOW); // 닫힘 완료 후 모터 전원 OFF
     Serial.println("Close Finish");
 }
 
