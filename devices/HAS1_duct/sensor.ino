@@ -110,6 +110,18 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   {
     // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기
     has2wifi.Receive(tagUser);
+
+    // [진단 로그] 덕트킬이 왜 반응 자체가 없는지 추적용. tag JsonDocument의 실제 수신값을
+    // 그대로 찍는다 - 필드가 비어있거나(has2wifi.Receive 실패/네트워크 지연) 값이 예상과
+    // 다르면 여기서 바로 드러난다.
+    Serial.print("[CardChecking] tagUser="); Serial.print(tagUser);
+    Serial.print(" role="); Serial.print((const char*)tag["role"]);
+    Serial.print(" taken_chip="); Serial.print((int)tag["taken_chip"]);
+    Serial.print(" max_taken_chip="); Serial.print((int)tag["max_taken_chip"]);
+    Serial.print(" tag_device_state="); Serial.print((const char*)tag["device_state"]);
+    Serial.print(" EMCHECK_PIN="); Serial.print(digitalRead(EMCHECK_PIN));
+    Serial.print(" tagger_mode="); Serial.println(tagger_mode);
+
     // 2. 술래인지, 플레이어인지 구분
     if ((String)(const char *)tag["role"] == "player" || (String)(const char *)tag["role"] == "revival" || (String)(const char *)tag["role"] == "ghost")
     {
@@ -118,10 +130,19 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     }
     else if ((String)(const char *)tag["role"] == "tagger" && ((int)tag["taken_chip"] < (int)tag["max_taken_chip"]) && (String)(const char *)tag["device_state"] == "activate")
     {
+      Serial.println("[CardChecking] tagger 분기 진입 - EMCHECK/tagger_mode 조건 통과 시 DuctKill 호출");
       if (digitalRead(EMCHECK_PIN) && !tagger_mode)
       {
         DuctKill();
       }
+      else
+      {
+        Serial.println("[CardChecking] DuctKill 스킵 - EMCHECK_PIN 또는 tagger_mode 조건 불충족");
+      }
+    }
+    else
+    {
+      Serial.println("[CardChecking] 술래/플레이어 분기 둘 다 불충족 - role/taken_chip/device_state 값 확인 필요");
     }
   }
   else if (game_state == setting)

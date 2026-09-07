@@ -20,6 +20,7 @@
 void DuctInit() {
   Serial.begin(115200);
   has2wifi.Setup("badland");
+  TelnetInit();  // Telnet 서버 시작 — WiFi 연결 완료 후 호출 (이후 Serial.* 출력은 telnet.ino로 미러링됨)
   // 부팅 시 현재 펌웨어 버전을 서버(esp_version)로 전송
   has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
   ota.setLogStream(Serial);
@@ -52,6 +53,7 @@ void setup() {
  * @brief 아두이노 기본 문법 (전원이 켜져있는동안 Core1에서 계속 실행)
  */
 void loop() {
+  TelnetRun();  // Telnet 클라이언트 접속/데이터 처리
   TimerRun();
   EmegencyPush();
 

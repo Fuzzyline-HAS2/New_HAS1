@@ -150,7 +150,12 @@ void DuctKill()
     // 가장 최근 태그한 플레이어 정보를 DB에서 가져옴
     String kill_player = (String)(const char *)my["tag_player"];
 
+    // [진단 로그] my["tag_player"]가 비어있거나(폴링 지연) 옛날 값이면 여기서 바로 드러난다.
+    Serial.print("[DuctKill] my.tag_player="); Serial.println(kill_player);
+
     has2wifi.Receive(kill_player);
+
+    Serial.print("[DuctKill] kill_player role="); Serial.println((const char*)tag["role"]);
 
     if (kill_player.startsWith("G"))
     {
@@ -165,6 +170,14 @@ void DuctKill()
             EnterTaggerMode();
             has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
         }
+        else
+        {
+            Serial.println("[DuctKill] 스킵 - kill_player role이 player가 아님");
+        }
+    }
+    else
+    {
+        Serial.println("[DuctKill] 스킵 - my.tag_player가 비어있거나 'G'로 시작하지 않음 (폴링 지연/미기록 의심)");
     }
 }
 
