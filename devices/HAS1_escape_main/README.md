@@ -5,7 +5,7 @@ ESP32 기반 탈출장치 메인 컨트롤러입니다.
 - 상태 입력: HAS 서버의 `game_state` / `device_state`
 - 현장 입력: Beetle UART 태그 패킷
 - 구동 출력: 스테퍼 모터, 릴레이, NeoPixel, DFPlayer
-- 진단: QC 룰 엔진 + 런타임 오류 복구 계층
+- 진단: 런타임 오류 복구 계층
 
 ## 구조
 
@@ -21,57 +21,19 @@ HAS1_escape_main/
 ├── neopixel.ino              LED 제어
 ├── dfplayer.ino              MP3 재생
 ├── timer.ino                 주기 실행
-├── QC/                       QC 룰 엔진
 └── tests/                    Python 상태머신 / recovery 테스트
 ```
 
 ## 동작 개요
 
-1. `setup()`에서 WiFi, 타이머, 모터, QC 룰을 초기화합니다.
+1. `setup()`에서 WiFi, 타이머, 모터를 초기화합니다.
 2. `HAS2_Wifi`가 서버 상태를 받아오면 `DataChanged()`가 `setting`, `ready`, `activate` 전이를 처리합니다.
 3. Beetle은 heartbeat 장치가 아니라 이벤트 장치로 취급합니다.
 4. `T` 패킷으로 태그가 들어오면 `TagCount()`가 3명 escape를 판단하고 `device_state=escape`를 전송합니다.
-5. QC는 이상을 감지해 로그로 보고하고, 실제 복구는 `error_recovery.ino`가 담당합니다.
 
 ## 오류 탐지
 
-### 1. QC 룰 기반 탐지
-
-`loop()`에서 `QCEngine::getInstance().tick()`이 자동 실행되며, 이상이 있으면 Serial에 `[WARN]`, `[FAIL]` 로그를 남깁니다.
-
-#### Fast 룰
-
-| ID | 내용 |
-|---|---|
-| `NET_WIFI_00` | WiFi 연결 끊김 감지 |
-| `HW_PIN_01` | NeoPixel / 모터 / 릴레이 / UART 핀 충돌 검사 |
-| `HW_GPIO_01` | 출력 핀이 ESP32 입력전용 GPIO(34~39)에 할당됐는지 검사 |
-| `LOGIC_TAG_01` | `tagCnt`가 0~3 범위를 벗어나는지 검사 |
-
-#### Slow 룰
-
-| ID | 내용 |
-|---|---|
-| `SYS_MEM_01` | 힙 메모리 부족 감지 |
-| `NET_WIFI_01` | WiFi RSSI 약화 감지 |
-| `SYS_RST_01` | Brownout / WDT / Panic 재시작 원인 감지 |
-| `LOGIC_STATE_01` | 서버 `game_state` / `device_state` 허용값 검사 |
-| `HW_STEPPER_01` | `stepsPerRevolution` 범위 검사 |
-| `HW_SW_01` | `setting` / `ready`에서 리미트 스위치 상태 불일치 감지 |
-| `HW_RELAY_01` | 릴레이 상태와 `game_state` 불일치 감지 |
-| `HW_SW_03` | 리미트 스위치 chatter 감지 |
-| `LOGIC_SERIAL_02` | Beetle `T` 패킷 형식 오류 감지 |
-| `LOGIC_SERIAL_03` | Beetle 알 수 없는 명령 감지 |
-| `LOGIC_TAG_02` | 태그 파싱 실패 누적 감지 |
-| `HW_BOOT_01` | ESP32 strapping pin 사용 경고 |
-| `HW_GPIO_02` | 부팅 직후 출력 핀 안전 상태 경고 |
-
-주의:
-
-- 기존의 `activate 중 Beetle 무응답` 기반 timeout 룰은 제거했습니다.
-- 이 프로젝트에서 Beetle silence는 정상 동작일 수 있으므로, silence는 오류로 간주하지 않습니다.
-
-### 2. 런타임 입력 검증
+### 런타임 입력 검증
 
 `serial_communication.ino`는 Beetle 입력을 이벤트 기반으로 검사합니다.
 
@@ -127,7 +89,6 @@ Beetle silence는 복구 트리거가 아닙니다.
 
 다음 경우에는 재부팅하지 않습니다.
 
-- 일반 QC `[FAIL]`
 - 단순 Beetle silence
 
 ## 테스트
@@ -157,14 +118,13 @@ python -m pytest tests -v -p no:cacheprovider
 
 ## 파일별 역할
 
-- [HAS1_escape_main.ino](HAS1_escape_main.ino): 초기화와 QC 룰 등록
+- [HAS1_escape_main.ino](HAS1_escape_main.ino): 초기화
 - [HAS1_escape_main.h](HAS1_escape_main.h): 전역 상태, recovery 선언
 - [error_recovery.ino](error_recovery.ino): Beetle UART 복구
 - [wifi.ino](wifi.ino): 상태 전이 처리
 - [Game_system.ino](Game_system.ino): 태그 집계와 escape 처리
 - [serial_communication.ino](serial_communication.ino): Beetle 이벤트 검증
 - [stepper_Motor.ino](stepper_Motor.ino): EscapeOpen / EscapeClose
-- [QC/QC_Rules.h](QC/QC_Rules.h): QC 탐지 규칙
 - [tests/test_recovery.py](tests/test_recovery.py): recovery 검증
 
 ## 요약

@@ -2,8 +2,6 @@
 #define _HAS1_ESCAPE_MAIN_H_
 
 #include "library_and_pin.h"
-#include "QC/QC_Engine.h"
-#include "QC/QC_Rules.h"
 #include <WiFi.h>
 
 class TelnetDebugConsole : public Stream {

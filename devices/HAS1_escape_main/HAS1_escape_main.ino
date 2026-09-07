@@ -45,31 +45,9 @@ void setup() {
     toSubSerial.println("R");
     toSubSerial.println("R");
     toSubSerial.println("R");
-
-    // QC 엔진 초기화 및 룰 등록
-    // QCEngine& qc = QCEngine::getInstance();
-    // qc.begin(2000);
-    // qc.addRule(new QCRule_HeapMemory());
-    // qc.addRule(new QCRule_WifiConnection());
-    // qc.addRule(new QCRule_WifiSignal());
-    // qc.addRule(new QCRule_ResetReason());
-    // qc.addRule(new QCRule_PinConflict());
-    // qc.addRule(new QCRule_GpioCapability());
-    // qc.addRule(new QCRule_GameState());
-    // qc.addRule(new QCRule_TagCntBounds());
-    // qc.addRule(new QCRule_StepperConfig());
-    // qc.addRule(new QCRule_LimitSwitch());
-    // qc.addRule(new QCRule_RelayState());
-    // qc.addRule(new QCRule_SwitchChatter());      // HW_SW_03
-    // qc.addRule(new QCRule_BeetlePacketFormat()); // LOGIC_SERIAL_02
-    // qc.addRule(new QCRule_InvalidCommand());     // LOGIC_SERIAL_03
-    // qc.addRule(new QCRule_TagParseError());      // LOGIC_TAG_02
-    // qc.addRule(new QCRule_StrappingPins());      // HW_BOOT_01
-    // qc.addRule(new QCRule_OutputInitSafety());   // HW_GPIO_02
 }
 void loop() {
     TelnetRun();
     WifiTimer.run();
     GameTimer.run();
-    //QCEngine::getInstance().tick();
 }
