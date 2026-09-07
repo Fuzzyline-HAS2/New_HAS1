@@ -14,7 +14,7 @@ void EscapeClose(){
     // 경우를 대비해 최대 스텝 수를 넘으면 강제 종료한다.
     const unsigned long maxSteps = (unsigned long)stepsPerRevolution * 15;
     unsigned long stepCount = 0;
-    while(digitalRead(SW_PIN) == LOW && stepCount < maxSteps)
+    while(digitalRead(SW_PIN) == HIGH && stepCount < maxSteps)
     {
         if (stepCount % 200 == 0) {
             Serial.println("[DEBUG] step=" + String(stepCount) + " SW_PIN=" + String(digitalRead(SW_PIN)));

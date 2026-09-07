@@ -368,9 +368,9 @@ public:
 // ---------------------------------------------------------
 // [HW_SW_01] 리미트 스위치 상태 일관성 체크
 // ---------------------------------------------------------
-// SW_PIN은 NC(normally-closed) 스위치 + INPUT_PULLUP 구성입니다.
-// 모터가 닫힌 위치(EscapeClose 완료) = 스위치 개방 = SW_PIN HIGH.
-// setting/ready 상태에서 SW_PIN이 LOW이면 Close가 완료되지 않은 것입니다.
+// SW_PIN은 NO(normally-open) 스위치 + INPUT_PULLUP 구성입니다(실측 확인됨).
+// 안 눌림(열림) = SW_PIN HIGH, 눌림(모터가 닫힌 위치 도달) = SW_PIN LOW.
+// setting/ready 상태에서 SW_PIN이 HIGH이면 Close가 완료되지 않은 것입니다.
 // → 스위치 배선 불량, 모터 탈조, 또는 EscapeClose while 루프 비정상 종료 의심.
 class QCRule_LimitSwitch : public IQCRule {
 public:
@@ -388,12 +388,12 @@ public:
 
     String gState = safeStr(my["game_state"]);
 
-    // setting/ready = EscapeClose() 완료 상태 = SW_PIN HIGH 이어야 정상
+    // setting/ready = EscapeClose() 완료 상태 = SW_PIN LOW 이어야 정상
     if ((gState == "setting" || gState == "ready") &&
-        digitalRead(SW_PIN) == LOW) {
+        digitalRead(SW_PIN) == HIGH) {
       return QCResult(QCLevel::WARN, getId(),
                       "SW_PIN (GPIO " + String(SW_PIN) + ")",
-                      "HIGH (closed)", "LOW",
+                      "LOW (closed)", "HIGH",
                       "리미트 스위치 배선 점검, 모터 탈조 또는 EscapeClose() 미완료 확인");
     }
 
@@ -637,7 +637,7 @@ public:
 // [HW_GPIO_02] 출력 핀 초기 상태 안전성 검사 (부팅 1회)
 // ---------------------------------------------------------
 // 부팅 직후 RELAY_PIN, DIR_PIN 이 안전한 기본값인지 확인합니다.
-// RELAY_PIN: HIGH(OFF)가 정상. LOW면 모터 전원이 켜진 상태로 부팅한 것.
+// RELAY_PIN: LOW(OFF)가 정상. HIGH면 모터 전원이 켜진 상태로 부팅한 것(실측 확인됨).
 // DIR_PIN  : setup() 에서 초기값 미지정 시 LOW(기본). 방향이 잘못되면 WARN.
 // EN_PIN   : 코드에서 OUTPUT 설정 없음 → 모터 드라이버 Enable 상태 불확실 → WARN.
 class QCRule_OutputInitSafety : public IQCRule {
@@ -651,13 +651,13 @@ public:
     if (reported) return QCResult();
     reported = true;
 
-    // RELAY_PIN: HIGH = 모터 전원 OFF = 안전
-    if (digitalRead(RELAY_PIN) == LOW) {
+    // RELAY_PIN: LOW = 모터 전원 OFF = 안전
+    if (digitalRead(RELAY_PIN) == HIGH) {
       return QCResult(QCLevel::WARN, getId(),
                       "RELAY_PIN (GPIO " + String(RELAY_PIN) + ") at boot",
-                      "HIGH (motor OFF)", "LOW (motor ON)",
-                      "setup()에서 digitalWrite(RELAY_PIN, HIGH) 순서 확인. "
-                      "StepMotorInit() 이전에 릴레이 핀을 HIGH로 초기화해야 합니다.");
+                      "LOW (motor OFF)", "HIGH (motor ON)",
+                      "setup()에서 digitalWrite(RELAY_PIN, LOW) 순서 확인. "
+                      "StepMotorInit() 이전에 릴레이 핀을 LOW로 초기화해야 합니다.");
     }
 
     // EN_PIN: 코드에서 OUTPUT으로 설정하지 않음 → 외부 풀다운이면 모터 활성화 상태
