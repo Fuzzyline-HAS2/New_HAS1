@@ -65,7 +65,7 @@ void DuctClose()
 {
     digitalWrite(RELAY_PIN, LOW);
     pixels_line.lightColor(line_red);
-    pixels_switch.lightColor(yellow);
+    pixels_switch.lightColor(red);
     switch_available = true;
     current_time = 0;
     cool_time_neo_bool = true;
@@ -284,7 +284,7 @@ void MmmmClose()
         cool_time_neo_bool = mmmm_prev_cool_time_neo_bool;
         pixels_line.clear();
         pixels_line.lightColor(line_red, CooltimeBarPixels());
-        pixels_switch.lightColor(yellow);
+        pixels_switch.lightColor(red);
         // 잠긴 상태로 남길 때는 카운트다운이 반드시 돌아야 한다. 이전 실행 여부로 판단하면
         // (스위치/RFID 오픈 4초 중 MMMM 태그처럼) 타이머가 없던 시점을 기억해 재가동을 건너뛰고,
         // duct_available 이 false 에 고착돼 game_state 가 바뀔 때까지 덕트가 잠긴다.
