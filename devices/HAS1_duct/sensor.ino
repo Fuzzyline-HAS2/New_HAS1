@@ -128,9 +128,10 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       if (tagger_mode) TaggerModeTagBlocked();   // 봉쇄(덕트킬 포함) 중 태그 → 보라색 점멸 + 사용불가 안내
       else DuctTag(tagUser);
     }
-    // taken_chip < max_taken_chip 조건 주석 처리: 실기 로그 상 술래 카드의 max_taken_chip이
-    // 항상 0으로 찍혀(0 < 0 = 거짓) 실제 게임 중에도 이 조건에서 항상 막혔음 (사용자 확인).
-    else if ((String)(const char *)tag["role"] == "tagger" /* && ((int)tag["taken_chip"] < (int)tag["max_taken_chip"]) */ && (String)(const char *)tag["device_state"] == "activate")
+    // taken_chip < max_taken_chip, tag["device_state"]=="activate" 조건 모두 주석 처리:
+    // 실기 로그 상 술래 카드의 max_taken_chip이 항상 0(0 < 0 = 거짓)이고, device_state도
+    // 실제 게임 activate 중에 계속 "setting"으로 찍혀 두 조건 다 항상 거짓이었음 (사용자 확인).
+    else if ((String)(const char *)tag["role"] == "tagger" /* && ((int)tag["taken_chip"] < (int)tag["max_taken_chip"]) && (String)(const char *)tag["device_state"] == "activate" */)
     {
       Serial.println("[CardChecking] tagger 분기 진입 - EMCHECK/tagger_mode 조건 통과 시 DuctKill 호출");
       if (digitalRead(EMCHECK_PIN) && !tagger_mode)
