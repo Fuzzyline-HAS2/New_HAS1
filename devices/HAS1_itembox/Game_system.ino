@@ -115,9 +115,19 @@ void ChangeGameState(GameState next) {
 // 어떤 gameState에서든(퍼즐 진행 중 포함) 최우선으로 처리 — 열려 있으면 닫고, 닫혀 있으면 연다.
 // RfidPeekTag()로 내용만 먼저 확인하고, MMMM일 때만 RfidReadTag()로 소비해 각 상태 함수가
 // 같은 태그를 다시 역할 조회 등으로 처리하지 않도록 한다.
-#define ADMIN_TOGGLE_COOLDOWN_MS 3000
+//
+// 토글은 "카드가 리더에 새로 올라온 순간"(presence edge)에만 1회 실행한다.
+// (예전엔 3초 시간 쿨다운으로 재토글을 막았는데, 카드를 3초 넘게 얹어 두면 박스 개방
+//  소요시간(4초)보다 쿨다운이 짧아 모터가 이동 중에 자동으로 다시 토글되어 방향이
+//  뒤집히며 절반만 열리다/닫히다 마는 문제가 있었다. RfidTagPresent()의 500ms
+//  디바운스를 그대로 신뢰해 "완전히 뗐다가 다시 얹었을 때"만 새 토글로 인정한다.)
 static bool AdminCardToggle() {
-    static unsigned long lastToggleMs = 0 - ADMIN_TOGGLE_COOLDOWN_MS;  // 최초 태그는 바로 처리
+    static bool adminTagLatched = false;  // 이번 물리적 태그 세션에서 이미 토글을 실행했는지
+
+    if (!RfidTagPresent()) {
+        adminTagLatched = false;  // 태그가 완전히 떨어짐 — 다음에 얹히면 새 토글 허용
+        return false;
+    }
 
     uint8_t peekData[32];
     if (!RfidPeekTag(peekData)) return false;
@@ -126,8 +136,8 @@ static bool AdminCardToggle() {
     uint8_t consumedData[32];
     RfidReadTag(consumedData);  // 소비 처리 — 상태별 로직이 같은 태그를 재처리하지 않도록
 
-    if (millis() - lastToggleMs < ADMIN_TOGGLE_COOLDOWN_MS) return true;  // 태그 유지 중 재토글 방지
-    lastToggleMs = millis();
+    if (adminTagLatched) return true;  // 같은 태그를 계속 얹어 둔 상태 — 재토글하지 않음
+    adminTagLatched = true;
 
     Log("GAME", String("admin card -> box ") + (isBoxOpened() ? "close" : "open"));
     if (isBoxOpened()) boxClose(); else boxOpen();
