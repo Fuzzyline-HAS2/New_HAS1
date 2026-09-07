@@ -50,4 +50,12 @@ void loop() {
     TelnetRun();
     WifiTimer.run();
     GameTimer.run();
+
+    // 진단용: 모터와 무관하게 SW_PIN 값을 500ms마다 출력.
+    // 손으로 마이크로스위치를 눌러보면서 값이 바뀌는지 확인하기 위함.
+    static unsigned long lastSwDebugMs = 0;
+    if (millis() - lastSwDebugMs >= 500) {
+        lastSwDebugMs = millis();
+        Serial.println("[SWDEBUG] SW_PIN=" + String(digitalRead(SW_PIN)));
+    }
 }
