@@ -9,7 +9,7 @@ void EscapeClose(){
     digitalWrite(RELAY_PIN, HIGH); // 모터 전원 ON (HIGH=ON, LOW=OFF)
     Serial.println("Escapse Close");
 
-    while(digitalRead(SW_PIN) == LOW)
+    while(digitalRead(SW_PIN) == HIGH)
     {
         digitalWrite(STEP_PIN, LOW);
         delayMicroseconds(2000);
