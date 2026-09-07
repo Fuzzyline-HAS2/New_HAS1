@@ -13,7 +13,7 @@ void EscapeClose(){
     // 안전장치: 스위치 극성을 아직 확정 못해 무한 구동 위험이 있으므로
     // 최대 스텝 수를 넘으면 강제 종료한다. EscapeOpen()의 1회전 기준
     // (stepsPerRevolution*10)의 2배를 상한으로 잡아 정상 동작은 방해하지 않는다.
-    const unsigned long maxSteps = (unsigned long)stepsPerRevolution * 20;
+    const unsigned long maxSteps = (unsigned long)stepsPerRevolution * 10;
     unsigned long stepCount = 0;
     while(digitalRead(SW_PIN) == HIGH && stepCount < maxSteps)
     {
