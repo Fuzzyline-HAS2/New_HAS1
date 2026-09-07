@@ -190,14 +190,30 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
-  // activate 상태가 아니거나(=ready) 이미 열린 상태(서버 확정, device_state=="open")면
-  // 역할/서버 확인 없이 5초간 열기만 한다. ready일 때는 게임 세팅을 위해 열어야 할 수도 있고,
-  // open일 때도 다시 열어야 할 수도 있기 때문(device_state 무관하게 태그하면 열림).
-  if (game_state_now != "activate" ||
-      (String)(const char *)my["device_state"] == "open")
+  // activate 상태가 아니면(=ready/setting) 역할/서버 확인 없이 5초간 열기만 한다.
+  // 게임 세팅을 위해 열어야 할 수도 있기 때문(device_state 무관하게 태그하면 열림).
+  if (game_state_now != "activate")
   {
-    Serial.println("[RFID] Tag outside role-checked gameplay - opening 5s without role check");
+    Serial.println("[RFID] Tag outside gameplay (ready/setting) - opening 5s without role check");
     SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);
+    return;
+  }
+
+  // 생명장치가 이미 열린 상태(서버 확정, device_state=="open")에서는 유령만 다시 열 수 있다.
+  // 원래는 생존자가 태그해도 무조건 다시 열렸지만, open 이후 재입장은 유령 전용으로 제한한다.
+  if ((String)(const char *)my["device_state"] == "open")
+  {
+    has2wifi.Receive(tagUser);
+    String role = (String)(const char *)tag["role"];
+    if (role == "ghost")
+    {
+      Serial.println("[RFID] Tag on already-open revival machine - ghost role, opening 5s");
+      SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);
+    }
+    else
+    {
+      Serial.println("[RFID] Tag on already-open revival machine - non-ghost role(" + role + "), ignored");
+    }
     return;
   }
 
