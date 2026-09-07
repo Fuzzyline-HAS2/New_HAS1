@@ -23,7 +23,7 @@ String WifiPollPlayerRole();                    // role 조회 결과 폴링 —
 // GAME SYSTEM==============================================================================
 enum {VIBESTREGNTH = 0, ANSWER, RANGE};
 enum {ANSWER_CNT = 0, ANSWER_RANGE, VIBRATION_RANGE};
-int modeValue[3][5] = { {255, 190, 150, 110, 0},
+int modeValue[3][5] = { {255, 220, 190, 150, 0},
                         {13,  43,  21,  0,   0},
                         {5,   2,   5,   0,   0}};  // RANGE[ANSWER_CNT]=5: 서버 puzzle_count 수신 전까지 최대값
 

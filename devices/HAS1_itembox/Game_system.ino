@@ -10,9 +10,16 @@
 // role 조회 대기 중인 태그 (ChangeGameState(GAME_ACTIVATE) entry에서 초기화)
 static String pendingTagUser = "";
 
+// MMMM 관리자 카드로 박스를 수동 토글한 뒤, DataChanged()의 activate 안전망(중복 수신마다
+// boxClose() 강제)이 그 다음 폴링에서 즉시 되돌리는 것을 막는 플래그. AdminCardToggle()이
+// true로 세우고, 실제 새 상태가 들어와 ChangeGameState()가 호출되는 순간(진짜 게임 흐름이
+// 박스를 다시 장악) false로 풀린다.
+static bool adminBoxOverride = false;
+
 // ── 상태 전환 ──────────────────────────────────────────────────────────────────────────
 void ChangeGameState(GameState next) {
     Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
+    adminBoxOverride = false;  // 실제 상태 전환이 일어나면 관리자 오버라이드는 해제 — 게임 로직이 박스를 다시 관장
 
     // Exit Action: 현재 상태 정리
     switch (gameState) {
@@ -124,6 +131,7 @@ static bool AdminCardToggle() {
 
     Log("GAME", String("admin card -> box ") + (isBoxOpened() ? "close" : "open"));
     if (isBoxOpened()) boxClose(); else boxOpen();
+    adminBoxOverride = true;  // 다음 activate 중복 폴링에서 안전망이 되돌리지 않도록
     return true;
 }
 
@@ -221,7 +229,8 @@ void DataChanged() {
     // activate 단계(태그 대기 중)에서만 안전망으로 항상 닫기. gameState 조건 없이 gs만 보면
     // USED/DONE/TAGGER처럼 박스가 일부러 열려 있어야 하는 상태(game_state는 계속 "activate"로
     // 유지됨)까지 매 폴링마다 닫아버리게 된다 — tagger 중 모터가 닫히던 원인이 이것.
-    if (gs == "activate" && gameState == GAME_ACTIVATE) boxClose();
+    // adminBoxOverride: MMMM으로 방금 수동 토글했다면 이 중복 폴링에서 즉시 되돌리지 않는다.
+    if (gs == "activate" && gameState == GAME_ACTIVATE && !adminBoxOverride) boxClose();
 
     // device_state: 개별 기기 명령 (언제든지 수신 가능)
     String ds = myDoc["device_state"] | "";
@@ -238,8 +247,9 @@ void DataChanged() {
         // "solving" : HAS1에서 미사용 (Core0/1 분리로 WiFi 타이머 불필요) — 수신 시 무시
         prevDeviceState = ds;
     }
-    // activate는 중복 수신(이미 ACTIVATE 상태)이어도 항상 닫기
-    if (ds == "activate") boxClose();
+    // activate는 중복 수신(이미 ACTIVATE 상태)이어도 항상 닫기.
+    // adminBoxOverride: MMMM으로 방금 수동 토글했다면 이 중복 폴링에서 즉시 되돌리지 않는다.
+    if (ds == "activate" && !adminBoxOverride) boxClose();
 
     // 설정값 갱신 — 상태 전환 여부와 무관하게 항상 적용
     UpdatePuzzleAnswers();
