@@ -23,8 +23,9 @@ static uint8_t       rfid_lockedData[32];        // 유지 중인 태그의 page
 static unsigned long rfid_lastSeenMs = 0;        // 유지 중 태그를 마지막으로 확인한 시각
 
 // 유지 중이던 태그가 두 Gain 모두에서 이 시간 이상 연속으로 안 잡히면 그제서야 제거로 판정.
-// (단 한 번의 Read 실패로 바로 태그 제거 처리하지 않기 위한 디바운스 — 500~1000ms 범위에서 조정 가능)
-#define TAG_REMOVE_TIME_MS 500
+// (단 한 번의 Read 실패로 바로 태그 제거 처리하지 않기 위한 디바운스 — 300~1000ms 범위에서 조정 가능.
+// MMMM 관리자 카드를 빠르게 뗐다 다시 대는 재태그를 인식시키려고 500 -> 300으로 낮춤)
+#define TAG_REMOVE_TIME_MS 300
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
 // PN532는 이 설정을 내부에 영구 저장하지 않으므로, 초기화/재초기화 때마다 다시 적용해야 한다.
