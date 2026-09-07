@@ -49,7 +49,10 @@ void StarterActivate(){
     // 이어져 보인다.
     // displayedGaugeNeoCnt는 함수-지역 static이 아니라 전역(HAS1_generator.h) — BatteryFinish()가
     // 새 충전 사이클마다 -1로 리셋해줘야, 이전 라운드에 다 찼던 값이 새 라운드까지 남아있지 않는다.
-    const unsigned long GAUGE_STEP_INTERVAL_MS = 35; // 작을수록 더 즉각적, 클수록 더 부드러움
+    // 35ms였을 때는 손잡이를 빠르게 돌리면 여러 칸이 35ms 간격으로 연속 점등되어,
+    // 사람 눈에는 한 칸씩이 아니라 2~3칸이 한꺼번에 차오르는 것처럼 보였다(사용자 리포트).
+    // 칸 사이 간격을 늘려 한 칸씩 채워지는 게 실제로 보이도록 함.
+    const unsigned long GAUGE_STEP_INTERVAL_MS = 100; // 작을수록 더 즉각적, 클수록 더 부드러움
     static unsigned long lastGaugeStepTime = 0;
     static unsigned long lastGaugeRefresh = 0;
     int gaugeNeoCnt = encoderValue / starterEncoderUnit;
