@@ -10,12 +10,11 @@ void EscapeClose(){
     Serial.println("Escapse Close");
     Serial.println("[DEBUG] SW_PIN initial=" + String(digitalRead(SW_PIN)));
 
-    // 안전장치: 스위치 극성을 아직 확정 못해 무한 구동 위험이 있으므로
-    // 최대 스텝 수를 넘으면 강제 종료한다. EscapeOpen()의 1회전 기준
-    // (stepsPerRevolution*10)의 2배를 상한으로 잡아 정상 동작은 방해하지 않는다.
-    const unsigned long maxSteps = (unsigned long)stepsPerRevolution * 10;
+    // 안전장치: 배선/접점 불량 등으로 SW_PIN이 끝내 HIGH로 전환되지 않는
+    // 경우를 대비해 최대 스텝 수를 넘으면 강제 종료한다.
+    const unsigned long maxSteps = (unsigned long)stepsPerRevolution * 15;
     unsigned long stepCount = 0;
-    while(digitalRead(SW_PIN) == HIGH && stepCount < maxSteps)
+    while(digitalRead(SW_PIN) == LOW && stepCount < maxSteps)
     {
         if (stepCount % 200 == 0) {
             Serial.println("[DEBUG] step=" + String(stepCount) + " SW_PIN=" + String(digitalRead(SW_PIN)));
