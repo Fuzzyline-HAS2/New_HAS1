@@ -66,13 +66,15 @@ void CommnunicationBeetle(){
       Serial.println(command);
     }
     else if(cmd == 'M'){
-      static bool escapeIsOpen = false;
-      if(escapeIsOpen){
-        EscapeClose();
-        escapeIsOpen = false;
+      static bool deviceActivated = false;
+      if(deviceActivated){
+        ReadyFunc();
+        SendDeviceStateWithRetry("ready");
+        deviceActivated = false;
       } else {
-        EscapeOpen();
-        escapeIsOpen = true;
+        ActivateFunc();
+        SendDeviceStateWithRetry("activate");
+        deviceActivated = true;
       }
     }
     else {
