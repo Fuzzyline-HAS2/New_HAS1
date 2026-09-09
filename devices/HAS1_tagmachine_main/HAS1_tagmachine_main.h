@@ -62,12 +62,22 @@ void (*ptrRfidMain)() = nullptr;  // rfid 메인 저장용 포인터 함수
 void (*ptrRfidSub)() = nullptr;   // rfid 서브 저장용 포인터 함수
 void (*ptrGameTimer)() = nullptr; // 게임 타이머에 들어가는 포인터 함수
 void NewbieTaggerUnlockTimerFunc();
+void NewbieGhostOpenTimerFunc();
 //****************************************Game
 //System****************************************************************
 volatile int playerLockTime = 7;
 volatile int playerUnlockTime = 10;
 volatile int taggerUnlockTime = 15;
 volatile int ghostOpenTime = 15;
+
+// 서버에서 받은 진행 시간(초)이 0이면 map()의 분모(in_max - in_min)가 0이 되어
+// ESP32(Xtensa)에서 IntegerDivideByZero 예외로 패닉·리부트한다.
+// 실측(2026-09-09): 서버 AT 행의 player_lock_time / player_unlock_time 이 둘 다 '0'이었다.
+// 분모가 유효할 때만 환산하고, 그렇지 않으면 게이지를 꽉 찬 값으로 둔다.
+static inline int GaugeMap(int cnt, int total, int pixels) {
+  if (total <= 0) return pixels;
+  return map(cnt, 0, total, 0, pixels);
+}
 void WhichTagged();
 void DoorOpen();
 void NewbiePlayerOpenFunc();

@@ -44,7 +44,12 @@ void DuctOpen(bool switch_push)
         return;
     }
 
-    if (duct_available || switch_push)
+    // switch_push는 쿨타임 관문을 통과시키는 근거가 될 수 없다. 이전 조건(duct_available ||
+    // switch_push)은 내부 스위치 호출이 항상 switch_push=true라서 쿨타임 중에도 무조건 열렸고,
+    // 이어지는 DuctClose()가 current_time=0으로 쿨타임까지 리셋했다(현장 리포트).
+    // 비상탈출은 EMNERGENCY_CHK_PIN(EmegencyPush) 별도 경로이므로 이 게이팅으로 갇히지 않는다.
+    // 쿨타임 중 스위치 네오픽셀은 이미 빨간색으로 사용 불가를 표시한다(커밋 ff0dbfc).
+    if (duct_available)
     {
         if (cooltime_timer.isEnabled(cooltime_timer_id))
         {

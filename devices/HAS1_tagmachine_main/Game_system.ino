@@ -82,6 +82,9 @@ void NewbieLogin(char role) {
     } else if (role == 'P') {
         NewbiePlayerOpen();
     } else if (role == 'G') {
-        NewbieGhostOpen();
+        // 즉시 개방(NewbieGhostOpen) 대신 Login()으로 들어가 게임 타이머를 걸고,
+        // LoginTimerSelector가 NewbieGhostOpenTimerFunc를 세우게 한다. 그래야 뉴비모드에서도
+        // 서버의 ghost_open_time(현장 설정 5초)이 지켜진다.
+        Login(role);
     }
 }

@@ -66,15 +66,20 @@ void CommnunicationBeetle(){
       Serial.println(command);
     }
     else if(cmd == 'M'){
-      static bool deviceActivated = false;
-      if(deviceActivated){
+      // MMMM 관리자 카드. 이전에는 로컬 static bool 토글로 activate/ready를 번갈아 호출했는데,
+      // 서버도 DataChanged()(wifi.ino)에서 같은 ActivateFunc/ReadyFunc를 독립적으로 호출하기
+      // 때문에 서버가 상태를 바꾸면 토글 위상이 어긋나 다음 카드 한 번이 반대로 동작했다
+      // (현장: "MMMM 카드 제대로 작동 안함"). 사설 상태 대신 현재 device_state에서 도출한다.
+      if((String)(const char*)my["device_state"] == "activate"){
         ReadyFunc();
         SendDeviceStateWithRetry("ready");
-        deviceActivated = false;
+        // Send()는 서버로만 보내고 로컬 my를 갱신하지 않는다. 그대로 두면 다음 폴링 전까지
+        // 여전히 "activate"로 읽혀 연타 시 같은 분기를 반복한다.
+        my["device_state"] = "ready";
       } else {
         ActivateFunc();
         SendDeviceStateWithRetry("activate");
-        deviceActivated = true;
+        my["device_state"] = "activate";
       }
     }
     else {

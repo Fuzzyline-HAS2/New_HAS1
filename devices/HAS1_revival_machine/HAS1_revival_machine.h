@@ -59,6 +59,9 @@ void LogMemoryStats(const char *stage);
 //================================ RFID ==================================
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 
+// RFID 재판독 디바운스. 1000ms에서는 초당 1회만 폴링해 1초보다 짧은 태그를 놓쳤다
+// (현장: "태그 인식 느림"). itembox와 동일한 300ms로 맞춤 (커밋 8dc9450 참고).
+#define RFID_DEBOUNCE_MS 300
 bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
 

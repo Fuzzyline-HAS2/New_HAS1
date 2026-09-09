@@ -90,9 +90,25 @@ void CrashReportInit() {
     g_loop_count = 0;
 }
 
+// HAS2_Wifi::Send()는 value를 URL 인코딩 없이 GET 쿼리에 그대로 붙인다
+// (libraries/HAS2_Wifi/HAS2_Wifi.cpp:502 — first_store 실물도 동일). 그래서 crash_log에
+// 공백이 들어가면 HTTP 요청라인이 "GET ...value=a b HTTP/1.1"로 깨져 서버가 500을 반환하고,
+// '#'는 프래그먼트 구분자라 뒤가 잘리고, '='는 쿼리 파싱을 오염시킨다.
+// crash_log는 이 저장소에서 제단만 보내는 자유 형식 문자열이라 제단에서만 500이 발생했다.
+// unreserved(A-Z a-z 0-9 - _ . ~) 외의 문자를 '_'로 치환해 형식은 읽을 수 있게 유지한다.
+static void UrlSafeInPlace(char *s) {
+    for (; *s; ++s) {
+        char c = *s;
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (!ok) *s = '_';
+    }
+}
+
 // WiFi 연결 후 서버로 전송 — g_crash_pending 플래그로 한 번만 전송
 void CrashReportSend(const char *device_name) {
     if (!g_crash_pending || !device_name || device_name[0] == '\0') return;
+    UrlSafeInPlace(g_crash_msg);   // 전송 직전 1회 — Serial/Telnet 출력은 원문 그대로 이미 나갔다
     has2wifi.Send(device_name, "crash_log", g_crash_msg);
     g_crash_pending = false;
 }

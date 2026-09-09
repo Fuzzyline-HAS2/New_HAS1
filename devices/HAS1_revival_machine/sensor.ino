@@ -96,7 +96,7 @@ void RfidLoop()
   if (!rfid_tag)
   {
     rfid_tag = true;
-    rfid_timer_id = rfid_timer.setTimeout(1000, RfidTagTimerFunc);
+    rfid_timer_id = rfid_timer.setTimeout(RFID_DEBOUNCE_MS, RfidTagTimerFunc);
   }
   else
   {
@@ -121,7 +121,7 @@ void AdminCardPollReady()
   if (!rfid_tag)
   {
     rfid_tag = true;
-    rfid_timer_id = rfid_timer.setTimeout(1000, RfidTagTimerFunc);
+    rfid_timer_id = rfid_timer.setTimeout(RFID_DEBOUNCE_MS, RfidTagTimerFunc);
   }
   else
   {
