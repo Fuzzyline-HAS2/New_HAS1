@@ -150,7 +150,17 @@ void LoginTimerSelector(char role) {
   }
   if ((String)(const char*)my["mode"] == "easy" &&
       (String)(const char*)my["device_state"] == "lock") {
-    if (role == 'P' || role == 'G') NewbieLogin(role);
+    if (role == 'P') {
+      // NewbieLogin('P')와 동일하지만 직접 호출해 재귀(NewbieLogin -> Login ->
+      // LoginTimerSelector -> NewbieLogin)를 만들지 않는다.
+      NewbiePlayerOpen();
+    }
+    else if (role == 'G') {
+      // 뉴비모드에서도 유령은 서버의 ghost_open_time만큼 기다린 뒤 열려야 한다.
+      // 위 lock 분기가 세워둔 ptrRfidFail(GhostOpenFailLock)과 ptrRfidMode(WaitRfid)는
+      // 그대로 두고 게임 타이머만 뉴비 전용으로 바꾼다.
+      ptrGameTimer = NewbieGhostOpenTimerFunc;
+    }
     else if (role == 'T') {
       ptrGameTimer = NewbieTaggerUnlockTimerFunc;
       ptrRfidFail = NewbieTaggerFail;

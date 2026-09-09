@@ -99,8 +99,8 @@ void ReturnNormalState(){
 void PlayerLockTimerFunc(){
     gameTimerCnt++;
     RoundNeoToggle(GREEN,gameTimerCnt);
-    LineNeoUp(GREEN, YELLOW, map(gameTimerCnt,0,playerLockTime,0,NumPixels[LINE]));
-    Serial.println(map(gameTimerCnt,0,playerLockTime,0,NumPixels[LINE]));
+    LineNeoUp(GREEN, YELLOW, GaugeMap(gameTimerCnt, playerLockTime, NumPixels[LINE]));
+    Serial.println(GaugeMap(gameTimerCnt, playerLockTime, NumPixels[LINE]));
     // if(gameTimerCnt == 1)  // [DFPlayer 비활성화] 3번마다 "도어잠금 효과음"
     //     Mp3PlayLargeFolder(1, VD11);
     if(gameTimerCnt > (playerLockTime))
@@ -132,7 +132,7 @@ void PlayerLockTimerFunc(){
 void PlayerUnlockTimerFunc(){       
     gameTimerCnt++;
     RoundNeoToggle(GREEN,gameTimerCnt);
-    LineNeoDown(YELLOW, GREEN, map(gameTimerCnt,0,playerUnlockTime,0,NumPixels[LINE]));
+    LineNeoDown(YELLOW, GREEN, GaugeMap(gameTimerCnt, playerUnlockTime, NumPixels[LINE]));
     // if(gameTimerCnt == 1)  // [DFPlayer 비활성화] 3번마다 "도어잠금 효과음"
     //     Mp3PlayLargeFolder(1, VD11);
     if(gameTimerCnt > (playerUnlockTime))
@@ -165,7 +165,7 @@ void PlayerUnlockTimerFunc(){
 void TaggerUnlockTimerFunc(){
     gameTimerCnt++;
     RoundNeoToggle(PURPLE,gameTimerCnt);
-    LineNeoDown(PURPLE, GREEN, map(gameTimerCnt,0,taggerUnlockTime,0,NumPixels[LINE]));
+    LineNeoDown(PURPLE, GREEN, GaugeMap(gameTimerCnt, taggerUnlockTime, NumPixels[LINE]));
     // #6: NeoPixel show() 모두 끝낸 뒤 오디오(SoftwareSerial) 호출 → 인터럽트 충돌/데드락 회피
     // if(gameTimerCnt%3 == 1)  // [DFPlayer 비활성화] 3번마다 "술래 침입시도"
     //     if(gameTimerCnt < (taggerUnlockTime - 2))
@@ -200,7 +200,7 @@ void GhostUnlockTimerFunc(){
     gameTimerCnt++;
     // RoundNeoToggle(BLUE,gameTimerCnt);
     // LineNeoDown(BLUE, GREEN, map(gameTimerCnt,0,ghostOpenTime,0,NumPixels[LINE]));
-    RoundNeoUp(BLUE, GREEN, map(gameTimerCnt,0,ghostOpenTime,0,NumPixels[ROUND]/2));
+    RoundNeoUp(BLUE, GREEN, GaugeMap(gameTimerCnt, ghostOpenTime, NumPixels[ROUND]/2));
     if(gameTimerCnt > (ghostOpenTime))
     {
         has2wifi.ReceiveMine();
@@ -238,7 +238,7 @@ void GhostUnlockTimerFunc(){
 void NewbieTaggerUnlockTimerFunc(){
     gameTimerCnt++;
     RoundNeoToggle(PURPLE, gameTimerCnt);
-    LineNeoDown(PURPLE, GREEN, map(gameTimerCnt, 0, taggerUnlockTime, 0, NumPixels[LINE]));
+    LineNeoDown(PURPLE, GREEN, GaugeMap(gameTimerCnt, taggerUnlockTime, NumPixels[LINE]));
     // #6: NeoPixel show() 모두 끝낸 뒤 오디오(SoftwareSerial) 호출 → 인터럽트 충돌/데드락 회피
     // if(gameTimerCnt%3 == 1)  // [DFPlayer 비활성화]
     //     if(gameTimerCnt < (taggerUnlockTime - 2))
@@ -274,13 +274,37 @@ void NewbieTaggerUnlockTimerFunc(){
 }
 
 /**
+ * @brief 뉴비모드(easy) 유령 잠금해제. 이전에는 NewbieLogin이 NewbieGhostOpen()을 즉시
+ *        호출해 타이머 없이 바로 열렸다(현장: "유령 태그 5초여야 하는데 1초만에 열림").
+ *        일반 모드와 동일하게 서버값 ghost_open_time 만큼 기다린 뒤 개방 연출로 넘긴다.
+ *        Login()이 즉시 1틱을 소비하므로(rfid.ino) 총 대기는 정확히 ghost_open_time 초다.
+ */
+void NewbieGhostOpenTimerFunc(){
+    gameTimerCnt++;
+    RoundNeoUp(BLUE, GREEN, GaugeMap(gameTimerCnt, ghostOpenTime, NumPixels[ROUND]/2));
+    if(gameTimerCnt > (ghostOpenTime))
+    {
+        has2wifi.ReceiveMine();
+        DataChanged();
+        if(strCurState != "lock"){
+            Serial.println("debuff on");
+            CancelTagProgress();
+        }
+        else{
+            Serial.println("GHOST OPEN (Newbie)");
+            NewbieGhostOpen();   // 내부의 ReturnNormalState()가 게임 타이머까지 정리한다
+        }
+    }
+}
+
+/**
  * @brief 잠겨있지 않은 도어 유령이 잠금해제를 하기위한 함수
  */
 void GhostLockTimerFunc(){      
     gameTimerCnt++;
     // RoundNeoToggle(BLUE,gameTimerCnt);
     // LineNeoUp(BLUE, YELLOW, map(gameTimerCnt,0,ghostOpenTime,0,NumPixels[LINE]));
-    RoundNeoUp(BLUE, YELLOW, map(gameTimerCnt,0,ghostOpenTime,0,NumPixels[ROUND]/2));
+    RoundNeoUp(BLUE, YELLOW, GaugeMap(gameTimerCnt, ghostOpenTime, NumPixels[ROUND]/2));
     if(gameTimerCnt > (ghostOpenTime))
     {
         has2wifi.ReceiveMine();
