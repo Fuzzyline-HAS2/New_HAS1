@@ -9,7 +9,7 @@
  *
  */
 
-#define FIRMWARE_VER 31
+#define FIRMWARE_VER 32
 #define PARTITION_VER 1
 #include "HAS1_escape_main.h"
 
