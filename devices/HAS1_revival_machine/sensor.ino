@@ -61,65 +61,13 @@ static bool DetectAndRead(uint8_t outData[32])
   return nfc.ntag2xx_ReadPage(7, outData);
 }
 
-// [진단 전용] "activate 이후 첫 태그 지연"의 구간을 특정하기 위한 계측 카운터.
-// 태그가 없을 때도 DetectWithGainSwitch는 1차 실패 -> ApplyGain -> 2차 실패 경로를 타므로
-// 유휴 중 Gain이 계속 뒤집힌다는 가설을 확인한다. 원인 확정 후 제거 예정.
-static uint32_t rfid_idle_polls = 0;
-static uint32_t rfid_gain_flips = 0;
-static uint32_t rfid_idle_ms_sum = 0;
-static uint32_t rfid_idle_report_ms = 0;
-
-static const char *GainName(int g) { return (g == GAIN_NEAR) ? "NEAR" : "FAR"; }
-
 // 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도. 성공한 Gain은 currentGain에 남아 다음 호출에도 유지된다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
-  uint32_t t0 = millis();
-  const char *gain_before = GainName(currentGain);
-
-  if (DetectAndRead(outData))
-  {
-    Serial.println("[RFID-T] hit gain=" + String(gain_before) +
-                   " attempt1 " + String(millis() - t0) + "ms");
-    return true;
-  }
-  uint32_t t1 = millis();
-
+  if (DetectAndRead(outData)) return true;
   currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-  rfid_gain_flips++;
   ApplyGain(currentGain);
-  uint32_t t2 = millis();
-
-  bool ok = DetectAndRead(outData);
-  uint32_t t3 = millis();
-
-  if (ok)
-  {
-    Serial.println("[RFID-T] hit gain=" + String(gain_before) + "->" + String(GainName(currentGain)) +
-                   " attempt1 " + String(t1 - t0) +
-                   "ms ApplyGain " + String(t2 - t1) +
-                   "ms attempt2 " + String(t3 - t2) +
-                   "ms TOTAL " + String(t3 - t0) + "ms");
-  }
-  else
-  {
-    // 유휴(태그 없음). 매 호출 출력은 과하므로 5초마다 요약만 낸다.
-    rfid_idle_polls++;
-    rfid_idle_ms_sum += (t3 - t0);
-    if (millis() - rfid_idle_report_ms >= 5000)
-    {
-      rfid_idle_report_ms = millis();
-      Serial.println("[RFID-T] idle 5s: polls=" + String(rfid_idle_polls) +
-                     " gainFlips=" + String(rfid_gain_flips) +
-                     " avg=" + String(rfid_idle_polls ? rfid_idle_ms_sum / rfid_idle_polls : 0) +
-                     "ms lastApplyGain=" + String(t2 - t1) +
-                     "ms gainNow=" + String(GainName(currentGain)));
-      rfid_idle_polls = 0;
-      rfid_gain_flips = 0;
-      rfid_idle_ms_sum = 0;
-    }
-  }
-  return ok;
+  return DetectAndRead(outData);
 }
 
 /**
@@ -269,19 +217,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
-  // is_open은 생명장치가 아니라 태그한 iotGlove 쪽 필드. 이미 true면(이 iotGlove가
-  // 생명장치를 이미 연 적 있으면) 서버로 보내지 않고 사용 불가로 처리한다.
-  // device_state=="tagger"와 달리 여기서는 점멸 후에도 device_state가 계속 "activate"라
-  // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 보라색에 머무르게 되므로 복원한다.
-  has2wifi.Receive(tagUser);
-  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]));
-  if ((int)tag["is_open"] != 0)
-  {
-    Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
-    NeoBlinkPurple(3);
-    NeopixelSet(yellow);  // activate 상태 색으로 복원
-    return;
-  }
+  // is_open(이 iotGlove가 생명장치를 이미 연 적 있는지)을 여기서 미리 조회해 걸러내던
+  // 로컬 게이트를 제거했다. 이 코드의 기획은 판단을 서버에 두는 것이고(아래 주석 참고),
+  // is_open 역시 서버 자신의 컬럼이므로 기기가 중복 판단할 이유가 없다. 거절 안내는
+  // 서버가 스피커로 별도 처리하므로 기기 쪽 점멸 피드백도 필요하지 않다.
+  //
+  // 이 게이트가 왕복 1회(has2wifi.Receive)를 통째로 차지하고 있었다. 실측(2026-09-10)
+  // 313ms + 분기/로그 48ms로, 정상적인 첫 사용 태그까지 매번 그 비용을 냈다.
+  // 제거로 태그 읽힘->개방이 1190ms -> 829ms가 된다.
 
   // 활성화 여부/역할(ghost·revival)/쿨다운/최초사용 여부는 모두 서버가 판단한다.
   // 이 기기는 태그 이벤트만 전달하고, 통과 시 device_state="open"이 폴링으로
@@ -290,6 +233,24 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   last_open_tag_user = tagUser;  // DataChange()에서 open 확정 시 이 iotGlove의 is_open을 true로 쓰기 위해 기억
   bool situation_sent = has2wifi.Situation(tagUser, "revival_machine");
   Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL"));
+
+  // Situation이 전송됐으면 서버가 곧 device_state="open"을 쓴다. 일반 폴링 경로
+  // (has2wifi.Loop)는 request=Loop로 shift_machine 플래그를 먼저 확인하고, 플래그가 선
+  // 사이클에서만 ReceiveMine()으로 행을 읽으므로 HTTP 왕복이 한 번 더 붙는다.
+  // 승인을 기다리는 게 확실한 이 시점에는 그 게이트를 건너뛰고 직접 읽어 개방을 앞당긴다.
+  //
+  // 실측(2026-09-10, 첫 태그 1회분):
+  //   Situation 반환 -> 서버가 open 기록      225 ms
+  //   Situation 반환 -> 기존 경로로 기기 인지  608 ms
+  //   ReceiveMine 왕복                        약 282 ms
+  // 왕복(282ms)이 서버 판단(225ms)보다 길어 이 한 번으로 대부분 잡히고, 약 326ms 단축된다.
+  // 서버가 아직 판단을 못 했거나 승인하지 않았으면 device_state가 그대로여서 DataChange()의
+  // 변경 감지에 걸리지 않고 아무 일도 일어나지 않는다 — 그 경우는 평소 폴링이 처리한다.
+  if (situation_sent)
+  {
+    has2wifi.ReceiveMine();
+    DataChange();
+  }
 }
 
 bool RfidNsecTag(int sec)
