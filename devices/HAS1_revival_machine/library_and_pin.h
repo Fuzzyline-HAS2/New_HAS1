@@ -35,15 +35,13 @@
 // wifi_timer(서버 폴링) 주기. 평소엔 2초로 서버 부하를 아끼고, activate 상태(태그로
 // 문이 열릴 수 있는 구간)에서만 300ms로 좁혀 device_state="open" 반영 지연을 줄인다.
 #define WIFI_POLL_INTERVAL_DEFAULT_MS 2000
-// activate 구간 폴링 주기. 300ms였을 때 오히려 반영이 6배 느렸다 (현장 계측 2026-09-10):
-//   폴링 2000ms 구간 → 서버 변경 인지 867 / 909 ms
-//   폴링  300ms 구간 → 서버 변경 인지 5426 / 5587 ms
-// 원인: 같은 로그에서 측정된 HTTP 왕복이 237~336ms(평균 282ms)로 300ms 주기와 거의 같아,
-// WifiTimerFunc(has2wifi.Loop)가 끝나기 전에 다음 주기가 도래해 폴링이 연속 실행된다.
-// loop()가 HTTP 대기에 묶이고, 실패·지연이 겹친 사이클의 shift_machine 플래그를 놓쳐
-// (HAS2_Wifi::Loop는 그 플래그가 선 사이클에만 행을 읽는다) 다음 기회까지 밀린다.
-// 왕복시간보다 확실히 큰 값으로 두어 매 사이클이 여유롭게 완료되게 한다.
-#define WIFI_POLL_INTERVAL_ACTIVATE_MS 700
+// activate 구간 폴링 주기. 300 -> 700 실험(v39)은 실패했으므로 300으로 되돌림.
+// 당시 근거였던 "폴링 300ms 구간이 2000ms 구간보다 6배 느리다"는 측정이 잘못이었다 —
+// 마커로 쓴 "[GameState] device_state=open confirmed" 로그가 SolenoidPulse(5000)의
+// delay 뒤에 찍혀서, 실제 개방 시점보다 5초 늦게 관측된 것이었다(game_state.ino 참고).
+// 5000ms를 보정한 실측: 폴링 300ms -> 인지 426/587ms, 폴링 700ms -> 345~800ms.
+// 이론치(주기/2 + HTTP왕복 282ms)와 일치하며 폴링은 원래부터 정상 동작했다. 700ms는 평균 39ms 악화.
+#define WIFI_POLL_INTERVAL_ACTIVATE_MS 300
 
 #define PN532_SCK                       (18)
 #define PN532_MISO                      (19)
