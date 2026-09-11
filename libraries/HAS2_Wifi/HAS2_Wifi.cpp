@@ -650,7 +650,17 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request)
       String payload = http.getString();
       if (request != "Loop")
       {
-        _has2DebugPrint->println(payload);
+        // 응답 바디가 빈 문자열이면 println(payload)가 그냥 개행만 찍어서, 텔넷
+        // 로그만 보면 "성공(바디 없음)"인지 "뭔가 씹혀서 안 찍힌 것"인지 구분이
+        // 안 됐다 - 빈 바디일 땐 어떤 요청이 성공했는지 명시적으로 찍는다.
+        if (payload.length())
+        {
+          _has2DebugPrint->println(payload);
+        }
+        else
+        {
+          _has2DebugPrint->println("HTTP GET... code: 200, empty body, request: " + string_request);
+        }
       }
       if (request != "Send")
       {
