@@ -660,12 +660,21 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request)
     }
     else
     {
-      _has2DebugPrint->printf("HTTP GET... code: %d\n", httpcode);
+      // 에러코드만 찍으면 "무슨 요청이 왜 실패했는지" 알 수 없어 텔넷으로 봐도
+      // 원인 파악이 안 됐다 - 요청 URL과 서버 응답 바디(PHP 에러 메시지 포함)를
+      // 함께 찍는다. printf는 내부 버퍼가 짧아 긴 URL이 잘릴 수 있어 println+
+      // 문자열 결합으로 출력한다.
+      String error_payload = http.getString();
+      _has2DebugPrint->println("HTTP GET... code: " + String(httpcode) + ", request: " + string_request);
+      if (error_payload.length())
+      {
+        _has2DebugPrint->println("HTTP GET... response body: " + error_payload);
+      }
     }
   }
   else
   {
-    _has2DebugPrint->printf("HTTP GET... failed, error: %s\n", http.errorToString(httpcode).c_str());
+    _has2DebugPrint->println("HTTP GET... failed, error: " + http.errorToString(httpcode) + ", request: " + string_request);
     // if(httpRequestCnt < 2){
     //   _has2DebugPrint->printf("HTTP GET... failed, error: %s\n", http.errorToString(httpcode).c_str());
     //   _has2DebugPrint->printf("Rerequest count: %d\n",httpRequestCnt);

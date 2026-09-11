@@ -9,7 +9,6 @@ static bool tag_active = false;
 static unsigned long tag_start_time = 0;
 static String pending_tagger_device_name = "";
 static bool ir_chip_pending = false;          // IR센서가 칩을 감지해서 크랭크 대기 중
-static bool ir_chip_tag_confirmed = false;    // 위 칩이 태그 확인 상태에서 들어온 것으로 확인됨
 static bool ir_chip_success_processed = false; // 이 칩(ir_chip_pending 세션)에 대해 RunAltarSuccess를 이미 실행했는지
 static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로스위치 클릭까지 대기
 // 술래가 훔친 칩을 반납하는 기존 메커닉(아래 두번째 분기)도 태그가 붙어있는 동안
@@ -19,8 +18,9 @@ static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로
 static bool chip_return_processed = false;
 
 // 태그+칩이 (순서 상관없이) 둘 다 확인된 순간 공통으로 처리 — taken_chip 갱신/
-// tagger_name 브로드캐스트/애니메이션. 실제 솔레노이드 개방 여부는 호출부에서
-// ir_chip_tag_confirmed로 별도 표시해두고 MicroSwLoop가 그걸 보고 결정한다.
+// tagger_name 브로드캐스트/애니메이션. 실제 솔레노이드 개방 여부는 여기서 정하지
+// 않는다 - MicroSwLoop가 클릭 시점에 tag_active(태그가 그 순간에도 리더에 붙어
+// 있는지)를 직접 다시 확인해서 결정한다.
 void RunAltarSuccess()
 {
   Serial.println("[Altar] Tag + chip confirmed together -> success");
@@ -167,7 +167,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       // (블로킹 HTTP 9개와 함께) 매초 반복 발화하는 버그가 있었다.
       if (ir_chip_pending && !ir_chip_success_processed)
       {
-        ir_chip_tag_confirmed = true;
         ir_chip_success_processed = true;
         RunAltarSuccess();
       }
@@ -510,8 +509,9 @@ void SolenoidPulse(unsigned long ms)
 //****************************************** IR Sensor *******************************************
 // 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. ir_chip_pending을 세우고,
 // 이미 태그가 확인된 상태(tag_active)면 태그+칩이 (이 순서로) 동시에 확인된
-// 것이므로 RunAltarSuccess()로 성공 처리한다. 반대 순서(칩이 먼저 온 경우)는
-// CardChecking() 쪽에서 태그가 뒤늦게 확인될 때 처리한다.
+// 것이므로 RunAltarSuccess()로 성공 처리한다(점수/브로드캐스트만 - 솔레노이드는
+// MicroSwLoop가 클릭 시점의 tag_active를 다시 확인해서 별도로 연다). 반대 순서
+// (칩이 먼저 온 경우)는 CardChecking() 쪽에서 태그가 뒤늦게 확인될 때 처리한다.
 void IrSensorInit()
 {
   pinMode(IR_SENSOR_PIN, INPUT);
@@ -536,10 +536,6 @@ void IrSensorLoop()
       Serial.println("[IrSensor] Chip detected");
       ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당
       ir_chip_success_processed = false; // 새 칩 세션 시작
-      // 이 칩이 "role=tagger가 태그한 상태"에서 들어왔을 때만 나중에 솔레노이드가
-      // 열리도록 지금 시점 상태를 스냅샷해둔다 (device_state=blink/activate 무관 -
-      // tag_active 자체가 이미 game_state=="activate"를 전제로 함).
-      ir_chip_tag_confirmed = tag_active;
 
       if (tag_active)
       {
@@ -559,10 +555,11 @@ void IrSensorLoop()
 //****************************************** Micro Switch *****************************************
 // 회전 메커니즘이 한바퀴 돌면 딸깍 눌림 (외부 10K 풀업 → 평소 HIGH, 눌리면 LOW).
 // IR센서로 칩이 들어온 걸 이미 확인했을 때만(빈 회전 제외) 처리하되, 솔레노이드는
-// ir_chip_tag_confirmed(태그가 확인된 상태에서 들어온 칩 - blink/activate 무관)일
-// 때만 실제로 연다 -
-// 태그 없이 칩만 넣고 돌리면 열리지 않는다. pending_success_sound가 서있으면
-// (태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
+// "지금 이 순간에도" 태그가 리더에 붙어있을 때(tag_active, blink/activate 무관)만
+// 실제로 연다 - 태그 없이 칩만 넣고 돌리거나, 태그+칩이 한 번 확인된 뒤 태그를
+// 떼고서 돌리는 경우엔 열리지 않는다(태그가 이미 없으므로 tag_active가 false로
+// 리셋돼있음 - RfidLoop 참고). pending_success_sound가 서있으면(태그+IR이 이미
+// 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -592,17 +589,16 @@ void MicroSwLoop()
 
       if (ir_chip_pending)
       {
-        if (ir_chip_tag_confirmed || setting_state)
+        if (tag_active || setting_state)
         {
           Serial.println(setting_state
               ? "[MicroSw] Setting mode - chip present, solenoid open (no tag needed)"
-              : "[MicroSw] Tag + chip confirmed -> solenoid open");
+              : "[MicroSw] Tag still present + chip confirmed -> solenoid open");
           SolenoidPulse();
           // 실제로 열렸을 때만 대기 상태를 소비한다 - 태그가 늦게 도착해서
           // 아직 확인 안 된 채로 클릭이 먼저 지나가도(빈 회전 아님, 그냥 아직
           // 대기 중) ir_chip_pending을 꺼버리면 나중에 태그가 와도 이미 늦어버림.
           ir_chip_pending = false;
-          ir_chip_tag_confirmed = false;
           ir_chip_success_processed = false;
 
           if (pending_success_sound)
@@ -613,7 +609,7 @@ void MicroSwLoop()
         }
         else
         {
-          Serial.println("[MicroSw] Chip present but no confirmed tag yet - keep waiting");
+          Serial.println("[MicroSw] Chip present but tag not currently on reader - keep waiting");
         }
       }
     }
