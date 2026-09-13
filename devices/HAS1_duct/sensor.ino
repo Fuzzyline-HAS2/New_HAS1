@@ -125,8 +125,17 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     // 2. 술래인지, 플레이어인지 구분
     if ((String)(const char *)tag["role"] == "player" || (String)(const char *)tag["role"] == "revival" || (String)(const char *)tag["role"] == "ghost")
     {
-      if (tagger_mode) TaggerModeTagBlocked();   // 봉쇄(덕트킬 포함) 중 태그 → 보라색 점멸 + 사용불가 안내
-      else DuctTag(tagUser);
+      // [진단 로그] tag_player가 왜 안 갱신됐는지 추적용 - tagger_mode 때문에 막힌 건지,
+      // DuctTag() 안에서 duct_available=false(쿨타임)라 안 보내진 건지 여기서 구분된다.
+      if (tagger_mode)
+      {
+        Serial.println("[CardChecking] player tag blocked - tagger_mode active, TagPlayerSend not called");
+        TaggerModeTagBlocked();   // 봉쇄(덕트킬 포함) 중 태그 → 보라색 점멸 + 사용불가 안내
+      }
+      else
+      {
+        DuctTag(tagUser);
+      }
     }
     // taken_chip < max_taken_chip, tag["device_state"]=="activate" 조건 모두 주석 처리:
     // 실기 로그 상 술래 카드의 max_taken_chip이 항상 0(0 < 0 = 거짓)이고, device_state도
@@ -157,6 +166,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       delay(5000);
       digitalWrite(RELAY_PIN, LOW);
     }
+  }
+  else
+  {
+    // [진단 로그] game_state가 activate도 setting도 아닐 때(예: ready) 태그하면 여기서
+    // 아무 처리도 안 되고 조용히 무시된다 - tag_player가 안 갱신된 이유가 이거였을 수 있다.
+    Serial.print("[CardChecking] ignored - game_state is not activate/setting (my.game_state=");
+    Serial.print((const char *)my["game_state"]);
+    Serial.println(")");
   }
 }
 

@@ -7,6 +7,8 @@ void DuctTag(String tag_player)
 {
     if (duct_available)
     {
+        // [진단 로그] tag_player가 정상적으로 서버에 전송되는 경로인지 확인용.
+        Serial.print("[DuctTag] duct_available - recording tag_player="); Serial.println(tag_player);
         tag_player_name = tag_player;
         use_duct_num++;
         CooltimeCalculation();
@@ -15,6 +17,9 @@ void DuctTag(String tag_player)
     }
     else
     {
+        // [진단 로그] 쿨타임 중이라 tag_player가 갱신/전송되지 않고 무시된다 - 이게
+        // "태그했는데 tag_player가 안 채워졌다"의 유력한 원인 중 하나다.
+        Serial.print("[DuctTag] duct NOT available (cooltime) - tag_player NOT sent for "); Serial.println(tag_player);
         CooltimeMp3();
     }
 }
