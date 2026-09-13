@@ -43,6 +43,11 @@ void (*ptrCurrentMode)(); // 현재모드 저장용 포인터 함수
 //****************************************Serial
 //Communication*********************************************************
 void CommnunicationBeetle();
+// DataChanged()가 "이미 반영한 상태"로 기억하는 스냅샷. 예전에는 DataChanged 안의
+// 함수 static이었는데, MMMM 핸들러가 로컬로 상태를 바꿔도 여기에 반영할 수 없어서
+// 다음 서버 폴링 때 DataChanged가 그 전환을 처음 보는 변경으로 오인했다.
+StaticJsonDocument<2048> cur;
+void ApplyMmmmState(const String& value);
 void HandleMmmmCard();
 void HandleTagPacket(String command);
 bool PlayerDetector(String playerNum);
@@ -74,6 +79,7 @@ const unsigned long MMMM_REARM_MS = 1500;
 void DrainSubSerial();
 String lastBeetleRawPacket = ""; // LOGIC_SERIAL_02: 마지막 수신 T 패킷 원문
 int invalidCmdCount = 0;         // LOGIC_SERIAL_03: 허용되지 않은 명령 수신 횟수
+unsigned long resyncFragmentCount = 0;  // 잘린 줄(전송 도중 끊긴 조각) 폐기 횟수. 복구 로직에 넣지 않는다.
 int packetFormatErrorCount = 0;  // LOGIC_SERIAL_02: T 패킷 포맷 오류 누적
 int tagParseErrorCount = 0;      // LOGIC_TAG_02: 태그 파싱 실패 누적
 uint8_t beetleBadEventStreak = 0;   // 연속 bad-event 사이클 수 (silence 제외)
@@ -84,6 +90,7 @@ void HandleRuntimeRecovery();
 void RecoverBeetleConnection();
 void ResetBeetleErrorCounters();
 bool SendDeviceStateWithRetry(const String& value, uint8_t retries = 3);
+bool SendStateWithRetry(const String& column, const String& value, uint8_t retries = 3);
 bool ClearGithubOtaState();
 //****************************************Step
 //Motor****************************************************************
@@ -95,11 +102,16 @@ const int stepsPerRevolution = 100; // 기본세팅 200 AE탈장만 100으로 �
 //SETUP****************************************************************
 SimpleTimer GameTimer;
 SimpleTimer WifiTimer;
+// Beetle 읽기 전용 타이머. 예전에는 GameTimer(500ms)와 WifiTimer(2000ms)에 얹어
+// 읽었는데, 그러면 태그가 TTGO에 도달하기까지 최대 그 주기만큼 기다린다.
+// 실측상 이게 태그 반응속도의 실제 병목이었다(Beetle 전송 속도가 아니라).
+SimpleTimer BeetleTimer;
 void TimerInit();
 void WifiIntervalFunc();
 void GameTimerFunc();
 int wifiTimerId;
 int gameTimerId;
+int beetleTimerId;
 
 //****************************************DFPlayer
 //SETUP****************************************************************

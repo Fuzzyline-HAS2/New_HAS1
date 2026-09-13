@@ -1,6 +1,8 @@
 void TimerInit(){
     wifiTimerId = WifiTimer.setInterval(2000,WifiIntervalFunc);
     gameTimerId = GameTimer.setInterval(500,GameTimerFunc);
+    // Beetle 읽기는 게임 상태와 무관하게 항상 빠르게 돈다.
+    beetleTimerId = BeetleTimer.setInterval(100,CommnunicationBeetle);
     GameTimer.disable(gameTimerId);
 }
 
@@ -14,7 +16,8 @@ void WifiIntervalFunc(){
     lastWifiConnected = nowConnected;
 
     has2wifi.Loop(DataChanged);
-    CommnunicationBeetle();
+    // CommnunicationBeetle()은 BeetleTimer(100ms)가 전담한다. 여기서 또 부르면
+    // 2초마다 HTTP 왕복 직후에 한 번 더 읽는 것뿐이라 의미가 없다.
     FlushPendingTagSend(); // GameTimer 비활성 구간(태그 전) 등 유실 방지용 안전망
     HandleRuntimeRecovery(); // bad event 누적 + 모터 timeout 감시 (silence 제외)
 }

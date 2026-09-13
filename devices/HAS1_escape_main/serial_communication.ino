@@ -50,9 +50,22 @@ void CommnunicationBeetle(){
       Serial.println(command);
     }
     else {
-      // 허용되지 않은 명령 문자
-      invalidCmdCount++;
-      Serial.println("[UART] WARN unknown command '" + String(cmd) + "'");
+      // Beetle이 내보내는 첫 글자는 W/R/T/B/M 뿐이다(HAS1_escape_sub 전체를 확인함).
+      // 따라서 그 외의 첫 글자는 프로토콜 위반이 아니라 잘린 줄의 꼬리다. 실측: 경고 문자가
+      // '1' ':' 'x' 'P' '0'처럼 전부 "T1:GxP0_T2:" 중간 글자였다. Beetle이 loop() 딜레이
+      // 없이 스캔 속도대로 보내는 탓에 폴링 간격 사이 RX 버퍼가 넘치고, 넘친 지점을 걸친
+      // 줄이 중간부터 시작한다. 폴링이 길수록 늘어난다 (500ms: 150초에 6건 / 2000ms: 240초에 64건).
+      //
+      // 예전에는 이걸 invalidCmdCount로 올렸는데, 그 카운터는 HandleRuntimeRecovery의
+      // bad event streak를 물고 있어 3회 누적 시 Beetle을 리셋하고 복구 3회 실패 시
+      // ESP.restart()까지 간다. 원인이 Beetle 전송 속도인데 Beetle을 리셋해봐야 낫지 않는다.
+      // 조각은 그 줄만 버리면 다음 줄부터 경계가 다시 맞으므로, 별도 카운터에만 기록하고
+      // 복구 로직에는 넣지 않는다. 근본 해결은 Beetle에서 전송 속도를 제한하는 것이다.
+      resyncFragmentCount++;
+      if (resyncFragmentCount % 50 == 1) {
+        Serial.println("[UART] 잘린 줄 폐기 누적 " + String(resyncFragmentCount) +
+                       "건 (첫 글자 '" + String(cmd) + "') — Beetle 전송 속도 초과");
+      }
     }
   }
 
@@ -65,6 +78,81 @@ void CommnunicationBeetle(){
   if (latestT.length() > 0){
     HandleTagPacket(latestT);
   }
+}
+
+// ============================================================================
+// [임시 방어 — 서버 수정 후 제거 대상]
+//
+// 제거 조건: 서버의 Send 핸들러가 (1) 지정된 컬럼만 갱신하고(UPDATE ... SET col=val,
+// 행 전체 read-modify-write 금지) (2) 성공/실패를 응답으로 돌려주게 바뀌면,
+// 이 함수를 지우고 아래 두 줄로 되돌린다.
+//
+//     has2wifi.Send(name, "game_state",   value);
+//     has2wifi.Send(name, "device_state", value);
+//     my["device_state"] = value;  cur["device_state"] = value;
+//     my["game_state"]   = value;  cur["game_state"]   = value;
+//
+// 이 방어는 탈출장치의 MMMM 경로 한 곳만 덮는다. 같은 경합이 모든 장치의 모든
+// Send에 존재하므로, 장치마다 이 코드를 복사하는 것은 해법이 아니다.
+// ============================================================================
+// MMMM 전환을 서버에 반영하고, 실제로 반영됐는지 읽어서 확인한다.
+//
+// has2wifi.Send()는 반환값이 없어 HTTP 실패를 알 수 없다(ClearGithubOtaState의 주석과
+// 같은 함정). 그래서 "sent (attempt 1)" 로그가 찍혀도 서버에 안 들어갔을 수 있고,
+// 재시도 카운터가 있어도 실패를 감지하지 못하니 무의미하다.
+//
+// 실측 2026-09-13: 서버를 100ms 간격으로 읽으며 MMMM 전환 3회를 관측한 결과 1회가
+// 유실됐다. 33.010s/49.283s의 device_state 쓰기는 game_state 쓰기 전에 서버에 반영됐지만
+// (33.098s, 49.394s), 43.536s의 쓰기는 흔적을 전혀 남기지 않았다(43.973s에도 여전히
+// 옛 값). 두 쓰기가 약 250ms 간격이라 서버가 행 전체를 읽고-쓰기 한다면 뒤엣것이
+// 앞엣것을 덮고, 아니면 HTTP가 조용히 실패한 것이다. 어느 쪽이든 대응은 같다.
+//
+// 유실되면 다음 shift_machine 플래그에서 ReceiveMine()이 로컬 my를 서버 값으로 되돌리고,
+// 그러면 다음 MMMM 태그가 같은 분기로 재진입한다 — 현장의 "첫 태그엔 game_state만 바뀌고
+// 두 번째 태그에 device_state가 바뀐다"가 이것이다.
+void ApplyMmmmState(const String& value){
+  const String name = (String)(const char*)my["device_name"];
+
+  for (uint8_t i = 0; i < 3; i++){
+    if (WiFi.status() != WL_CONNECTED){
+      Serial.println("[MMMM] WARN: '" + value + "' 반영 시도 " + String(i + 1) +
+                     " 스킵 (WiFi 미연결)");
+      delay(200);
+      continue;
+    }
+
+    // 이미 맞는 컬럼은 다시 쓰지 않는다 (불필요한 쓰기가 경합 창을 넓힌다).
+    //
+    // 순서가 중요하다. 뒤에 보낸 쓰기가 앞 쓰기를 되돌린다 - 서버가 행 전체를 읽고-쓰기
+    // 하면서 읽은 스냅샷에 앞 쓰기가 아직 안 들어가 있기 때문이다. 실측 2026-09-13:
+    // device_state -> game_state 순으로 보냈더니 ready 방향이 2/2 실패했고, 어긋난 조합이
+    // 매번 device_state=activate, game_state=ready로 동일했다(= 앞서 보낸 device_state가
+    // 쓰기 이전 값으로 되돌아감). activate 방향은 3/3 성공이었다.
+    //
+    // 그래서 덜 중요한 game_state를 먼저 보내고, MMMM의 본래 역할인 device_state를
+    // 마지막에 보낸다. 마지막 쓰기는 되돌릴 뒤 쓰기가 없으므로 살아남는다.
+    if ((String)(const char*)my["game_state"] != value)
+      has2wifi.Send(name, "game_state", value);
+    if ((String)(const char*)my["device_state"] != value)
+      has2wifi.Send(name, "device_state", value);
+
+    delay(250);            // 서버 커밋 여유
+    has2wifi.ReceiveMine();  // 서버 실측값으로 my를 채운다
+
+    bool ok = ((String)(const char*)my["device_state"] == value &&
+               (String)(const char*)my["game_state"] == value);
+    if (ok){
+      if (i > 0) Serial.println("[MMMM] '" + value + "' 반영 확인 (시도 " + String(i + 1) + ")");
+      break;
+    }
+    Serial.println("[MMMM] WARN: 반영 안 됨 — device_state=" +
+                   (String)(const char*)my["device_state"] + " game_state=" +
+                   (String)(const char*)my["game_state"] + ", 재시도 " + String(i + 1) + "/3");
+  }
+
+  // DataChanged가 이 전환을 처음 보는 변경으로 오인하지 않도록 cur을 서버 실측값에 맞춘다.
+  cur["device_state"] = my["device_state"];
+  cur["game_state"]   = my["game_state"];
 }
 
 // MMMM 관리자 카드. 이전에는 로컬 static bool 토글로 activate/ready를 번갈아 호출했는데,
@@ -83,14 +171,18 @@ void HandleMmmmCard(){
 
   if((String)(const char*)my["device_state"] == "activate"){
     ReadyFunc();
-    SendDeviceStateWithRetry("ready");
+    ApplyMmmmState("ready");
+    // MMMM은 device_state뿐 아니라 game_state도 함께 옮긴다. 둘이 갈라지면 DataChanged의
+    // game_state 분기(ActivateFunc/ReadyFunc)가 나중에 따로 한 번 더 튄다.
+    // 이 전환은 방금 로컬에서 적용했으므로 cur에도 맞춰둔다. 안 맞추면 다음 서버 폴링에서
+    // DataChanged가 처음 보는 변경으로 오인해 ActivateFunc를 한 번 더 부른다 (실측: 문이
+    // 4초 열리고 곧바로 다시 4초 열려 총 8초). device_state 분기에는 "ready"가 없어서
+    // 닫기 방향에는 이 중복이 없다 — 현장의 "ready->activate만 느림"이 이것이다.
     // Send()는 서버로만 보내고 로컬 my를 갱신하지 않는다. 그대로 두면 다음 폴링 전까지
     // 여전히 "activate"로 읽혀 연타 시 같은 분기를 반복한다.
-    my["device_state"] = "ready";
   } else {
     ActivateFunc();
-    SendDeviceStateWithRetry("activate");
-    my["device_state"] = "activate";
+    ApplyMmmmState("activate");
   }
 
   // 모터가 도는 4~6초 동안 쌓인 줄은 전부 묵은 값이다. 버리지 않으면

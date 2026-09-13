@@ -70,6 +70,7 @@ void RfidLoopMain(void)
   uint8_t detectedUid[7];
   uint8_t detectedUidLength;
 
+  mmmmPresent = false;
   for (int i = 0; i < rfid_num; ++i)
   {
     structTagData[i].tagData = "GxP0"; // 매 루프마다 기본값(태그 없음)으로 먼저 초기화 -> 통신 실패/읽기 실패 시에도 이전 판 태그값이 남지 않도록 flush
@@ -85,12 +86,18 @@ void RfidLoopMain(void)
               // 싣지 않는다. 둘 다 보내면 TTGO가 한 번에 한 줄만 읽는 탓에 'M'이 버려지고
               // "MMMM"이 플레이어 태그로 처리돼(PlayerDetector의 role 미해석 경고 + 서버
               // tagged_players에 MMMM 기록) MMMM 핸들러가 실행되지 않는다. 실측 2026-09-13.
-              Serial.println("M");
+              mmmmPresent = true;
               structTagData[i].tagData = "GxP0";
             }
         }
       }
     }
   }
+  // MMMM은 카드가 올라온 순간(상승 에지)에만 한 번 보낸다. 예전에는 카드가 얹혀 있는 동안
+  // 매 스캔마다 'M'을 내보내 UART를 채웠다. TTGO에도 1500ms 재무장 디바운스가 있어 어차피
+  // 첫 줄만 쓰인다.
+  if(mmmmPresent && !mmmmPresentPrev) Serial.println("M");
+  mmmmPresentPrev = mmmmPresent;
+
   serialSend = true; // 매 루프마다 3개 리더의 최신 상태를 항상 전송 (다른 리더의 새 값과 함께 이전 판의 stale 값이 섞여 전송되는 것을 방지)
 }

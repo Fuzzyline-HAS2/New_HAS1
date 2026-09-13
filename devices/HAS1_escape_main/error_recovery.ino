@@ -88,20 +88,24 @@ void HandleRuntimeRecovery() {
 // WiFi 연결 상태 확인 후 retries 회 시도. 실패 시 로그만 남김.
 // ---------------------------------------------------------
 bool SendDeviceStateWithRetry(const String &value, uint8_t retries) {
+  return SendStateWithRetry("device_state", value, retries);
+}
+
+// device_state 외의 컬럼(game_state 등)도 같은 재시도 규칙으로 보내기 위한 범용 버전.
+bool SendStateWithRetry(const String &column, const String &value, uint8_t retries) {
   for (uint8_t i = 0; i < retries; i++) {
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[WIFI] WARN: SendDeviceState '" + value + "' attempt " +
+      Serial.println("[WIFI] WARN: Send " + column + " '" + value + "' attempt " +
                      String(i + 1) + " skipped (no WiFi)");
       delay(200);
       continue;
     }
-    has2wifi.Send((String)(const char *)my["device_name"], "device_state",
-                  value);
-    Serial.println("[WIFI] SendDeviceState '" + value + "' sent (attempt " +
+    has2wifi.Send((String)(const char *)my["device_name"], column, value);
+    Serial.println("[WIFI] Send " + column + " '" + value + "' sent (attempt " +
                    String(i + 1) + ")");
     return true;
   }
-  Serial.println("[WIFI] WARN: SendDeviceState '" + value +
+  Serial.println("[WIFI] WARN: Send " + column + " '" + value +
                  "' all retries failed.");
   return false;
 }
