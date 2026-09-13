@@ -47,6 +47,7 @@ void CommnunicationBeetle();
 // 함수 static이었는데, MMMM 핸들러가 로컬로 상태를 바꿔도 여기에 반영할 수 없어서
 // 다음 서버 폴링 때 DataChanged가 그 전환을 처음 보는 변경으로 오인했다.
 StaticJsonDocument<2048> cur;
+void ApplyMmmmState(const String& value);
 void HandleMmmmCard();
 void HandleTagPacket(String command);
 bool PlayerDetector(String playerNum);
