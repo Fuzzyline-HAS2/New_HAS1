@@ -101,11 +101,16 @@ const int stepsPerRevolution = 100; // 기본세팅 200 AE탈장만 100으로 �
 //SETUP****************************************************************
 SimpleTimer GameTimer;
 SimpleTimer WifiTimer;
+// Beetle 읽기 전용 타이머. 예전에는 GameTimer(500ms)와 WifiTimer(2000ms)에 얹어
+// 읽었는데, 그러면 태그가 TTGO에 도달하기까지 최대 그 주기만큼 기다린다.
+// 실측상 이게 태그 반응속도의 실제 병목이었다(Beetle 전송 속도가 아니라).
+SimpleTimer BeetleTimer;
 void TimerInit();
 void WifiIntervalFunc();
 void GameTimerFunc();
 int wifiTimerId;
 int gameTimerId;
+int beetleTimerId;
 
 //****************************************DFPlayer
 //SETUP****************************************************************

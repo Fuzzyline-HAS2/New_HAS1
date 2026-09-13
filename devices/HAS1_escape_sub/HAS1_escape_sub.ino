@@ -76,7 +76,13 @@ void loop() {
     RfidLoopMain();
     if(serialSend == true)
     {
-        Serial.println("T1:"+structTagData[0].tagData+"_T2:"+structTagData[1].tagData+"_T3:"+structTagData[2].tagData);
         serialSend = false;
+        String packet = "T1:"+structTagData[0].tagData+"_T2:"+structTagData[1].tagData+"_T3:"+structTagData[2].tagData;
+        unsigned long nowMs = millis();
+        if(packet != lastSentPacket || nowMs - lastSentMs >= PACKET_HEARTBEAT_MS){
+            Serial.println(packet);
+            lastSentPacket = packet;
+            lastSentMs = nowMs;
+        }
     }
 }
