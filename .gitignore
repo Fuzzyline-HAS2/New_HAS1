@@ -12,3 +12,5 @@ devices/HAS1_tagmachine_main/scripts/secrets.py
 devices/HAS1_escape_main/scripts/secrets.py
 devices/HAS1_tagmachine_sub/scripts/secrets.py
 __pycache__/
+
+.DS_Store
