@@ -26,25 +26,12 @@ void DuctTag(String tag_player)
 
 void DuctOpen(bool switch_push)
 {
-    // 봉쇄("이로운 효과") 중 내부 스위치: 도어만 열고 상태·네오픽셀·서버 보고는 건드리지 않는다.
-    // duct_available 을 내리면 CooltimeTimerFunc 가 tagger_mode 로 조기 return 하므로 쿨타임이
-    // 진행되지 않아, 봉쇄가 풀릴 때까지 덕트가 빨간 잠금 상태로 고착된다(프리즈).
-    // 도어가 열려 있는 동안 덕트킬은 EMCHECK_PIN 기준으로 그대로 동작한다.
+    if (mmmm_open) return;
+    // 봉쇄 중 내부 스위치는 문을 열지 않고 사용 불가 피드백만 준다.
     if (tagger_mode && switch_push)
     {
-        if (!can_exit_on_tagger)
-        {
-            switch_available = false;   // 연타로 오디오가 계속 재생되지 않도록 동일한 방식으로 쿨다운
-            TaggerSwitchBlocked();
-            // 색은 계속 보라색 그대로 둔다 - back을 받아 ExitTaggerMode가 호출될 때
-            // ApplyCurrentNeopixel()이 알맞은 색으로 되돌려준다.
-            duct_close_timer_id = duct_close_timer.setTimeout(4000, TaggerSwitchClose);
-            return;
-        }
-
         switch_available = false;
-        Mp3PlayLargeFolder(1, 2);
-        digitalWrite(RELAY_PIN, HIGH);
+        TaggerSwitchBlocked();
         duct_close_timer_id = duct_close_timer.setTimeout(4000, TaggerSwitchClose);
         return;
     }
@@ -63,6 +50,9 @@ void DuctOpen(bool switch_push)
         Mp3PlayLargeFolder(1, 2);
         switch_available = false;
         duct_available = false;
+        // 문이 닫힌 뒤 시작할 쿨타임을 준비한다.
+        current_time = 0;
+        cool_time_neo_bool = true;
         pixels_line.lightColor(line_red);
         pixels_switch.lightColor(red);
         pixels_round.lightColor(red);
@@ -74,20 +64,20 @@ void DuctOpen(bool switch_push)
 void DuctClose()
 {
     digitalWrite(RELAY_PIN, LOW);
-    pixels_line.lightColor(line_red);
-    pixels_switch.lightColor(red);
     switch_available = true;
-    current_time = 0;
-    cool_time_neo_bool = true;
     if (!cooltime_timer.isEnabled(cooltime_timer_id))
     {
         cooltime_timer_id = cooltime_timer.setInterval(1000, CooltimeTimerFunc);
     }
+    // 봉쇄 중에도 쿨타임은 준비하되, 타이머 함수에서 진행을 멈춘다.
+    if (tagger_mode) return;
+    pixels_line.lightColor(line_red);
+    pixels_switch.lightColor(red);
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "lock");
 }
 
 /**
- * @brief 봉쇄 중 내부 스위치로 열린 도어를 닫는다.
+ * @brief 봉쇄 중 내부 스위치 피드백 후 잠금을 유지하고 스위치를 다시 활성화한다.
  *        duct_available / current_time / cooltime / 네오픽셀 / 서버 상태는 손대지 않는다.
  */
 void TaggerSwitchClose()
@@ -97,7 +87,7 @@ void TaggerSwitchClose()
 }
 
 /**
- * @brief can_exit_on_tagger=false일 때 봉쇄 중 내부 스위치를 눌러도 문을 열지 않고
+ * @brief 봉쇄 중 내부 스위치를 눌러도 문을 열지 않고
  *        거부 피드백만 준다: 스위치 네오픽셀 보라색 + 사용 불가 안내 음성.
  *        (전용 트랙이 없어 기존 (1,1) placeholder를 재사용한다.)
  */
@@ -157,38 +147,12 @@ void TagPlayerSend()
 
 void DuctKill()
 {
-    // 가장 최근 태그한 플레이어 정보를 DB에서 가져옴
-    String kill_player = (String)(const char *)my["tag_player"];
+    Serial.println("Duct Kill!");
+    Mp3PlayLargeFolder(4, 1);
 
-    // [진단 로그] my["tag_player"]가 비어있거나(폴링 지연) 옛날 값이면 여기서 바로 드러난다.
-    Serial.print("[DuctKill] my.tag_player="); Serial.println(kill_player);
-
-    has2wifi.Receive(kill_player);
-
-    Serial.print("[DuctKill] kill_player role="); Serial.println((const char*)tag["role"]);
-
-    if (kill_player.startsWith("G"))
-    {
-        if ((String)(const char *)tag["role"] == "player")
-        {
-            Serial.println("Duct Kill!");
-            Mp3PlayLargeFolder(4, 1);
-
-            // 덕트킬은 tagger("이로운 효과")와 완전히 동일하게 동작한다.
-            // UI를 먼저 즉시 반영(EnterTaggerMode)한 뒤 서버에 device_state=tagger로 알린다.
-            // (서버가 "back"을 보내면 ExitTaggerMode()로 그대로 복귀한다.)
-            EnterTaggerMode();
-            has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
-        }
-        else
-        {
-            Serial.println("[DuctKill] skipped - kill_player role is not player");
-        }
-    }
-    else
-    {
-        Serial.println("[DuctKill] skipped - my.tag_player is empty or does not start with 'G' (suspected polling delay/unrecorded)");
-    }
+    // 술래 태그와 문 열림 여부는 CardChecking에서 확인한다. 봉쇄 해제는 서버가 처리한다.
+    EnterTaggerMode();
+    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
 }
 
 /**
@@ -245,45 +209,28 @@ void MmmmOpen()
     if (mmmm_open) return;
     mmmm_open = true;
 
-    // 봉쇄(tagger_mode) 중: DuctOpen()의 스위치 분기(TaggerSwitchClose)와 동일한 원칙으로,
-    // 문만 열고/닫을 뿐 색상·duct_available·서버 보고는 절대 건드리지 않는다. back을 받아
-    // ExitTaggerMode가 호출되기 전까지는 보라색 봉쇄 표시와 실제 봉쇄 상태가 그대로 유지된다.
-    if (tagger_mode)
-    {
-        switch_available = false;
-        digitalWrite(RELAY_PIN, HIGH);
-        duct_close_timer_id = duct_close_timer.setTimeout(4000, MmmmTaggerClose);
-        return;
-    }
+    // 일반 개방 중 관리자 태그가 들어오면 닫기 예약을 하나로 합친다.
+    if (duct_close_timer.isEnabled(duct_close_timer_id))
+        duct_close_timer.deleteTimer(duct_close_timer_id);
 
     mmmm_prev_duct_available     = duct_available;
-    mmmm_prev_cooltime_running   = cooltime_timer.isEnabled(cooltime_timer_id);
     mmmm_prev_current_time       = current_time;
     mmmm_prev_cool_time_neo_bool = cool_time_neo_bool;
 
-    if (mmmm_prev_cooltime_running)
+    if (cooltime_timer.isEnabled(cooltime_timer_id))
         cooltime_timer.deleteTimer(cooltime_timer_id);
 
     switch_available = false;
     duct_available   = false;
     Mp3PlayLargeFolder(1, 2);
-    pixels_line.lightColor(line_red);
-    pixels_switch.lightColor(red);
-    pixels_round.lightColor(red);
+    if (!tagger_mode)
+    {
+        pixels_line.lightColor(line_red);
+        pixels_switch.lightColor(red);
+        pixels_round.lightColor(red);
+    }
     digitalWrite(RELAY_PIN, HIGH);
     duct_close_timer_id = duct_close_timer.setTimeout(4000, MmmmClose);
-}
-
-/**
- * @brief 봉쇄(tagger_mode) 중 MMMM으로 열었던 도어를 닫는다.
- *        TaggerSwitchClose()와 동일하게 duct_available/색상/서버 보고는 손대지 않는다 —
- *        back 수신 시 ExitTaggerMode()가 ApplyCurrentNeopixel()로 알맞은 색을 되돌려준다.
- */
-void MmmmTaggerClose()
-{
-    digitalWrite(RELAY_PIN, LOW);
-    switch_available = true;
-    mmmm_open        = false;
 }
 
 void MmmmClose()
@@ -291,29 +238,22 @@ void MmmmClose()
     digitalWrite(RELAY_PIN, LOW);
     mmmm_open        = false;
     switch_available = true;
+    duct_available = mmmm_prev_duct_available;
+    current_time = mmmm_prev_current_time;
+    cool_time_neo_bool = mmmm_prev_cool_time_neo_bool;
 
-    if (mmmm_prev_duct_available)
+    // 일반 개방에서 넘어온 쿨타임도 여기서 시작한다. 관리자 개방만으로는 만들지 않는다.
+    if (!duct_available && !cooltime_timer.isEnabled(cooltime_timer_id))
+        cooltime_timer_id = cooltime_timer.setInterval(1000, CooltimeTimerFunc);
+
+    if (tagger_mode) return;
+    ApplyCurrentNeopixel();
+    if (duct_available && game_state == activate)
+        has2wifi.Send((String)(const char *)my["device_name"], "device_state", "activate");
+    if (!duct_available)
     {
-        duct_available    = true;
-        cool_time_neo_bool = false;
-        // MMMM은 game_state와 무관하게 열릴 수 있으므로, activate 전용 노란색을 하드코딩하는 대신
-        // 현재 game_state에 맞는 색으로 복원한다(setting=흰색/ready=빨강/activate=노랑).
-        ApplyCurrentNeopixel();
-    }
-    else
-    {
-        duct_available    = false;
-        current_time      = mmmm_prev_current_time;
-        cool_time_neo_bool = mmmm_prev_cool_time_neo_bool;
         pixels_line.clear();
         pixels_line.lightColor(line_red, CooltimeBarPixels());
-        pixels_switch.lightColor(red);
-        // 잠긴 상태로 남길 때는 카운트다운이 반드시 돌아야 한다. 이전 실행 여부로 판단하면
-        // (스위치/RFID 오픈 4초 중 MMMM 태그처럼) 타이머가 없던 시점을 기억해 재가동을 건너뛰고,
-        // duct_available 이 false 에 고착돼 game_state 가 바뀔 때까지 덕트가 잠긴다.
-        // DuctClose 와 동일하게 "지금 돌고 있지 않으면 켠다"로 판단한다.
-        if (!cooltime_timer.isEnabled(cooltime_timer_id))
-            cooltime_timer_id = cooltime_timer.setInterval(1000, CooltimeTimerFunc);
         has2wifi.Send((String)(const char *)my["device_name"], "device_state", "lock");
     }
 }

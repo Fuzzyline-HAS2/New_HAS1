@@ -37,14 +37,12 @@ GameState game_state = setting;
 
 bool cool_time_neo_bool = true;
 bool tagger_mode = false;   // "이로운 효과"(덕트킬 포함) - tagger 수신 시 덕트 동결(보라색+RFID off), back 시 원복
-bool can_exit_on_tagger = true;  // false면 봉쇄 중 내부 스위치로 못 나감 (서버 my["can_exit_on_tagger"])
 
 bool tagger_blink_active = false;  // 봉쇄(tagger_mode) 중 태그 시 보라색 점멸(3회) 진행 여부
 int tagger_blink_step = 0;
 
 bool mmmm_open = false;
 bool mmmm_prev_duct_available = false;
-bool mmmm_prev_cooltime_running = false;
 int mmmm_prev_current_time = 0;
 bool mmmm_prev_cool_time_neo_bool = false;
 //============================ Hardware Serial ============================
@@ -72,7 +70,6 @@ void TaggerBlinkStep();
 void TaggerSwitchBlocked();
 void MmmmOpen();
 void MmmmClose();
-void MmmmTaggerClose();
 
 //*=============================== Sensor ===============================*
 /**
