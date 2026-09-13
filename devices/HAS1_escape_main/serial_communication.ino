@@ -1,3 +1,12 @@
+// 모터 동작처럼 수 초간 블로킹한 직후에만 쓰는 RX 버퍼 비우기.
+// 그 사이 쌓인 줄은 이미 수 초 묵은 값이라 처리해도 의미가 없고, MMMM의 경우
+// 오히려 중복 토글을 일으킨다. 주의: toSubSerial.flush()는 TX만 비우므로
+// (ESP32 코어의 uartFlushTxOnly) RX를 치우려면 이렇게 읽어내야 한다.
+// 상시 드레인은 유효한 패킷을 버리므로 절대 하지 않는다.
+void DrainSubSerial(){
+  while(toSubSerial.available()) toSubSerial.read();
+}
+
 // Beetle은 한 폴링 주기에 여러 줄을 보낼 수 있다(예: MMMM 태그 시 'M'과 'T' 패킷).
 // 예전에는 if로 한 줄만 읽고 끝에서 나머지를 버려서, 둘 중 하나가 통째로 유실됐다.
 // 실측 2026-09-13: MMMM을 태그해도 'M'이 버려져 MMMM 핸들러가 실행되지 않았다.
@@ -73,6 +82,13 @@ void CommnunicationBeetle(){
       Serial.println(command);
     }
     else if(cmd == 'M'){
+      // 카드가 얹혀 있는 동안 'M'이 계속 오므로, 마지막으로 본 시각을 항상 갱신한다.
+      unsigned long nowMs = millis();
+      bool rearmed = (lastMmmmSeenMs == 0) || (nowMs - lastMmmmSeenMs > MMMM_REARM_MS);
+      lastMmmmSeenMs = nowMs;
+      if(!rearmed){
+        continue;   // 아직 같은 태그로 본다 (카드를 떼야 재무장)
+      }
       // MMMM 관리자 카드. 이전에는 로컬 static bool 토글로 activate/ready를 번갈아 호출했는데,
       // 서버도 DataChanged()(wifi.ino)에서 같은 ActivateFunc/ReadyFunc를 독립적으로 호출하기
       // 때문에 서버가 상태를 바꾸면 토글 위상이 어긋나 다음 카드 한 번이 반대로 동작했다
@@ -88,6 +104,10 @@ void CommnunicationBeetle(){
         SendDeviceStateWithRetry("activate");
         my["device_state"] = "activate";
       }
+      // 모터가 도는 4~6초 동안 쌓인 줄은 전부 묵은 값이다. 버리지 않으면
+      // 그 안의 'M'들이 곧바로 재처리되어 상태가 다시 뒤집힌다.
+      DrainSubSerial();
+      lastMmmmSeenMs = millis();   // 드레인 직후부터 재무장 시간을 다시 잰다
     }
     else {
       // 허용되지 않은 명령 문자
