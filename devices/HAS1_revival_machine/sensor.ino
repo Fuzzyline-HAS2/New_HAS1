@@ -218,14 +218,19 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
-  // is_open(이 iotGlove가 생명장치를 이미 연 적 있는지)을 여기서 미리 조회해 걸러내던
-  // 로컬 게이트를 제거했다. 이 코드의 기획은 판단을 서버에 두는 것이고(아래 주석 참고),
-  // is_open 역시 서버 자신의 컬럼이므로 기기가 중복 판단할 이유가 없다. 거절 안내는
-  // 서버가 스피커로 별도 처리하므로 기기 쪽 점멸 피드백도 필요하지 않다.
-  //
-  // 이 게이트가 왕복 1회(has2wifi.Receive)를 통째로 차지하고 있었다. 실측(2026-09-10)
-  // 313ms + 분기/로그 48ms로, 정상적인 첫 사용 태그까지 매번 그 비용을 냈다.
-  // 제거로 태그 읽힘->개방이 1190ms -> 829ms가 된다.
+  // is_open은 생명장치가 아니라 태그한 iotGlove 쪽 필드. 이미 true면(이 iotGlove가
+  // 생명장치를 이미 연 적 있으면) 서버로 보내지 않고 사용 불가로 처리한다.
+  // device_state=="tagger"와 달리 여기서는 점멸 후에도 device_state가 계속 "activate"라
+  // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 보라색에 머무르게 되므로 복원한다.
+  has2wifi.Receive(tagUser);
+  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]));
+  if ((int)tag["is_open"] != 0)
+  {
+    Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
+    NeoBlinkPurple(3);
+    NeopixelSet(yellow);  // activate 상태 색으로 복원
+    return;
+  }
 
   // 활성화 여부/역할(ghost·revival)/쿨다운/최초사용 여부는 모두 서버가 판단한다.
   // 이 기기는 태그 이벤트만 전달하고, 통과 시 device_state="open"이 폴링으로
