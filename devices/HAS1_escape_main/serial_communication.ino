@@ -80,6 +80,21 @@ void CommnunicationBeetle(){
   }
 }
 
+// ============================================================================
+// [임시 방어 — 서버 수정 후 제거 대상]
+//
+// 제거 조건: 서버의 Send 핸들러가 (1) 지정된 컬럼만 갱신하고(UPDATE ... SET col=val,
+// 행 전체 read-modify-write 금지) (2) 성공/실패를 응답으로 돌려주게 바뀌면,
+// 이 함수를 지우고 아래 두 줄로 되돌린다.
+//
+//     has2wifi.Send(name, "game_state",   value);
+//     has2wifi.Send(name, "device_state", value);
+//     my["device_state"] = value;  cur["device_state"] = value;
+//     my["game_state"]   = value;  cur["game_state"]   = value;
+//
+// 이 방어는 탈출장치의 MMMM 경로 한 곳만 덮는다. 같은 경합이 모든 장치의 모든
+// Send에 존재하므로, 장치마다 이 코드를 복사하는 것은 해법이 아니다.
+// ============================================================================
 // MMMM 전환을 서버에 반영하고, 실제로 반영됐는지 읽어서 확인한다.
 //
 // has2wifi.Send()는 반환값이 없어 HTTP 실패를 알 수 없다(ClearGithubOtaState의 주석과
