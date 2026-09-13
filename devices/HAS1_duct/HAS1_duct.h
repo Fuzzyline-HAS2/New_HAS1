@@ -66,7 +66,7 @@ void DuctClose();
 void CooltimeCalculation();
 int  CooltimeBarPixels();
 void CooltimeMp3();
-void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds, unsigned long intro_delay_ms);
+void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds);
 void TagPlayerSend();
 void DuctKill();
 void TaggerModeTagBlocked();
@@ -159,6 +159,8 @@ bool rfid_tag;
 void RfidInit();
 void RfidLoop();
 void CardChecking(uint8_t rfidData[32]);
+
+#include "audio_queue.h"
 
 //================================ Mp3 ===================================
 DFRobotDFPlayerMini myDFPlayer;

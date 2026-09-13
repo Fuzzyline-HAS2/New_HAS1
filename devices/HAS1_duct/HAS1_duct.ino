@@ -56,6 +56,7 @@ void loop() {
   TelnetRun();  // Telnet 클라이언트 접속/데이터 처리
   TimerRun();
   EmegencyPush();
+  Mp3Run();
 
   if (game_state == activate) {
     ActivateFunc();

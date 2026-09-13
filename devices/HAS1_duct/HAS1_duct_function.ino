@@ -156,8 +156,7 @@ int TaggerRemainingSeconds()
 
 void TaggerRemainingMp3()
 {
-    // (4,2) 파일 길이 3318ms에 재생 여유를 둔다.
-    RemainingTimeMp3(4, 2, TaggerRemainingSeconds(), 3500);
+    RemainingTimeMp3(4, 2, TaggerRemainingSeconds());
 }
 
 /**

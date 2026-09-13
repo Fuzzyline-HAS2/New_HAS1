@@ -5,9 +5,12 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <limits>
 using String = std::string;
 using uint8_t = unsigned char;
 using uint16_t = unsigned short;
+#include "audio_queue.h"
+#include "mp3_durations.h"
 constexpr int HIGH = 1, LOW = 0, RELAY_PIN = 1, EMCHECK_PIN = 2, SW_PIN = 15;
 constexpr int NUMPIXELS_LINE = 30, DEFAULT_COLOR_BRIGHTNESS = 50, DEFAULT_LINE_BRIGHTNESS = 50;
 enum GameState { setting, ready, activate };
@@ -31,18 +34,35 @@ struct Value {
     operator const char*() const { return text.c_str(); }
     explicit operator int() const { return std::atoi(text.c_str()); }
 };
-std::map<String, Value> my, tag;
+std::map<String, Value> my, tag, shift_machine;
 struct Wifi {
     std::vector<String> states, receives;
     void Send(String, String key, String value) { if (key == "device_state") states.push_back(value); }
     void Receive(String value) { receives.push_back(value); }
 } has2wifi;
 int cooldownAnnouncements = 0, blockedAnnouncements = 0;
-void Mp3PlayLargeFolder(uint8_t folder, uint16_t file) {
+std::vector<unsigned long> audioStartTimes;
+void recordTrack(uint8_t folder, uint16_t file) {
     if (folder == 4 && file == 2) ++blockedAnnouncements;
     if (folder == 1 && file == 3) ++cooldownAnnouncements;
     audioEvents.push_back("play:" + std::to_string(folder) + ":" + std::to_string(file));
+    audioStartTimes.push_back(now);
 }
+#ifdef ACTUAL_AUDIO
+struct Player {
+    int events = 0;
+    bool available() { return events > 0; }
+    int readType() { return 0; }
+    int read() { --events; return 0; }
+    void volume(int) {}
+    void playLargeFolder(uint8_t folder, uint16_t file) { recordTrack(folder, file); }
+} myDFPlayer;
+#else
+void Mp3QueuePhrase(Mp3Phrase phrase) {
+    for (uint8_t i = 0; i < phrase.count; ++i) recordTrack(phrase.tracks[i].folder, phrase.tracks[i].file);
+}
+// DOMAIN_AUDIO_FACTORY
+#endif
 void RfidLoop() {}
 void UpdateBrightness() {}
 
@@ -72,6 +92,9 @@ struct SimpleTimer {
     }
 } cooltime_timer, duct_close_timer, tagger_blink_timer;
 // FIRMWARE_GLOBALS
+#ifdef ACTUAL_AUDIO
+// ACTUAL_AUDIO_FUNCTIONS
+#endif
 // FIRMWARE_FUNCTIONS
 
 void check(bool condition, const char* msg) {
@@ -79,7 +102,12 @@ void check(bool condition, const char* msg) {
 }
 void advance(unsigned long ms) {
     auto end = now + ms;
-    while (now < end) { ++now; cooltime_timer.run(); duct_close_timer.run(); tagger_blink_timer.run(); }
+    while (now < end) {
+        ++now; cooltime_timer.run(); duct_close_timer.run(); tagger_blink_timer.run();
+#ifdef ACTUAL_AUDIO
+        Mp3Run();
+#endif
+    }
 }
 void openNormal() { DuctTag("G1P1"); check(relay == HIGH && !duct_available, "normal open"); }
 void finished() { advance(7000); check(duct_available && relay == LOW, "cooldown completes"); }
@@ -89,8 +117,7 @@ void adminRepeat() {
 }
 std::vector<String> blockadeAudioEvents(int seconds) {
     return {
-        "play:4:2", "delay:3500", "play:3:" + std::to_string(seconds),
-        "delay:1300", "play:1:5", "delay:500"
+        "play:4:2", "play:3:" + std::to_string(seconds), "play:1:5"
     };
 }
 void expectBlockadeAudio(int seconds) {
@@ -212,19 +239,17 @@ int main(int argc, char** argv) {
         const int seconds = std::stoi(test.substr(6));
         const bool minutes = seconds >= 60;
         std::vector<String> expected = {
-            "play:1:3", "delay:2800",
+            "play:1:3",
             "play:" + String(minutes ? "2:" : "3:") + std::to_string(minutes ? seconds / 60 : seconds),
-            minutes ? "delay:1100" : "delay:1300",
-            minutes ? "play:1:4" : "play:1:5", "delay:500"
+            minutes ? "play:1:4" : "play:1:5"
         };
         cooltime = seconds + 7; current_time = 7;
         CooltimeMp3();
-        check(audioEvents == expected, "normal cooldown keeps original intro, remaining amount, units and delays");
+        check(audioEvents == expected, "normal cooldown queues original intro, remaining amount and units");
         check(cooltime == seconds + 7 && current_time == 7, "announcement preserves countdown values");
-        // 1700 is an arbitrary test duration, not the unknown blockade audio length.
-        audioEvents.clear(); expected[0] = "play:4:2"; expected[1] = "delay:1700";
-        RemainingTimeMp3(4, 2, seconds, 1700);
-        check(audioEvents == expected, "shared helper uses supplied blockade intro and duration with original amount and units");
+        audioEvents.clear(); expected[0] = "play:4:2";
+        RemainingTimeMp3(4, 2, seconds);
+        check(audioEvents == expected, "shared helper queues supplied blockade intro with original amount and units");
     } else if (test == "blockade_remaining_audio") {
         EnterTaggerMode(); expectBlockadeAudio(30);
         advance(10000); expectBlockadeAudio(20);
