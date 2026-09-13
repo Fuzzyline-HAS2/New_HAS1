@@ -40,7 +40,7 @@ void RfidInit()
   nfc.begin();
   if (!(nfc.getFirmwareVersion()))
   {
-    Serial.print("!!!RFID 연결실패!!!");
+    Serial.print("!!!RFID connection failed!!!");
     if (!send_rfid_error)
     {
       has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
@@ -49,7 +49,7 @@ void RfidInit()
     return;
   }
   nfc.SAMConfig();
-  Serial.println("RFID 연결성공");
+  Serial.println("RFID connection successful");
 }
 
 /**
@@ -133,19 +133,19 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     // 실제 게임 activate 중에 계속 "setting"으로 찍혀 두 조건 다 항상 거짓이었음 (사용자 확인).
     else if ((String)(const char *)tag["role"] == "tagger" /* && ((int)tag["taken_chip"] < (int)tag["max_taken_chip"]) && (String)(const char *)tag["device_state"] == "activate" */)
     {
-      Serial.println("[CardChecking] tagger 분기 진입 - EMCHECK/tagger_mode 조건 통과 시 DuctKill 호출");
+      Serial.println("[CardChecking] entered tagger branch - calling DuctKill if EMCHECK/tagger_mode conditions pass");
       if (digitalRead(EMCHECK_PIN) && !tagger_mode)
       {
         DuctKill();
       }
       else
       {
-        Serial.println("[CardChecking] DuctKill 스킵 - EMCHECK_PIN 또는 tagger_mode 조건 불충족");
+        Serial.println("[CardChecking] DuctKill skipped - EMCHECK_PIN or tagger_mode condition not met");
       }
     }
     else
     {
-      Serial.println("[CardChecking] 술래/플레이어 분기 둘 다 불충족 - role/taken_chip/device_state 값 확인 필요");
+      Serial.println("[CardChecking] neither tagger nor player branch matched - check role/taken_chip/device_state values");
     }
   }
   else if (game_state == setting)
@@ -225,7 +225,7 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number)
     {
       myDFPlayer.playLargeFolder(folder_number, file_number);
       play_error_count++;
-      Serial.print("에러횟수 :");
+      Serial.print("Error count: ");
       Serial.println(play_error_count);
     }
     else

@@ -177,12 +177,12 @@ void DuctKill()
         }
         else
         {
-            Serial.println("[DuctKill] 스킵 - kill_player role이 player가 아님");
+            Serial.println("[DuctKill] skipped - kill_player role is not player");
         }
     }
     else
     {
-        Serial.println("[DuctKill] 스킵 - my.tag_player가 비어있거나 'G'로 시작하지 않음 (폴링 지연/미기록 의심)");
+        Serial.println("[DuctKill] skipped - my.tag_player is empty or does not start with 'G' (suspected polling delay/unrecorded)");
     }
 }
 
