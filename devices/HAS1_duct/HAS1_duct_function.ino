@@ -30,9 +30,7 @@ void DuctOpen(bool switch_push)
     // 봉쇄 중 내부 스위치는 문을 열지 않고 사용 불가 피드백만 준다.
     if (tagger_mode && switch_push)
     {
-        switch_available = false;
         TaggerSwitchBlocked();
-        duct_close_timer_id = duct_close_timer.setTimeout(4000, TaggerSwitchClose);
         return;
     }
 
@@ -81,24 +79,13 @@ void DuctClose()
 }
 
 /**
- * @brief 봉쇄 중 내부 스위치 피드백 후 잠금을 유지하고 스위치를 다시 활성화한다.
- *        duct_available / current_time / cooltime / 네오픽셀 / 서버 상태는 손대지 않는다.
- */
-void TaggerSwitchClose()
-{
-    digitalWrite(RELAY_PIN, LOW);
-    switch_available = true;
-}
-
-/**
  * @brief 봉쇄 중 내부 스위치를 눌러도 문을 열지 않고
- *        거부 피드백만 준다: 스위치 네오픽셀 보라색 + 사용 불가 안내 음성.
- *        (전용 트랙이 없어 기존 (1,1) placeholder를 재사용한다.)
+ *        거부 피드백만 준다: 스위치 네오픽셀 보라색 + 봉쇄 남은시간 안내.
  */
 void TaggerSwitchBlocked()
 {
     pixels_switch.lightColor(purple);
-    Mp3PlayLargeFolder(1, 1);
+    TaggerRemainingMp3();
 }
 
 /**
@@ -167,14 +154,19 @@ int TaggerRemainingSeconds()
     return remaining_ms / 1000UL + (remaining_ms % 1000UL != 0);
 }
 
+void TaggerRemainingMp3()
+{
+    // (4,2) 파일 길이 3318ms에 재생 여유를 둔다.
+    RemainingTimeMp3(4, 2, TaggerRemainingSeconds(), 3500);
+}
+
 /**
  * @brief 봉쇄(tagger_mode) 중 생존자/ghost/revival이 태그했을 때의 피드백.
  *        보라색 점멸(3회, non-blocking) + 사용 불가 안내 음성.
  */
 void TaggerModeTagBlocked()
 {
-    // (4,2) 트랙 길이 실측 전에는 기존 안내와 같은 2800ms를 사용한다.
-    RemainingTimeMp3(4, 2, TaggerRemainingSeconds(), 2800);
+    TaggerRemainingMp3();
 
     if (tagger_blink_active) return;   // 점멸 중 재태그는 무시 (타이머 중첩 방지)
     tagger_blink_active = true;

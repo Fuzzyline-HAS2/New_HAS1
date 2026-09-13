@@ -39,7 +39,7 @@ struct Wifi {
 } has2wifi;
 int cooldownAnnouncements = 0, blockedAnnouncements = 0;
 void Mp3PlayLargeFolder(uint8_t folder, uint16_t file) {
-    if (folder == 1 && file == 1) ++blockedAnnouncements;
+    if (folder == 4 && file == 2) ++blockedAnnouncements;
     if (folder == 1 && file == 3) ++cooldownAnnouncements;
     audioEvents.push_back("play:" + std::to_string(folder) + ":" + std::to_string(file));
 }
@@ -87,15 +87,17 @@ void adminRepeat() {
     MmmmOpen(); check(mmmm_open && relay == HIGH, "admin may reopen");
     advance(4000); check(!mmmm_open && relay == LOW, "admin closes and clears flag");
 }
+std::vector<String> blockadeAudioEvents(int seconds) {
+    return {
+        "play:4:2", "delay:3500", "play:3:" + std::to_string(seconds),
+        "delay:1300", "play:1:5", "delay:500"
+    };
+}
 void expectBlockadeAudio(int seconds) {
     audioEvents.clear(); tag["role"] = "player";
     uint8_t card[32] = {'G', '1', 'P', '1'};
     CardChecking(card);
-    const std::vector<String> expected = {
-        "play:4:2", "delay:2800", "play:3:" + std::to_string(seconds),
-        "delay:1300", "play:1:5", "delay:500"
-    };
-    check(audioEvents == expected, "blocked outside player tag announces remaining blockade seconds");
+    check(audioEvents == blockadeAudioEvents(seconds), "blocked outside player tag announces remaining blockade seconds");
     check(tagger_mode && relay == LOW, "remaining-time announcement keeps blockade locked");
 }
 int main(int argc, char** argv) {
@@ -189,12 +191,23 @@ int main(int argc, char** argv) {
         audioEvents.clear();
         switchInput = LOW; ActivateFunc();
         check(blockedAnnouncements == 1 && cooldownAnnouncements == 0, "blockade feedback takes priority over cooldown");
-        check(audioEvents == std::vector<String>{"play:1:1"}, "internal blockade button retains original unavailable track");
-        for (int i = 0; i < 500; ++i) { advance(10); ActivateFunc(); }
-        check(blockedAnnouncements == 1 && cooldownAnnouncements == 0, "held blockaded button does not repeat feedback");
-        check(relay == LOW && current_time == elapsed, "blockaded button stays closed and frozen");
+        check(audioEvents == blockadeAudioEvents(30), "internal button uses same blockade intro and remaining time as external tag");
+        check(switch_available && !duct_close_timer.isEnabled(duct_close_timer_id),
+              "blockade announcement does not disable button or schedule delayed reenable");
+        ActivateFunc();
+        check(blockedAnnouncements == 1, "holding after first announcement does not repeat");
+        audioEvents.clear();
         switchInput = HIGH; ActivateFunc(); switchInput = LOW; ActivateFunc();
-        check(blockedAnnouncements == 2 && cooldownAnnouncements == 0, "blockaded repress repeats correct feedback");
+        check(blockedAnnouncements == 2 && audioEvents == blockadeAudioEvents(30),
+              "immediate release and repress repeats announcement without four second wait");
+        for (int i = 0; i < 500; ++i) { advance(10); ActivateFunc(); }
+        check(blockedAnnouncements == 2 && cooldownAnnouncements == 0, "held blockaded button does not repeat feedback");
+        check(relay == LOW && current_time == elapsed, "blockaded button stays closed and frozen");
+        audioEvents.clear();
+        switchInput = HIGH; ActivateFunc(); switchInput = LOW; ActivateFunc();
+        check(blockedAnnouncements == 3 && cooldownAnnouncements == 0, "blockaded repress repeats correct feedback");
+        check(audioEvents == blockadeAudioEvents(25), "blockaded repress announces updated remaining time");
+        check(relay == LOW && tagger_mode, "repeated blockade announcement never opens or releases door");
     } else if (test.rfind("audio_", 0) == 0) {
         const int seconds = std::stoi(test.substr(6));
         const bool minutes = seconds >= 60;
@@ -224,6 +237,18 @@ int main(int argc, char** argv) {
         ExitTaggerMode(); EnterTaggerMode(); expectBlockadeAudio(30);
         advance(999); expectBlockadeAudio(30);
         advance(1); expectBlockadeAudio(29);
+    } else if (test == "blockade_button_preserves_close") {
+        openNormal(); advance(1000); EnterTaggerMode();
+        const int pendingClose = duct_close_timer_id;
+        // Defensive direct call while the normal opening is still waiting to close.
+        DuctOpen(true);
+        check(duct_close_timer_id == pendingClose && duct_close_timer.isEnabled(pendingClose),
+              "blocked feedback leaves original close callback intact");
+        advance(3000);
+        check(relay == LOW && switch_available && tagger_mode,
+              "original four second close still fires under blockade");
+        check(cooltime_timer.isEnabled(cooltime_timer_id) && current_time == 0,
+              "original close still prepares frozen normal cooldown");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
