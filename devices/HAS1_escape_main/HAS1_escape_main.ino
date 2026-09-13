@@ -16,6 +16,10 @@
 void setup() {
     delay(500);
     Serial.begin(115200);
+    // 기본 RX 버퍼는 256바이트 = T 패킷(25바이트) 약 10개분이다. 모터가 도는 4초 동안
+    // Beetle이 계속 보내므로 그대로면 넘쳐서 줄이 잘리고, 잘린 줄이 "unknown command 'G'"
+    // 같은 경고로 나타난다. setRxBufferSize()는 begin() 이전에 불러야 적용된다.
+    toSubSerial.setRxBufferSize(1024);
     toSubSerial.begin(115200, SERIAL_8N1, HWSERIAL_RX, HWSERIAL_TX);
 //    has2wifi.Setup("city");
     has2wifi.Setup("badland");
