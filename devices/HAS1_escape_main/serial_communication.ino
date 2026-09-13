@@ -1,93 +1,53 @@
-// Beetle은 한 폴링 주기에 여러 줄을 보낼 수 있다(예: MMMM 태그 시 'M'과 'T' 패킷).
-// 예전에는 if로 한 줄만 읽고 끝에서 나머지를 버려서, 둘 중 하나가 통째로 유실됐다.
-// 실측 2026-09-13: MMMM을 태그해도 'M'이 버려져 MMMM 핸들러가 실행되지 않았다.
-// 버퍼에 있는 줄을 모두 처리한다. 한 번에 처리할 줄 수에 상한을 둬 Beetle이 폭주해도
-// loop가 묶이지 않게 한다(왕복 HTTP가 붙는 PlayerDetector가 줄마다 불릴 수 있으므로).
+// 모터 동작처럼 수 초간 블로킹한 직후에만 쓰는 RX 버퍼 비우기.
+// 그 사이 쌓인 줄은 이미 수 초 묵은 값이라 처리해도 의미가 없고, MMMM의 경우
+// 오히려 중복 토글을 일으킨다. 주의: toSubSerial.flush()는 TX만 비우므로
+// (ESP32 코어의 uartFlushTxOnly) RX를 치우려면 이렇게 읽어내야 한다.
+// 상시 드레인은 유효한 패킷을 버리므로 절대 하지 않는다.
+void DrainSubSerial(){
+  while(toSubSerial.available()) toSubSerial.read();
+}
+
+// Beetle은 loop()에 딜레이가 없어서 스캔 속도대로 T 패킷을 계속 밀어넣는다(실측: 리더 3개
+// 스캔마다 1줄). TTGO는 500ms마다 한 번 읽으므로 매 주기 여러 줄이 쌓인다. 예전에는 쌓인 줄을
+// 앞에서부터 전부 처리했는데, T는 "지금 각 리더에 뭐가 올려져 있나"의 스냅샷이라 묵은 것을
+// 처리해봐야 의미가 없고 비용만 크다 — PlayerDetector가 태그 1개당 has2wifi.Receive()
+// (블로킹 HTTP 왕복 221~336ms, 타임아웃 미설정 시 최악 5초)를 부르기 때문에, 리더에 카드가
+// 올려져 있으면 한 주기에 HTTP가 수십 번 나가 loop가 수 초간 묶였다.
+//
+// 그래서 읽기와 처리를 분리한다. 1단계에서 버퍼를 끝까지 비워 분류만 하고, 2단계에서
+// 최신 T 한 줄만 처리한다. 주의: 'M'은 상태를 토글하는 1회성 이벤트라 버리면 태그가
+// 아무 일도 안 한 것이 되므로 절대 최신값 덮어쓰기 대상이 아니다. 별도 플래그로 살린다.
 void CommnunicationBeetle(){
   Serial.println("READ");
-  const uint8_t kMaxLinesPerCall = 8;
+
+  // --- 1단계: 쌓인 줄을 전부 읽어 분류만 한다 (여기서는 HTTP/모터 같은 무거운 일 없음) ---
+  const uint8_t kMaxLinesPerCall = 16;
+  String latestT = "";        // T 스냅샷: 뒤엣것이 앞엣것을 덮어쓴다
+  bool   mmmmSeen = false;    // M 이벤트: 한 번이라도 봤으면 살린다
+
   for (uint8_t processed = 0; processed < kMaxLinesPerCall; ++processed){
-  if(toSubSerial.available() > 0){
+    if(toSubSerial.available() <= 0) break;   // 버퍼가 비면 종료
     lastBeetleMs = millis();
     String command = toSubSerial.readStringUntil('\n');
 
-    // 빈 문자열 방어
-    if (command.length() == 0) continue;
-
+    if (command.length() == 0) continue;      // 빈 문자열 방어
     char cmd = command[0];
 
-    if(cmd == 'W'){
+    if(cmd == 'T'){
+      latestT = command;
+    }
+    else if(cmd == 'M'){
+      mmmmSeen = true;
+    }
+    else if(cmd == 'W'){
       Serial.println("Beetle Init Success");
       toSubSerial.println("W");
     }
     else if(cmd == 'R'){
       Serial.println("Beetle Reset Success");
     }
-    else if(cmd == 'T'){
-      // 원문 저장 (포맷 검증 전)
-      lastBeetleRawPacket = command;
-
-      // --- 포맷 검증: "T1:xxxx_T2:xxxx_T3:xxxx" (최소 길이 23, 구분자 위치 고정) ---
-      bool fmtOk = (command.length() >= 23 &&
-                    command[1] == '1' && command[2] == ':' &&
-                    command[7] == '_' &&
-                    command[8] == 'T' && command[9] == '2' && command[10] == ':' &&
-                    command[15] == '_' &&
-                    command[16] == 'T' && command[17] == '3' && command[18] == ':');
-
-      if (!fmtOk) {
-        packetFormatErrorCount++;
-        Serial.println("[UART] WARN malformed T packet: " + command);
-        continue; // 이 줄만 버리고 다음 줄 계속 처리 (잘못된 substring 접근 방지)
-      }
-
-      Serial.println(command);
-      tag1 = command.substring(3, 7);
-      tag2 = command.substring(11, 15);
-      tag3 = command.substring(19, 23);
-
-      Serial.println("TAG1 = " + tag1);
-      Serial.println("TAG2 = " + tag2);
-      Serial.println("TAG3 = " + tag3);
-
-      tagState[0] = PlayerDetector(tag1);
-      tagState[1] = PlayerDetector(tag2);
-      tagState[2] = PlayerDetector(tag3);
-
-      // 유효 패킷 처리 성공 → bad event 카운터 초기화
-      ResetBeetleErrorCounters();
-
-      // 태그 코드만 '_' 로 join → URL-safe(영숫자+언더바)라 인코딩 불필요.
-      // 예: "G1P1_GxP0_GxP0". 서버는 explode("_", value) 로 배열 파싱.
-      // 3개 다 "GxP0"(미검출)면 매 루프 동일값 재전송이라 스팸이므로 스킵하고,
-      // 하나라도 실제 태그(마지막 자리 != '0')면 전송한다.
-      // 여기서 바로 Send(HTTP 왕복)하면 오디오 재생(TagCount)이 그만큼 늦어지므로
-      // 값만 보관해두고 실제 전송은 오디오가 나간 뒤 FlushPendingTagSend()에서 한다.
-      bool hasMeaningfulTag = (tag1[3] != '0') || (tag2[3] != '0') || (tag3[3] != '0');
-      if (hasMeaningfulTag) {
-        pendingTagValue = tag1 + "_" + tag2 + "_" + tag3;
-        tagValuePending = true;
-      }
-    }
     else if(cmd == 'B'){
       Serial.println(command);
-    }
-    else if(cmd == 'M'){
-      // MMMM 관리자 카드. 이전에는 로컬 static bool 토글로 activate/ready를 번갈아 호출했는데,
-      // 서버도 DataChanged()(wifi.ino)에서 같은 ActivateFunc/ReadyFunc를 독립적으로 호출하기
-      // 때문에 서버가 상태를 바꾸면 토글 위상이 어긋나 다음 카드 한 번이 반대로 동작했다
-      // (현장: "MMMM 카드 제대로 작동 안함"). 사설 상태 대신 현재 device_state에서 도출한다.
-      if((String)(const char*)my["device_state"] == "activate"){
-        ReadyFunc();
-        SendDeviceStateWithRetry("ready");
-        // Send()는 서버로만 보내고 로컬 my를 갱신하지 않는다. 그대로 두면 다음 폴링 전까지
-        // 여전히 "activate"로 읽혀 연타 시 같은 분기를 반복한다.
-        my["device_state"] = "ready";
-      } else {
-        ActivateFunc();
-        SendDeviceStateWithRetry("activate");
-        my["device_state"] = "activate";
-      }
     }
     else {
       // 허용되지 않은 명령 문자
@@ -95,9 +55,94 @@ void CommnunicationBeetle(){
       Serial.println("[UART] WARN unknown command '" + String(cmd) + "'");
     }
   }
-  else {
-    break;   // 버퍼가 비면 종료
+
+  // --- 2단계: M을 먼저 처리한다. 상태가 바뀌면 같은 패스에서 모은 T는 전환 이전의
+  // 스냅샷이라 이미 묵은 값이므로 그대로 버린다. ---
+  if (mmmmSeen){
+    HandleMmmmCard();
+    return;
   }
+  if (latestT.length() > 0){
+    HandleTagPacket(latestT);
+  }
+}
+
+// MMMM 관리자 카드. 이전에는 로컬 static bool 토글로 activate/ready를 번갈아 호출했는데,
+// 서버도 DataChanged()(wifi.ino)에서 같은 ActivateFunc/ReadyFunc를 독립적으로 호출하기
+// 때문에 서버가 상태를 바꾸면 토글 위상이 어긋나 다음 카드 한 번이 반대로 동작했다
+// (현장: "MMMM 카드 제대로 작동 안함"). 사설 상태 대신 현재 device_state에서 도출한다.
+void HandleMmmmCard(){
+  // 카드가 얹혀 있는 동안 'M'이 계속 오므로, 마지막으로 본 시각을 항상 갱신한다.
+  // 폴링 주기(500ms)가 재무장 시간(1500ms)보다 짧으므로, 카드를 떼지 않는 한 창은 계속 닫혀 있다.
+  unsigned long nowMs = millis();
+  bool rearmed = (lastMmmmSeenMs == 0) || (nowMs - lastMmmmSeenMs > MMMM_REARM_MS);
+  lastMmmmSeenMs = nowMs;
+  if(!rearmed){
+    return;   // 아직 같은 태그로 본다 (카드를 떼야 재무장)
+  }
+
+  if((String)(const char*)my["device_state"] == "activate"){
+    ReadyFunc();
+    SendDeviceStateWithRetry("ready");
+    // Send()는 서버로만 보내고 로컬 my를 갱신하지 않는다. 그대로 두면 다음 폴링 전까지
+    // 여전히 "activate"로 읽혀 연타 시 같은 분기를 반복한다.
+    my["device_state"] = "ready";
+  } else {
+    ActivateFunc();
+    SendDeviceStateWithRetry("activate");
+    my["device_state"] = "activate";
+  }
+
+  // 모터가 도는 4~6초 동안 쌓인 줄은 전부 묵은 값이다. 버리지 않으면
+  // 그 안의 'M'들이 곧바로 재처리되어 상태가 다시 뒤집힌다.
+  DrainSubSerial();
+  lastMmmmSeenMs = millis();   // 드레인 직후부터 재무장 시간을 다시 잰다
+}
+
+void HandleTagPacket(String command){
+  // 원문 저장 (포맷 검증 전)
+  lastBeetleRawPacket = command;
+
+  // --- 포맷 검증: "T1:xxxx_T2:xxxx_T3:xxxx" (최소 길이 23, 구분자 위치 고정) ---
+  bool fmtOk = (command.length() >= 23 &&
+                command[1] == '1' && command[2] == ':' &&
+                command[7] == '_' &&
+                command[8] == 'T' && command[9] == '2' && command[10] == ':' &&
+                command[15] == '_' &&
+                command[16] == 'T' && command[17] == '3' && command[18] == ':');
+
+  if (!fmtOk) {
+    packetFormatErrorCount++;
+    Serial.println("[UART] WARN malformed T packet: " + command);
+    return;
+  }
+
+  Serial.println(command);
+  tag1 = command.substring(3, 7);
+  tag2 = command.substring(11, 15);
+  tag3 = command.substring(19, 23);
+
+  Serial.println("TAG1 = " + tag1);
+  Serial.println("TAG2 = " + tag2);
+  Serial.println("TAG3 = " + tag3);
+
+  tagState[0] = PlayerDetector(tag1);
+  tagState[1] = PlayerDetector(tag2);
+  tagState[2] = PlayerDetector(tag3);
+
+  // 유효 패킷 처리 성공 → bad event 카운터 초기화
+  ResetBeetleErrorCounters();
+
+  // 태그 코드만 '_' 로 join → URL-safe(영숫자+언더바)라 인코딩 불필요.
+  // 예: "G1P1_GxP0_GxP0". 서버는 explode("_", value) 로 배열 파싱.
+  // 3개 다 "GxP0"(미검출)면 매 루프 동일값 재전송이라 스팸이므로 스킵하고,
+  // 하나라도 실제 태그(마지막 자리 != '0')면 전송한다.
+  // 여기서 바로 Send(HTTP 왕복)하면 오디오 재생(TagCount)이 그만큼 늦어지므로
+  // 값만 보관해두고 실제 전송은 오디오가 나간 뒤 FlushPendingTagSend()에서 한다.
+  bool hasMeaningfulTag = (tag1[3] != '0') || (tag2[3] != '0') || (tag3[3] != '0');
+  if (hasMeaningfulTag) {
+    pendingTagValue = tag1 + "_" + tag2 + "_" + tag3;
+    tagValuePending = true;
   }
 }
 

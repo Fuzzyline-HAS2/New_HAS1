@@ -43,6 +43,8 @@ void (*ptrCurrentMode)(); // 현재모드 저장용 포인터 함수
 //****************************************Serial
 //Communication*********************************************************
 void CommnunicationBeetle();
+void HandleMmmmCard();
+void HandleTagPacket(String command);
 bool PlayerDetector(String playerNum);
 HardwareSerial toSubSerial(1); //
 String tag1;
@@ -58,6 +60,18 @@ void FlushPendingTagSend();
 //System****************************************************************
 int tagCnt = 0;
 unsigned long lastBeetleMs = 0; // Beetle 마지막 수신 시각
+
+// MMMM 관리자 카드 재무장 제어.
+// Beetle의 RfidLoopMain()은 카드가 리더에 얹혀 있는 동안 매 루프마다 'M'을 보낸다.
+// 카드를 잠깐만 대도 'M'이 수십 개 나가고, ActivateFunc/ReadyFunc가 모터 때문에
+// 4~6초 블로킹하는 사이 그것들이 UART 버퍼에 쌓였다가 한꺼번에 처리되어
+// ready <-> activate 가 반복 토글됐다(현장 2026-09-13).
+//
+// 마지막으로 'M'을 본 시각을 계속 갱신하고, 그 뒤 MMMM_REARM_MS 동안 조용해야
+// 다음 태그로 인정한다. 즉 카드를 떼야 다시 동작한다.
+unsigned long lastMmmmSeenMs = 0;
+const unsigned long MMMM_REARM_MS = 1500;
+void DrainSubSerial();
 String lastBeetleRawPacket = ""; // LOGIC_SERIAL_02: 마지막 수신 T 패킷 원문
 int invalidCmdCount = 0;         // LOGIC_SERIAL_03: 허용되지 않은 명령 수신 횟수
 int packetFormatErrorCount = 0;  // LOGIC_SERIAL_02: T 패킷 포맷 오류 누적
