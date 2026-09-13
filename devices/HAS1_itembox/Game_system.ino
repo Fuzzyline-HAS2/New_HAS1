@@ -16,6 +16,9 @@ static String pendingTagUser = "";
 // 박스를 다시 장악) false로 풀린다.
 static bool adminBoxOverride = false;
 
+// 정답 애니메이션(GAME_CORRECT_ANIM) 실측 소요시간 로깅용 — entry에서 찍고 종료 직전 diff 출력.
+static unsigned long correctAnimStartMs = 0;
+
 // ── 상태 전환 ──────────────────────────────────────────────────────────────────────────
 void ChangeGameState(GameState next) {
     Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
@@ -77,8 +80,12 @@ void ChangeGameState(GameState next) {
         case GAME_ITEM_FAIL_ANIM:
             blinkCnt = 0;
             ledOn    = false;
-            blinkR.periodMs = 250;  // 점멸 주기 250ms (ON 250ms + OFF 250ms = 0.5s/cycle)
+            // 점멸 주기 200ms (ON 200ms + OFF 200ms = 0.4s/cycle). 기존 250ms는 정답 연출
+            // 체감 렉의 원인 중 하나였음(5회 점등까지 약 2.0초 정지) - 200ms로 줄여 5회
+            // 점등까지 약 1.6초로 단축.
+            blinkR.periodMs = 200;
             blinkR.lastRun  = 0;    // 진입 즉시 첫 점멸
+            if (next == GAME_CORRECT_ANIM) correctAnimStartMs = millis();  // 실측 로깅용 (CorrectAnimState 참고)
             break;
         case GAME_BOX_OPENING:
             NeoSetAll(GREEN);
@@ -430,13 +437,15 @@ void PausedState() {
 }
 
 //---------------------------------------- GAME_CORRECT_ANIM ----------------------------------------
-// 정답 연출. blinkR.due(250ms)마다 LED 토글, 5회 점멸 후 다음 상태로 전환.
+// 정답 연출. blinkR.due(200ms)마다 LED 토글, 5회 점멸 후 다음 상태로 전환.
 void CorrectAnimState() {
     if (!blinkR.due) return;
     ledOn = !ledOn;
     NeoSet(NEO_ENCODER, ledOn ? GREEN : BLACK);
     if (ledOn) blinkCnt++;
     if (blinkCnt < 5) return;
+
+    Log("GAME", "correct anim took " + String(millis() - correctAnimStartMs) + "ms");
 
     bool nextIsTerminator = (answerCnt < modeValue[RANGE][ANSWER_CNT])
                          && (modeValue[ANSWER][answerCnt] == -1);
@@ -447,7 +456,7 @@ void CorrectAnimState() {
 }
 
 //---------------------------------------- GAME_WRONG_ANIM ----------------------------------------
-// 오답 연출. blinkR.due(250ms)마다 LED 토글, 5회 점멸 후 PUZZLE 복귀.
+// 오답 연출. blinkR.due(200ms)마다 LED 토글, 5회 점멸 후 PUZZLE 복귀.
 void WrongAnimState() {
     if (!blinkR.due) return;
     ledOn = !ledOn;
@@ -473,7 +482,7 @@ void BoxOpeningState() {
 void BoxOpenState() {}
 
 //---------------------------------------- GAME_ITEM_FAIL_ANIM ----------------------------------------
-// 배터리팩 초과 오류 연출. blinkR.due(250ms)마다 LED 토글, 8회 점멸 후 BOX_OPEN 복귀.
+// 배터리팩 초과 오류 연출. blinkR.due(200ms)마다 LED 토글, 8회 점멸 후 BOX_OPEN 복귀.
 // NEO_INNER 미연결 시 NeoSet이 내부적으로 무시.
 void ItemFailAnimState() {
     if (!blinkR.due) return;
