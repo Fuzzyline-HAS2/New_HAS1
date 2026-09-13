@@ -268,14 +268,20 @@ void Mp3Check()
 
 void CooltimeMp3()
 {
-  int cooltime_min = (cooltime - current_time) / 60;
-  int cooltime_sec = (cooltime - current_time) % 60;
+  RemainingTimeMp3(1, 3, cooltime - current_time, 2800);
+}
+
+// 안내 트랙 길이는 호출부에서 지정한다. 1분 이상이면 분, 그 미만이면 초로 안내한다.
+void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds, unsigned long intro_delay_ms)
+{
+  int cooltime_min = remaining_seconds / 60;
+  int cooltime_sec = remaining_seconds % 60;
   Serial.print("min : ");
   Serial.println(cooltime_min);
   Serial.print("sec : ");
   Serial.println(cooltime_sec);
-  Mp3PlayLargeFolder(1, 3);
-  delay(2800);
+  Mp3PlayLargeFolder(intro_folder, intro_file);
+  delay(intro_delay_ms);
   if (cooltime_min > 0)
   {
     Mp3PlayLargeFolder(2, cooltime_min);

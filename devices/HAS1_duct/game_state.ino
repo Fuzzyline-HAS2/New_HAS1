@@ -94,8 +94,13 @@ void ReadyFunc()
  */
 void ActivateFunc()
 {
+    static bool switch_was_pressed = false;
     RfidLoop();
-    if(!digitalRead(SW_PIN) && switch_available) { DuctOpen(true); }
+    bool switch_pressed = !digitalRead(SW_PIN);
+    bool switch_just_pressed = switch_pressed && !switch_was_pressed;
+    switch_was_pressed = switch_pressed;
+    // 길게 눌러도 안내와 개방은 한 번만 처리한다. 다시 누르려면 버튼을 놓아야 한다.
+    if (switch_just_pressed && switch_available) { DuctOpen(true); }
 }
 
 /**
@@ -193,6 +198,7 @@ void EnterTaggerMode()
 {
     if (tagger_mode) return;   // 재진입 방지 (tagger -> activate -> tagger 등)
     tagger_mode = true;        // RfidLoop / CooltimeTimerFunc 자동 정지
+    tagger_started_ms = millis();
 
     // 닫기 예약을 유지해야 일반 쿨타임 시작과 관리자 상태 복원이 빠지지 않는다.
     // 각 닫기 함수가 봉쇄 중 색상과 서버 상태를 보존한다.

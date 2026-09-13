@@ -59,6 +59,10 @@ void DuctOpen(bool switch_push)
         digitalWrite(RELAY_PIN, HIGH);
         duct_close_timer_id = duct_close_timer.setTimeout(4000, DuctClose);
     }
+    else if (switch_push)
+    {
+        CooltimeMp3();
+    }
 }
 
 void DuctClose()
@@ -155,14 +159,22 @@ void DuctKill()
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
 }
 
+int TaggerRemainingSeconds()
+{
+    unsigned long elapsed_ms = millis() - tagger_started_ms;
+    if (elapsed_ms >= tagger_duration_ms) return 0;
+    unsigned long remaining_ms = tagger_duration_ms - elapsed_ms;
+    return remaining_ms / 1000UL + (remaining_ms % 1000UL != 0);
+}
+
 /**
  * @brief 봉쇄(tagger_mode) 중 생존자/ghost/revival이 태그했을 때의 피드백.
  *        보라색 점멸(3회, non-blocking) + 사용 불가 안내 음성.
- *        (1,1)은 전용 트랙이 생기기 전까지 임시로 사용하는 자리표시자(placeholder)다.
  */
 void TaggerModeTagBlocked()
 {
-    Mp3PlayLargeFolder(1, 1);
+    // (4,2) 트랙 길이 실측 전에는 기존 안내와 같은 2800ms를 사용한다.
+    RemainingTimeMp3(4, 2, TaggerRemainingSeconds(), 2800);
 
     if (tagger_blink_active) return;   // 점멸 중 재태그는 무시 (타이머 중첩 방지)
     tagger_blink_active = true;

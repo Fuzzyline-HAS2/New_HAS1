@@ -8,14 +8,16 @@
 using String = std::string;
 using uint8_t = unsigned char;
 using uint16_t = unsigned short;
-constexpr int HIGH = 1, LOW = 0, RELAY_PIN = 1, EMCHECK_PIN = 2;
+constexpr int HIGH = 1, LOW = 0, RELAY_PIN = 1, EMCHECK_PIN = 2, SW_PIN = 15;
 constexpr int NUMPIXELS_LINE = 30, DEFAULT_COLOR_BRIGHTNESS = 50, DEFAULT_LINE_BRIGHTNESS = 50;
 enum GameState { setting, ready, activate };
 unsigned long now = 0;
-int relay = LOW, doorSensor = HIGH;
+int relay = LOW, doorSensor = HIGH, switchInput = HIGH;
+std::vector<String> audioEvents;
 void digitalWrite(int, int value) { relay = value; }
-int digitalRead(int pin) { return pin == RELAY_PIN ? relay : doorSensor; }
-void delay(int) {}
+int digitalRead(int pin) { return pin == RELAY_PIN ? relay : pin == SW_PIN ? switchInput : doorSensor; }
+// Record blocking audio delays without advancing the timer scheduler.
+void delay(unsigned long ms) { audioEvents.push_back("delay:" + std::to_string(ms)); }
 unsigned long millis() { return now; }
 struct Logger { template<class T> void print(T) {} template<class T> void println(T) {} } Serial;
 struct Pixels {
@@ -35,8 +37,13 @@ struct Wifi {
     void Send(String, String key, String value) { if (key == "device_state") states.push_back(value); }
     void Receive(String value) { receives.push_back(value); }
 } has2wifi;
-void Mp3PlayLargeFolder(uint8_t, uint16_t) {}
-void CooltimeMp3() {}
+int cooldownAnnouncements = 0, blockedAnnouncements = 0;
+void Mp3PlayLargeFolder(uint8_t folder, uint16_t file) {
+    if (folder == 1 && file == 1) ++blockedAnnouncements;
+    if (folder == 1 && file == 3) ++cooldownAnnouncements;
+    audioEvents.push_back("play:" + std::to_string(folder) + ":" + std::to_string(file));
+}
+void RfidLoop() {}
 void UpdateBrightness() {}
 
 // SimpleTimer-compatible ordering: callbacks run before one-shot deletion;
@@ -79,6 +86,17 @@ void finished() { advance(7000); check(duct_available && relay == LOW, "cooldown
 void adminRepeat() {
     MmmmOpen(); check(mmmm_open && relay == HIGH, "admin may reopen");
     advance(4000); check(!mmmm_open && relay == LOW, "admin closes and clears flag");
+}
+void expectBlockadeAudio(int seconds) {
+    audioEvents.clear(); tag["role"] = "player";
+    uint8_t card[32] = {'G', '1', 'P', '1'};
+    CardChecking(card);
+    const std::vector<String> expected = {
+        "play:4:2", "delay:2800", "play:3:" + std::to_string(seconds),
+        "delay:1300", "play:1:5", "delay:500"
+    };
+    check(audioEvents == expected, "blocked outside player tag announces remaining blockade seconds");
+    check(tagger_mode && relay == LOW, "remaining-time announcement keeps blockade locked");
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -153,6 +171,59 @@ int main(int argc, char** argv) {
         doorSensor = LOW; CardChecking(card); check(!tagger_mode, "closed door cannot be blockaded");
         doorSensor = HIGH; CardChecking(card); check(tagger_mode, "tagger with open door works without recent player");
         check(has2wifi.receives.size() == 2, "only current card looked up");
+    } else if (test == "cooldown_button_feedback") {
+        openNormal(); advance(6000); int elapsed = current_time;
+        DuctTag("G1P2"); check(cooldownAnnouncements == 1, "outside tag announces cooldown");
+        switchInput = LOW; ActivateFunc();
+        check(cooldownAnnouncements == 2, "cooldown button uses same announcement as outside tag");
+        check(relay == LOW && current_time == elapsed && !duct_available,
+              "cooldown button does not open or reset countdown");
+        for (int i = 0; i < 100; ++i) { advance(10); ActivateFunc(); }
+        check(cooldownAnnouncements == 2, "held button does not restart announcement");
+        check(current_time == elapsed + 1 && relay == LOW, "cooldown continues while button held");
+        switchInput = HIGH; ActivateFunc(); switchInput = LOW; ActivateFunc();
+        check(cooldownAnnouncements == 3, "release and repress announces again");
+        check(current_time == elapsed + 1 && relay == LOW, "repress preserves remaining cooldown");
+    } else if (test == "blockade_button_feedback") {
+        openNormal(); advance(6000); EnterTaggerMode(); int elapsed = current_time;
+        audioEvents.clear();
+        switchInput = LOW; ActivateFunc();
+        check(blockedAnnouncements == 1 && cooldownAnnouncements == 0, "blockade feedback takes priority over cooldown");
+        check(audioEvents == std::vector<String>{"play:1:1"}, "internal blockade button retains original unavailable track");
+        for (int i = 0; i < 500; ++i) { advance(10); ActivateFunc(); }
+        check(blockedAnnouncements == 1 && cooldownAnnouncements == 0, "held blockaded button does not repeat feedback");
+        check(relay == LOW && current_time == elapsed, "blockaded button stays closed and frozen");
+        switchInput = HIGH; ActivateFunc(); switchInput = LOW; ActivateFunc();
+        check(blockedAnnouncements == 2 && cooldownAnnouncements == 0, "blockaded repress repeats correct feedback");
+    } else if (test.rfind("audio_", 0) == 0) {
+        const int seconds = std::stoi(test.substr(6));
+        const bool minutes = seconds >= 60;
+        std::vector<String> expected = {
+            "play:1:3", "delay:2800",
+            "play:" + String(minutes ? "2:" : "3:") + std::to_string(minutes ? seconds / 60 : seconds),
+            minutes ? "delay:1100" : "delay:1300",
+            minutes ? "play:1:4" : "play:1:5", "delay:500"
+        };
+        cooltime = seconds + 7; current_time = 7;
+        CooltimeMp3();
+        check(audioEvents == expected, "normal cooldown keeps original intro, remaining amount, units and delays");
+        check(cooltime == seconds + 7 && current_time == 7, "announcement preserves countdown values");
+        // 1700 is an arbitrary test duration, not the unknown blockade audio length.
+        audioEvents.clear(); expected[0] = "play:4:2"; expected[1] = "delay:1700";
+        RemainingTimeMp3(4, 2, seconds, 1700);
+        check(audioEvents == expected, "shared helper uses supplied blockade intro and duration with original amount and units");
+    } else if (test == "blockade_remaining_audio") {
+        EnterTaggerMode(); expectBlockadeAudio(30);
+        advance(10000); expectBlockadeAudio(20);
+        advance(20000); expectBlockadeAudio(0);
+        advance(5000); expectBlockadeAudio(0);
+        check(tagger_mode, "temporary announcement duration does not auto-release server blockade");
+        check(has2wifi.states.empty(), "countdown expiration does not send release to server");
+    } else if (test == "blockade_reentry_audio") {
+        EnterTaggerMode(); advance(10000); EnterTaggerMode(); expectBlockadeAudio(20);
+        ExitTaggerMode(); EnterTaggerMode(); expectBlockadeAudio(30);
+        advance(999); expectBlockadeAudio(30);
+        advance(1); expectBlockadeAudio(29);
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }

@@ -22,14 +22,16 @@ def function(source, name):
 header = (ROOT / "HAS1_duct.h").read_text()
 # Actual scalar state declarations, including newly added lifecycle flags.
 globals_ = "\n".join(line for line in header.splitlines()
-                     if re.match(r"^(?:bool|int|String|GameState)\s+\w+\s*(?:[;=]|\[)", line))
+                     if re.match(r"^(?:bool|int|unsigned long|String|GameState)\s+\w+\s*(?:[;=]|\[)", line))
 core = (ROOT / "HAS1_duct_function.ino").read_text().replace('#include "HAS1_duct.h"', '')
 game = (ROOT / "game_state.ino").read_text()
 timer = (ROOT / "timer.ino").read_text()
 sensor = (ROOT / "sensor.ino").read_text()
 body = core + "\n" + "\n".join(function(game, n) for n in
-    ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc"])
-body += "\n" + function(timer, "CooltimeTimerFunc") + "\n" + function(sensor, "CardChecking")
+    ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc"])
+body += "\n" + function(timer, "CooltimeTimerFunc")
+body += "\n" + "\n".join(function(sensor, name) for name in
+                           ["CardChecking", "CooltimeMp3", "RemainingTimeMp3"])
 prototypes = "\n".join(re.findall(r"^(?:void|int|bool)\s+\w+\([^)]*\)", body, re.M))
 prototypes = prototypes.replace("void DuctOpen(bool switch_push)", "void DuctOpen(bool switch_push = false)")
 prototypes = ";\n".join(prototypes.splitlines()) + ";\n"
@@ -39,7 +41,10 @@ source = (Path(__file__).with_name("host_harness.cpp").read_text()
 cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "admin_available", "admin_cooldown", "admin_block_before_close",
          "admin_block_after_close", "admin_inside_block", "normal_admin_override",
-         "blocked_button", "tagger_gate", "admin_early_back", "reset_pending_close"]
+         "blocked_button", "tagger_gate", "admin_early_back", "reset_pending_close",
+         "cooldown_button_feedback", "blockade_button_feedback",
+         "audio_0", "audio_28", "audio_60", "audio_90",
+         "blockade_remaining_audio", "blockade_reentry_audio"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     src, exe = Path(tmp) / "test.cpp", Path(tmp) / "test"
     src.write_text(source)

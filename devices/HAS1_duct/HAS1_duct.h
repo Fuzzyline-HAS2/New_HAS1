@@ -38,6 +38,10 @@ GameState game_state = setting;
 bool cool_time_neo_bool = true;
 bool tagger_mode = false;   // "이로운 효과"(덕트킬 포함) - tagger 수신 시 덕트 동결(보라색+RFID off), back 시 원복
 
+// TODO: 서버의 봉쇄 시간 값을 받으면 이 기본값을 대체한다. 해제는 서버 명령으로만 처리한다.
+unsigned long tagger_duration_ms = 30000UL;
+unsigned long tagger_started_ms = 0;
+
 bool tagger_blink_active = false;  // 봉쇄(tagger_mode) 중 태그 시 보라색 점멸(3회) 진행 여부
 int tagger_blink_step = 0;
 
@@ -63,9 +67,11 @@ void TaggerSwitchClose();
 void CooltimeCalculation();
 int  CooltimeBarPixels();
 void CooltimeMp3();
+void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds, unsigned long intro_delay_ms);
 void TagPlayerSend();
 void DuctKill();
 void TaggerModeTagBlocked();
+int TaggerRemainingSeconds();
 void TaggerBlinkStep();
 void TaggerSwitchBlocked();
 void MmmmOpen();
