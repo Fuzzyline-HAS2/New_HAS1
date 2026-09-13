@@ -84,13 +84,27 @@ void HandleMmmmCard(){
   if((String)(const char*)my["device_state"] == "activate"){
     ReadyFunc();
     SendDeviceStateWithRetry("ready");
+    SendStateWithRetry("game_state", "ready");
+    // MMMM은 device_state뿐 아니라 game_state도 함께 옮긴다. 둘이 갈라지면 DataChanged의
+    // game_state 분기(ActivateFunc/ReadyFunc)가 나중에 따로 한 번 더 튄다.
+    // 이 전환은 방금 로컬에서 적용했으므로 cur에도 맞춰둔다. 안 맞추면 다음 서버 폴링에서
+    // DataChanged가 처음 보는 변경으로 오인해 ActivateFunc를 한 번 더 부른다 (실측: 문이
+    // 4초 열리고 곧바로 다시 4초 열려 총 8초). device_state 분기에는 "ready"가 없어서
+    // 닫기 방향에는 이 중복이 없다 — 현장의 "ready->activate만 느림"이 이것이다.
     // Send()는 서버로만 보내고 로컬 my를 갱신하지 않는다. 그대로 두면 다음 폴링 전까지
     // 여전히 "activate"로 읽혀 연타 시 같은 분기를 반복한다.
     my["device_state"] = "ready";
+    cur["device_state"] = "ready";
+    my["game_state"] = "ready";
+    cur["game_state"] = "ready";
   } else {
     ActivateFunc();
     SendDeviceStateWithRetry("activate");
+    SendStateWithRetry("game_state", "activate");
     my["device_state"] = "activate";
+    cur["device_state"] = "activate";
+    my["game_state"] = "activate";
+    cur["game_state"] = "activate";
   }
 
   // 모터가 도는 4~6초 동안 쌓인 줄은 전부 묵은 값이다. 버리지 않으면

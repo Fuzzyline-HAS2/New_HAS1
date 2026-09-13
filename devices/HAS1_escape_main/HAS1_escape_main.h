@@ -43,6 +43,10 @@ void (*ptrCurrentMode)(); // 현재모드 저장용 포인터 함수
 //****************************************Serial
 //Communication*********************************************************
 void CommnunicationBeetle();
+// DataChanged()가 "이미 반영한 상태"로 기억하는 스냅샷. 예전에는 DataChanged 안의
+// 함수 static이었는데, MMMM 핸들러가 로컬로 상태를 바꿔도 여기에 반영할 수 없어서
+// 다음 서버 폴링 때 DataChanged가 그 전환을 처음 보는 변경으로 오인했다.
+StaticJsonDocument<2048> cur;
 void HandleMmmmCard();
 void HandleTagPacket(String command);
 bool PlayerDetector(String playerNum);
@@ -84,6 +88,7 @@ void HandleRuntimeRecovery();
 void RecoverBeetleConnection();
 void ResetBeetleErrorCounters();
 bool SendDeviceStateWithRetry(const String& value, uint8_t retries = 3);
+bool SendStateWithRetry(const String& column, const String& value, uint8_t retries = 3);
 bool ClearGithubOtaState();
 //****************************************Step
 //Motor****************************************************************

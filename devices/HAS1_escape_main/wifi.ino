@@ -3,7 +3,6 @@ void DataChanged()
   String myJson;
   serializeJson(my, myJson);
   Serial.println(myJson);
-  static StaticJsonDocument<2048> cur;
   if((String)(const char*)my["game_state"] != (String)(const char*)cur["game_state"]){
     if((String)(const char*)my["game_state"] == "setting"){
         SettingFunc();
