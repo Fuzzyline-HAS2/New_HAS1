@@ -50,9 +50,22 @@ void CommnunicationBeetle(){
       Serial.println(command);
     }
     else {
-      // 허용되지 않은 명령 문자
-      invalidCmdCount++;
-      Serial.println("[UART] WARN unknown command '" + String(cmd) + "'");
+      // Beetle이 내보내는 첫 글자는 W/R/T/B/M 뿐이다(HAS1_escape_sub 전체를 확인함).
+      // 따라서 그 외의 첫 글자는 프로토콜 위반이 아니라 잘린 줄의 꼬리다. 실측: 경고 문자가
+      // '1' ':' 'x' 'P' '0'처럼 전부 "T1:GxP0_T2:" 중간 글자였다. Beetle이 loop() 딜레이
+      // 없이 스캔 속도대로 보내는 탓에 폴링 간격 사이 RX 버퍼가 넘치고, 넘친 지점을 걸친
+      // 줄이 중간부터 시작한다. 폴링이 길수록 늘어난다 (500ms: 150초에 6건 / 2000ms: 240초에 64건).
+      //
+      // 예전에는 이걸 invalidCmdCount로 올렸는데, 그 카운터는 HandleRuntimeRecovery의
+      // bad event streak를 물고 있어 3회 누적 시 Beetle을 리셋하고 복구 3회 실패 시
+      // ESP.restart()까지 간다. 원인이 Beetle 전송 속도인데 Beetle을 리셋해봐야 낫지 않는다.
+      // 조각은 그 줄만 버리면 다음 줄부터 경계가 다시 맞으므로, 별도 카운터에만 기록하고
+      // 복구 로직에는 넣지 않는다. 근본 해결은 Beetle에서 전송 속도를 제한하는 것이다.
+      resyncFragmentCount++;
+      if (resyncFragmentCount % 50 == 1) {
+        Serial.println("[UART] 잘린 줄 폐기 누적 " + String(resyncFragmentCount) +
+                       "건 (첫 글자 '" + String(cmd) + "') — Beetle 전송 속도 초과");
+      }
     }
   }
 

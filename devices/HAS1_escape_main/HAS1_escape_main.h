@@ -78,6 +78,7 @@ const unsigned long MMMM_REARM_MS = 1500;
 void DrainSubSerial();
 String lastBeetleRawPacket = ""; // LOGIC_SERIAL_02: 마지막 수신 T 패킷 원문
 int invalidCmdCount = 0;         // LOGIC_SERIAL_03: 허용되지 않은 명령 수신 횟수
+unsigned long resyncFragmentCount = 0;  // 잘린 줄(전송 도중 끊긴 조각) 폐기 횟수. 복구 로직에 넣지 않는다.
 int packetFormatErrorCount = 0;  // LOGIC_SERIAL_02: T 패킷 포맷 오류 누적
 int tagParseErrorCount = 0;      // LOGIC_TAG_02: 태그 파싱 실패 누적
 uint8_t beetleBadEventStreak = 0;   // 연속 bad-event 사이클 수 (silence 제외)
