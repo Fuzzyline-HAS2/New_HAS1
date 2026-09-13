@@ -74,6 +74,54 @@ void SensorInit()
 }
 
 //********************************************* Rfid *********************************************
+// PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환. 일부 생산 로트의 PN532는 기본
+// RxGain(38dB)에서 태그 중심 정렬 시 ~2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로
+// 확인됨(동일 TTGO/배선/태그/펌웨어에서 PN532만 교체해 재현). RxGain을 낮추면(23dB) 근거리가,
+// 높이면(33dB) 중거리(2~4cm)가 커버되어 두 세팅을 상황에 따라 전환해 근접~4cm를 잇는다.
+// (HAS1_tagmachine_sub/rfid.ino와 동일 기법 - 그쪽에서 실측 검증됨)
+static GainMode pn532_gain = GAIN_NEAR;
+static bool pn532_tag_locked = false;      // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
+static uint8_t pn532_locked_data[32];       // 유지 중인 태그의 page7 데이터 - 동일 태그 판별 기준
+static unsigned long pn532_last_seen_ms = 0; // 유지 중 태그를 마지막으로 확인한 시각
+
+// RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
+// PN532는 이 설정을 내부에 영구 저장하지 않으므로, 초기화(전원 재투입/모듈 교체 포함)마다
+// 다시 적용해야 한다(RfidInit 참고). TX 관련 값(GsNOn/CWGsP)은 실측상 근거리 개선 기여가
+// 낮아 PN532 기본값을 그대로 둔다.
+static bool ApplyGain(GainMode mode)
+{
+  uint8_t rfCfg = (mode == GAIN_NEAR) ? 0x19 : 0x49; // 23dB(근거리) / 33dB(중거리)
+  uint8_t cmd[] = {
+      0x32,       // RFConfiguration
+      0x0A,       // Type A 106kbps Analog Setting
+      rfCfg,      // RFCfg — RxGain
+      0xF4,       // GsNOn
+      0x3F,       // CWGsP
+      0x11,       // ModGsP
+      0x4D,       // Demod RF ON
+      0x85,       // RxThreshold
+      0x61,       // Demod RF OFF
+      0x6F,       // GsNOff
+      0x26,       // ModWidth
+      0x62,       // MifNFC
+      0x87        // TxBitPhase
+  };
+  BREADCRUMB("RfidLoop:applyGain");
+  return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+}
+
+// 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
+static bool DetectAndRead(uint8_t outData[32])
+{
+  byte buf[64] = {0};
+  BREADCRUMB("RfidLoop:sendCmd");
+  if (!nfc.sendCommandCheckAck(buf, 1)) return false;               // rfid 통신 가능한 상태인지 확인
+  BREADCRUMB("RfidLoop:detectTarget");
+  if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
+  BREADCRUMB("RfidLoop:readPage");
+  return nfc.ntag2xx_ReadPage(7, outData);
+}
+
 /**
  * @brief RFID(=PN532) 세팅
  */
@@ -87,11 +135,15 @@ void RfidInit(void)
     return;
   }
   nfc.SAMConfig(); // configure board to read RFID tags
+  // PN532는 RF 설정을 저장하지 않으므로 초기화(전원 재투입/모듈 교체 포함)마다 재적용한다.
+  pn532_gain = GAIN_NEAR;
+  ApplyGain(pn532_gain);
+  pn532_tag_locked = false;
   Serial.println("RFID connected successfully");
 }
 
 /**
- * @brief RFID 태그 인식
+ * @brief RFID 태그 인식 (근거리/중거리 Gain 자동 전환 + 단발성 미스 디바운스)
  */
 void RfidLoop()
 {
@@ -104,22 +156,71 @@ void RfidLoop()
   {
     return;
   }
+
   uint8_t data[32];
-  byte pn532_packetbuffer11[64];
-  pn532_packetbuffer11[0] = 0x00;
-  BREADCRUMB("RfidLoop:sendCmd");
   bool tag_present = false;
-  if (nfc.sendCommandCheckAck(pn532_packetbuffer11, 1))
-  { // rfid 통신 가능한 상태인지 확인
-    BREADCRUMB("RfidLoop:detectTarget");
-    if (nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A))
-    {                                    // rfid에 tag 찍혔는지 확인용 //데이터 들어오면 uid정보 가져오기
-      BREADCRUMB("RfidLoop:readPage");
-      if (nfc.ntag2xx_ReadPage(7, data)) // ntag 데이터에 접근해서 불러와서 data행열에 저장
+
+  if (!pn532_tag_locked)
+  {
+    // 탐색 모드: 현재 Gain으로 1회 시도 → 실패하면 반대 Gain으로 즉시 재시도
+    //   (23dB↔33dB를 오가며 근접~4cm 전 구간을 커버, 둘 다 실패하면 이번 tick은 미검출)
+    if (!DetectAndRead(data))
+    {
+      pn532_gain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+      ApplyGain(pn532_gain);
+      pn532_tag_locked = DetectAndRead(data);
+    }
+    else
+    {
+      pn532_tag_locked = true;
+    }
+
+    if (pn532_tag_locked)
+    {
+      memcpy(pn532_locked_data, data, 32);
+      pn532_last_seen_ms = millis();
+      tag_present = true;
+      CardChecking(data);
+    }
+  }
+  else
+  {
+    // 유지 모드: 현재 Gain으로 먼저 확인 → 실패하면 반대 Gain으로 즉시 재확인
+    //   → 그래도 둘 다 실패하면 TAG_REMOVE_TIME_MS 동안은 유지로 간주(단발성 미스 무시)
+    //   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
+    bool found = DetectAndRead(data) && memcmp(data, pn532_locked_data, 32) == 0;
+    if (!found)
+    {
+      GainMode otherGain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+      ApplyGain(otherGain);
+      if (DetectAndRead(data) && memcmp(data, pn532_locked_data, 32) == 0)
       {
-        tag_present = true;
-        CardChecking(data);
+        pn532_gain = otherGain; // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
+        found = true;
       }
+      else
+      {
+        ApplyGain(pn532_gain); // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
+      }
+    }
+
+    if (found)
+    {
+      pn532_last_seen_ms = millis();
+      tag_present = true;
+      CardChecking(pn532_locked_data);
+    }
+    else if (millis() - pn532_last_seen_ms < TAG_REMOVE_TIME_MS)
+    {
+      // 유예시간 이내 - 단발성 미스로 보고 이번 tick은 CardChecking 없이 유지 상태만 지속
+      tag_present = true;
+    }
+    else
+    {
+      // 유예시간 초과 - 태그 제거 확정, 탐색 모드로 복귀
+      pn532_tag_locked = false;
+      pn532_gain = GAIN_NEAR;
+      ApplyGain(pn532_gain);
     }
   }
 
