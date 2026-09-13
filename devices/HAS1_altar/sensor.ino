@@ -16,6 +16,12 @@ static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로
 // 발사했었다 - 그동안 loop()가 막혀 MicroSw 클릭을 놓치는 원인이 됐다. 한 번만
 // 처리하도록 tag_active와 같은 방식으로 게이트.
 static bool chip_return_processed = false;
+// 태그가 리더에 붙어있는 동안 RfidLoop가 ~1초마다 CardChecking을 다시 호출하는데,
+// 그때마다 has2wifi.Receive()(블로킹 HTTP)를 재발사하면 그 응답을 기다리는 동안
+// loop()가 멈춰 MicroSwLoop의 디지털 엣지 샘플링을 놓친다 - 마이크로스위치는
+// 인터럽트가 아니라 매 loop 1회 폴링이라 이 타이밍에 클릭이 나면 통째로 씹혀서
+// 여러 번 돌려야 인식되는 원인이 됐다. 같은 태그 세션에서는 한 번만 조회한다.
+static bool tag_data_fetched = false;
 
 // 태그+칩이 (순서 상관없이) 둘 다 확인된 순간 - 로컬 애니메이션만 즉시 트리거해서
 // "확인됐으니 크랭크를 돌리라"는 피드백을 준다. taken_chip 갱신/tagger_name
@@ -127,6 +133,7 @@ void RfidLoop()
   if (!tag_present)
   {
     chip_return_processed = false;
+    tag_data_fetched = false;
   }
   BREADCRUMB("RfidLoop:done");
 }
@@ -144,8 +151,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     tagUser += (char)rfidData[i];
   Serial.println("tag_user_data : " + tagUser);
 
-  // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기
-  has2wifi.Receive(tagUser);
+  // 1. 태그한 플레이어의 역할과 생명칩갯수, 최대생명칩갯수 등 읽어오기.
+  // 같은 물리 태그가 리더에 계속 붙어있는 동안은 값이 바뀔 일이 없으므로 세션당
+  // 한 번만 조회한다(반복 조회 시 블로킹 HTTP로 MicroSw 클릭을 놓치는 문제 방지).
+  if (!tag_data_fetched)
+  {
+    has2wifi.Receive(tagUser);
+    tag_data_fetched = true;
+  }
 
   // 2. 술래 태그 확인 - device_state/서버 호출 없이 내부 플래그만 세운다.
   // 태그가 계속 붙어있는 동안 반복 감지돼도(리더가 ~1초마다 다시 읽음) 한 번만 처리.
