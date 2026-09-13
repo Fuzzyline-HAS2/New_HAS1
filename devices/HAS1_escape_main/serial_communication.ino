@@ -107,10 +107,19 @@ void ApplyMmmmState(const String& value){
     }
 
     // 이미 맞는 컬럼은 다시 쓰지 않는다 (불필요한 쓰기가 경합 창을 넓힌다).
-    if ((String)(const char*)my["device_state"] != value)
-      has2wifi.Send(name, "device_state", value);
+    //
+    // 순서가 중요하다. 뒤에 보낸 쓰기가 앞 쓰기를 되돌린다 - 서버가 행 전체를 읽고-쓰기
+    // 하면서 읽은 스냅샷에 앞 쓰기가 아직 안 들어가 있기 때문이다. 실측 2026-09-13:
+    // device_state -> game_state 순으로 보냈더니 ready 방향이 2/2 실패했고, 어긋난 조합이
+    // 매번 device_state=activate, game_state=ready로 동일했다(= 앞서 보낸 device_state가
+    // 쓰기 이전 값으로 되돌아감). activate 방향은 3/3 성공이었다.
+    //
+    // 그래서 덜 중요한 game_state를 먼저 보내고, MMMM의 본래 역할인 device_state를
+    // 마지막에 보낸다. 마지막 쓰기는 되돌릴 뒤 쓰기가 없으므로 살아남는다.
     if ((String)(const char*)my["game_state"] != value)
       has2wifi.Send(name, "game_state", value);
+    if ((String)(const char*)my["device_state"] != value)
+      has2wifi.Send(name, "device_state", value);
 
     delay(250);            // 서버 커밋 여유
     has2wifi.ReceiveMine();  // 서버 실측값으로 my를 채운다
