@@ -9,8 +9,9 @@ void SensorInit()
   pixels_bot.begin();
 
   // 초기 전역 밝기 적용 (색상은 풀 밝기로 정의되어 있으므로 여기서 스케일)
+  // mid는 서버 밝기값과 무관하게 항상 최대 밝기(255) 고정
   pixels_top.setBrightness(color_brightness);
-  pixels_mid.setBrightness(color_brightness);
+  pixels_mid.setBrightness(255);
   pixels_bot.setBrightness(color_brightness);
 
   // Rfid init
@@ -311,9 +312,10 @@ void NeopixelSet(int color[3])
 void ApplyBrightness(int raw)
 {
   // raw: 0~255 전역 밝기. 색 배열은 풀 밝기(255)로 두고 setBrightness()로만 스케일.
+  // mid는 서버 밝기값과 무관하게 항상 최대 밝기(255) 고정
   color_brightness = raw;
   pixels_top.setBrightness(raw);
-  pixels_mid.setBrightness(raw);
+  pixels_mid.setBrightness(255);
   pixels_bot.setBrightness(raw);
   // 현재 켜져 있는 색을 새 밝기로 즉시 반영
   pixels_top.show();
