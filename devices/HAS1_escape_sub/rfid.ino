@@ -41,7 +41,12 @@ void RfidLoopMain(void)
                 structTagData[i].tagData += (char)data[j];
             if(data[0] == 'M')
             {
+              // MMMM은 관리자 카드다. 별도 'M' 명령으로만 알리고, T 패킷의 태그 데이터에는
+              // 싣지 않는다. 둘 다 보내면 TTGO가 한 번에 한 줄만 읽는 탓에 'M'이 버려지고
+              // "MMMM"이 플레이어 태그로 처리돼(PlayerDetector의 role 미해석 경고 + 서버
+              // tagged_players에 MMMM 기록) MMMM 핸들러가 실행되지 않는다. 실측 2026-09-13.
               Serial.println("M");
+              structTagData[i].tagData = "GxP0";
             }
         }
       }

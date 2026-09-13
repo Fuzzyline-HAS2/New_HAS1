@@ -1,11 +1,18 @@
+// Beetle은 한 폴링 주기에 여러 줄을 보낼 수 있다(예: MMMM 태그 시 'M'과 'T' 패킷).
+// 예전에는 if로 한 줄만 읽고 끝에서 나머지를 버려서, 둘 중 하나가 통째로 유실됐다.
+// 실측 2026-09-13: MMMM을 태그해도 'M'이 버려져 MMMM 핸들러가 실행되지 않았다.
+// 버퍼에 있는 줄을 모두 처리한다. 한 번에 처리할 줄 수에 상한을 둬 Beetle이 폭주해도
+// loop가 묶이지 않게 한다(왕복 HTTP가 붙는 PlayerDetector가 줄마다 불릴 수 있으므로).
 void CommnunicationBeetle(){
   Serial.println("READ");
+  const uint8_t kMaxLinesPerCall = 8;
+  for (uint8_t processed = 0; processed < kMaxLinesPerCall; ++processed){
   if(toSubSerial.available() > 0){
     lastBeetleMs = millis();
     String command = toSubSerial.readStringUntil('\n');
 
     // 빈 문자열 방어
-    if (command.length() == 0) return;
+    if (command.length() == 0) continue;
 
     char cmd = command[0];
 
@@ -31,7 +38,7 @@ void CommnunicationBeetle(){
       if (!fmtOk) {
         packetFormatErrorCount++;
         Serial.println("[UART] WARN malformed T packet: " + command);
-        return; // 파싱 금지 — 잘못된 substring 접근 방지
+        continue; // 이 줄만 버리고 다음 줄 계속 처리 (잘못된 substring 접근 방지)
       }
 
       Serial.println(command);
@@ -88,8 +95,9 @@ void CommnunicationBeetle(){
       Serial.println("[UART] WARN unknown command '" + String(cmd) + "'");
     }
   }
-  while(toSubSerial.available()){
-    toSubSerial.read();
+  else {
+    break;   // 버퍼가 비면 종료
+  }
   }
 }
 

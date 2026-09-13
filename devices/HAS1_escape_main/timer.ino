@@ -26,7 +26,6 @@ void GameTimerFunc(){
     HandleRuntimeRecovery(); // bad event 누적 + 모터 timeout 감시 (silence 제외)
     ptrCurrentMode(); // TagCount() 오디오 재생 — tagged_players 전송(HTTP)보다 먼저 실행
     FlushPendingTagSend(); // 오디오 재생 이후에 서버로 상태 전송
-    while(toSubSerial.available()){
-        toSubSerial.read();
-    }
+    // 여기 있던 버퍼 드레인을 제거했다. CommnunicationBeetle()이 이미 버퍼의 모든 줄을
+    // 처리하므로 남은 것은 그 이후 도착한 유효한 줄이고, 버리면 다음 주기에 놓친다.
 }
