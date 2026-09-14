@@ -7,7 +7,7 @@
 // 공유 HTTPClient를 재사용하지 않고 이 함수 전용 로컬 인스턴스를 쓴다 - has2wifi.Loop()
 // 콜백(DataChange) 흐름 안에서 호출될 수 있어 재진입으로 인한 문제를 만들지 않기 위함.
 static const char *GHOST_TIMING_SHEET_URL =
-    "https://script.google.com/macros/s/AKfycbx0XInkrU7Vv_lNLa3-d2b-w0KxpvDdfqv_kmmo6sYyYxnIGtLA5KerSHY0RAq8rFvqMw/exec";
+    "https://script.google.com/macros/s/AKfycbwANiiaBpXnNBeeU8s7ubzyptonlRv42vI2SYUsjWGfVKN02FNq6JZ2UW3aenVqidjIgQ/exec";
 
 // 실패해도(오프라인/시트 문제 등) 조용히 무시 — 어디까지나 디버깅 보조 수단이라 게임
 // 진행을 막으면 안 된다. 타임아웃을 짧게(5초) 잡아 이 호출 자체가 새로운 지연 원인이
