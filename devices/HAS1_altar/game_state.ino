@@ -124,7 +124,14 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
+            // OTA 다운로드+플래시는 30초 넘게 걸릴 수 있어(그 동안 esp_task_wdt_reset()이
+            // 안 불림) 워치독을 그대로 두면 업데이트 도중 재부팅으로 끊긴다(HAS1_generator에서
+            // 실측된 문제, 동일 워치독 구성이라 여기도 잠재해 있었음). ota.check() 동안만
+            // 이 태스크를 워치독에서 빼고, 끝나면 다시 등록한다(성공 시엔 자체 재부팅하므로
+            // 재등록까지 안 감).
+            esp_task_wdt_delete(NULL);
             ota.check();
+            esp_task_wdt_add(NULL);
         }
     }
 

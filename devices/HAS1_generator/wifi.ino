@@ -173,7 +173,13 @@ void DataChanged()
         BREADCRUMB("DataChanged:github:otaCheck");
         // 서버가 원격으로 OTA 업데이트를 트리거하는 채널
         Serial.println("[OTA] OTA 업데이트 요청 수신");
+        // OTA 다운로드+플래시는 30초 넘게 걸릴 수 있어(설계된 esp_task_wdt_reset()이 그 동안
+        // 안 불림) 워치독을 그대로 두면 업데이트 도중 재부팅으로 끊겨버린다 - 실측된 문제.
+        // ota.check() 동안만 이 태스크를 워치독에서 잠시 빼고, 끝나면 다시 등록한다
+        // (업데이트 성공 시엔 SecureOTA가 자체적으로 재부팅하므로 아래 재등록까지 안 감).
+        esp_task_wdt_delete(NULL);
         ota.check();
+        esp_task_wdt_add(NULL);  // 업데이트 없이 돌아온 경우(이미 최신 버전 등) 워치독 보호 복원
       }
     }
   }
