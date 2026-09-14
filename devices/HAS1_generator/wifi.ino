@@ -33,6 +33,7 @@ void SyncBatteryPackCur() {
 
 void DataChanged()
 {
+  BREADCRUMB("DataChanged:start");
 
   // 서버에서 받은 스타터 설정값 동기화 (0 이하인 값은 아직 세팅 전이라 판단해 무시)
   if((int)my["starter_encoder_unit"] > 0)  starterEncoderUnit  = (int)my["starter_encoder_unit"];
@@ -70,6 +71,7 @@ void DataChanged()
     // battery_pack 값 변화(activate 상태에서 배선 충전 중일 때) — 배선 방식(WirePollMain)이 도입되기 전의
     // 경로로, 현재는 서버 쪽에서 battery_pack이 바뀌는 다른 경로가 있을 경우를 대비한 안전망 성격이 크다.
     if(gameStateChanged == false && cur.containsKey("battery_pack") && (String)(const char*)my["game_state"] == "activate" && (int)my["battery_pack"] != (int)cur["battery_pack"]){
+      BREADCRUMB("DataChanged:batteryPackSafetyNet");
       BatteryPackSend();
       if((int)my["battery_pack"] > (int)cur["battery_pack"]) Mp3PlayLargeFolder(1, 7);  // 늘어날 때만 재생
       if((int)my["battery_pack"] == (int)my["max_battery_pack"]){
@@ -83,6 +85,7 @@ void DataChanged()
     // ---- device_state(이 기기의 개별 상태) 변화 처리 ----
     if(receiveMineOn == false && (String)(const char*)my["device_state"] != (String)(const char*)cur["device_state"]){
       if((String)(const char*)my["device_state"] == "repaired_all"){
+        BREADCRUMB("DataChanged:repaired_all");
         // 모든 발전기가 수리 완료 — 더 이상 할 일 없음, 탈출구 오픈 안내
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = WaitFunc;
@@ -94,6 +97,7 @@ void DataChanged()
         AllNeoOn(BLUE);
       }
       else if((String)(const char*)my["device_state"] == "repaired"){
+        BREADCRUMB("DataChanged:repaired");
         // 서버 쪽에서 이미 repaired로 바뀐 걸 뒤늦게 수신한 경우 — rfid.ino의 StartFinish()와
         // 동일한 마무리 처리를 반복해 로컬 상태를 서버와 일치시킨다.
         Serial.println("StartFinish PTRFUNC");
@@ -109,17 +113,24 @@ void DataChanged()
       else if((String)(const char*)my["device_state"] == "battery_max"){
         // 서버가 battery_pack을 최대치로 리셋(다음 라운드 준비 등)한 경우 —
         // 로컬 배선 카운트와의 차이를 서버에 보정 전송한 뒤 ActivateFunc으로 재진입한다.
+        // [주의] 여기 has2wifi.Send는 DataChanged() 콜백(=has2wifi.Loop() 내부) 안에서
+        // 재진입 호출된다 - BatteryFinish()가 굳이 다음 loop로 미루는 것과 같은 이유로
+        // 이 재진입 자체가 배선을 빠르게 뺐다 꽂았다 반복할 때 와이파이 스택이 먹통되는
+        // 원인일 가능성이 있어 BREADCRUMB로 표시해둔다.
+        BREADCRUMB("DataChanged:battery_max:send");
         int maxBattery = (int)my["max_battery_pack"] - (int)my["battery_pack"];
         Serial.println((String)maxBattery);
         has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", ((String)maxBattery));
 
         GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료
+        BREADCRUMB("DataChanged:battery_max:ActivateFunc");
         ActivateFunc();
       }
       else if((String)(const char*)my["device_state"] == "starter_finish"){
         // (별도 처리 없음 — 상태 값만 존재, 실제 전환은 ActivateFunc 진입 시 device_state 검사로 처리됨)
       }
       else if((String)(const char*)my["device_state"] == "activate"){
+        BREADCRUMB("DataChanged:activate");
         // 서버가 device_state를 충전 이전 단계("activate")로 되돌린 경우 — game_state는 이미
         // "activate"라 ActivateFunc()이 재호출되지 않으므로 여기서 직접 배선 폴링을 재개한다.
         ptrCurrentMode = WirePollMain;
@@ -148,6 +159,7 @@ void DataChanged()
         Mp3PlayLargeFolder(1, 1);  // TODO: PG_PLAYER_LOSE 음원 지정
       }
       else if((String)(const char*)my["device_state"] == "tagger"){
+        BREADCRUMB("DataChanged:tagger");
         // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/revival 태그 시 보라색 점멸은 TaggerRfidLoop에서 처리
         ptrRfidMode = WaitFunc;
         ptrCurrentMode = TaggerRfidLoop;
@@ -158,6 +170,7 @@ void DataChanged()
         AllNeoOn(PURPLE);
       }
       else if((String)(const char*)my["device_state"] == "github"){
+        BREADCRUMB("DataChanged:github:otaCheck");
         // 서버가 원격으로 OTA 업데이트를 트리거하는 채널
         Serial.println("[OTA] OTA 업데이트 요청 수신");
         ota.check();
@@ -198,12 +211,14 @@ void SettingFunc(void){
 //   2) "battery_max"   : 배터리팩이 이미 가득 찬 상태로 시작 — BatteryFinish()로 스타터 진입
 //   3) 그 외(기본)      : 배선 충전 단계부터 시작 — WirePollMain을 메인 루프로 등록
 void ActivateFunc(void){
+    BREADCRUMB("ActivateFunc:start");
     Serial.println("ACTIVATE");
     AllNeoOn(YELLOW);
     BatteryPackSend();
     EncoderDetach();
     GameTimer.deleteTimer(gameTimerId);
     BlinkTimer.deleteTimer(blinkTimerId);
+    BREADCRUMB("ActivateFunc:SAMConfig");
     nfc[MAINPN532].SAMConfig(); // RFID 리더 재설정 (직전 상태에서 통신이 꼬였을 경우 대비)
     if((String)(const char*)my["device_state"] == "starter_finish"){
         AllNeoOn(GREEN);

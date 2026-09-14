@@ -67,6 +67,7 @@ static bool DetectAndRead(uint8_t outData[32])
 //   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
 bool RfidPresenceCheck()
 {
+  BREADCRUMB("RfidPresenceCheck");
   uint8_t data[32];
 
   if (!rfid_tagLocked)
@@ -205,6 +206,7 @@ void TaggerRfidLoop()
 // - tagger/revival/그 외 값은 로그만 남기고 별도 동작은 하지 않는다.
 void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 확인용
 {
+  BREADCRUMB("CheckingPlayers");
   String tagUser = "";
   for(int i = 0; i < 4; i++)    //GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
@@ -234,6 +236,7 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 // 엔코더 값/타이머를 리셋해 다음 단계인 스타터(StarterActivate) 모드로 전환한다.
 void BatteryFinish()
 {
+  BREADCRUMB("BatteryFinish:start");
   // WirePollMain(배선 완충 감지)과 DataChanged(device_state=="battery_max" 수신)가 같은 충전
   // 완료를 각각 감지해 둘 다 이 함수를 부를 수 있어, 오디오/상태 재전송은 한 번만 실행되도록 가드한다.
   // 다음 충전 사이클은 WireResetTracking()이 이 플래그를 다시 풀어줌.
@@ -243,7 +246,9 @@ void BatteryFinish()
   // StarterActivate로 복귀하지 못하고 직전 상태(예: TaggerRfidLoop)에 멈춰 있게 된다.
   if (!batteryFinishDone) {
     batteryFinishDone = true;
+    BREADCRUMB("BatteryFinish:mp3Wait");
     Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
+    BREADCRUMB("BatteryFinish:send");
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
     // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
     // 이걸 "새로 바뀐 값"으로 착각해 ActivateFunc()->BatteryFinish()를 또 호출하는 걸 막는다.
@@ -276,12 +281,15 @@ void BatteryFinish()
 // 다시 대기(WaitFunc) 상태로 돌아간다.
 void StartFinish()
 {
+  BREADCRUMB("StartFinish:start");
   Serial.println("StartFinish PTRFUNC");
   GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료3
   BlinkTimer.deleteTimer(blinkTimerId);
   Serial.println("Generator Fixed!");
+  BREADCRUMB("StartFinish:send");
   has2wifi.Send((String)(const char*)my["device_name"], "device_state", "repaired");
   receiveMineOn = true;       // 서버 응답을 다시 폴링해서 아래 있는 device_state를 최신값으로 받아옴
+  BREADCRUMB("StartFinish:receiveMine");
   has2wifi.ReceiveMine();
   if ((String)(const char*)my["device_state"] == "repaired_all") {
     ptrRfidMode = WaitFunc;

@@ -44,6 +44,7 @@ int WireCountPlugged() {
 // 재진입 블로킹으로 와이파이 연결이 불안정해진다. ptrCurrentMode에 대입해두면 다음 loop() 반복에서
 // loop()가 콜백 밖의 컨텍스트로 안전하게 실행해준다(BatteryFinish도 void() 시그니처라 그대로 대입 가능).
 void WireResetTracking() {
+    BREADCRUMB("WireResetTracking:start");
     int wireCnt = WireCountPlugged();
     int prevKnown = (int)my["battery_pack"];
     int delta = wireCnt - prevKnown;
@@ -59,6 +60,7 @@ void WireResetTracking() {
     // 안 바뀌어(delta==0) 있으면 이 호출이 안 일어나서 엉뚱한 색이 그대로 남아있던 문제가 있었다.
     BatteryPackSend();
     if (delta != 0) {
+        BREADCRUMB("WireResetTracking:send");
         has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
         if (delta > 0) Mp3PlayLargeFolder(1, 7);
     }
@@ -67,6 +69,7 @@ void WireResetTracking() {
     if (wireCnt >= (int)my["max_battery_pack"]) {
         ptrCurrentMode = BatteryFinish;
     }
+    BREADCRUMB("WireResetTracking:done");
 }
 
 // ptrCurrentMode로 등록되어 loop()마다 호출됨 (기존 RfidLoopMain 자리)
@@ -103,11 +106,13 @@ void WirePollMain() {
     wireStableCnt = wireCandidateCnt;
     my["battery_pack"] = wireStableCnt;
     SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
+    BREADCRUMB("WirePollMain:send");
     has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
     BatteryPackSend();
     if (delta > 0) Mp3PlayLargeFolder(1, 7);  // 배선이 꽂혀 게이지가 늘어날 때만 재생 (빠질 때는 재생 안 함)
 
     if (wireStableCnt >= (int)my["max_battery_pack"]) {
+        BREADCRUMB("WirePollMain:BatteryFinish");
         BatteryFinish();
     }
 }
@@ -133,6 +138,7 @@ static unsigned long theftLastSampleTime = 0;
 static int           theftStableCnt      = -1; // -1이면 감시 구간 재진입 시 my["battery_pack"] 기준으로 재동기화 필요
 
 void WireTheftMonitorLoop() {
+    BREADCRUMB("WireTheftMonitorLoop");
     const char* deviceState = (const char*)my["device_state"];
     bool watch = deviceState && (
         strcmp(deviceState, "battery_max") == 0 ||
@@ -159,6 +165,7 @@ void WireTheftMonitorLoop() {
     Serial.print(deviceState);
     Serial.print(": ");
     Serial.println(delta);
+    BREADCRUMB("WireTheftMonitorLoop:send");
     has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
     // 이 단계부터 GAUGE LED는 배터리 개수가 아니라 스타터 진행률/완료 표시로 의미가
     // 바뀌어 있으므로(BatteryFinish 참고) BatteryPackSend()로 덮어쓰지 않는다.

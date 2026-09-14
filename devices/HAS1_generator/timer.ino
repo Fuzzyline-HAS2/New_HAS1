@@ -8,7 +8,19 @@
 
 // setup()에서 1회 호출: 세 인터벌을 등록한 뒤, GameTimer/BlinkTimer는 곧바로 정지시킨다
 // (WifiTimer만 상시 폴링, 나머지 둘은 게임 진행 상황에 따라 필요할 때 다시 켜짐).
+// 태스크 워치독도 여기서 함께 등록한다 — 배선을 다양한 device_state에서 빠르게 뺐다 꽂았다
+// 반복하면 loop()가 멈춰버려 물리 리셋 버튼을 눌러야만 복구되던 문제 대응. 30초 안에
+// TimerRun()의 esp_task_wdt_reset()이 안 불리면(=loop()가 멈춤) 자동으로 재부팅되고,
+// CrashReportInit()이 그 직전 BREADCRUMB 위치를 다음 부팅 때 로그로 남긴다.
 void TimerInit(){
+    static const esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms     = 30000,
+        .idle_core_mask = 0,
+        .trigger_panic  = true,
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL);  // 현재 태스크(loop) 등록
+
     wifiTimerId = WifiTimer.setInterval(wifiTime,WifiIntervalFunc);
     gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc);
 
@@ -22,7 +34,10 @@ void TimerInit(){
 // WifiTimer 콜백 (wifiTime = 2000ms마다 실행): 서버와 통신해 my/tag 등의 JSON을 갱신하고,
 // 변경분이 있으면 DataChanged() 콜백을 통해 게임 상태 전환을 처리한다.
 void WifiIntervalFunc(){
+    BREADCRUMB("WifiIntervalFunc");
     has2wifi.Loop(DataChanged);
+    CrashReportSend((const char *)my["device_name"]);
+    CrashNvsFlush();
 }
 
 // GameTimer 콜백 (gameTime = 400ms마다 실행): 스타터 진행 중 손잡이를 돌리지 않고 방치하면
@@ -67,7 +82,12 @@ void BlinkTimerStart(int Neo, int NeoColor){
 
 // loop()에서 매 프레임 호출: 세 타이머 모두 내부 millis() 경과를 확인해
 // 인터벌이 도래했으면 등록된 콜백을 실행한다.
+// esp_task_wdt_reset()을 매 프레임 호출 — loop()가 여기까지 정상적으로 도달하고 있다는
+// 뜻이므로 워치독 타이머를 리셋한다. 이 함수가 30초 넘게 안 불리면(=loop()가 어딘가에서
+// 멈춤) 워치독이 패닉을 일으켜 자동 재부팅한다.
 void TimerRun(){
+    esp_task_wdt_reset();
+    g_loop_count++;
     WifiTimer.run();
     GameTimer.run();
 

@@ -19,6 +19,8 @@
 #include <SimpleTimer.h>          // millis() 기반 소프트웨어 인터벌 타이머 라이브러리
 #include <SecureOTA.h>            // 서명 검증 기반 OTA(원격 펌웨어 업데이트) 라이브러리
 #include "secrets.h"              // OTA 서명 검증용 HMAC 비밀키 (별도 관리, git에 커밋되는 값은 아님)
+#include <esp_task_wdt.h>         // 태스크 워치독 — loop()가 멈추면 자동 재부팅 (timer.ino)
+#include "crash.h"                // BREADCRUMB/크래시 로그 — 워치독 재부팅 직전 위치를 서버에 보고 (crash.ino)
 
 // ---------------------------------------------------------------------------------
 // DFPlayer Mini (MP3 재생 모듈) 통신 핀
