@@ -228,6 +228,13 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   if ((int)tag["is_open"] != 0)
   {
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
+    // is_open 여부와 무관하게 유령 태그 이벤트는 구글시트에 남긴다 - 서버로는 안 보내고
+    // (아래 로직 스킵) 여기서 바로 1회성으로 기록. RSSI/heap만 알 수 있고 situation/open
+    // 관련 값은 의미가 없으므로 0/false로, note로 이 경로임을 남긴다.
+    if (tag_role == "ghost")
+    {
+      SendGhostTimingToSheet(tagUser, 0, 0, 0, false, WiFi.RSSI(), 0, ESP.getFreeHeap(), "is_open_blocked");
+    }
     NeoBlinkPurple(3);
     NeopixelSet(yellow);  // activate 상태 색으로 복원
     return;
