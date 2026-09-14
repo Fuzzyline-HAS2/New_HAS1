@@ -88,10 +88,16 @@ void RfidHalUpdate() {
     uint8_t data[32];
 
     if (!rfid_tagLocked) {
+        unsigned long retryStartMs = millis();
         if (!DetectAndRead(data)) {
             currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
             ApplyGain(currentGain);
-            if (!DetectAndRead(data)) {
+            bool ok = DetectAndRead(data);
+            // [진단 로그] 정답 애니메이션 렉이 RFID 최악 경로(1차 실패 -> Gain 전환 -> 재시도) 때문인지
+            // 확인용 - 이 경로를 탈 때만(스팸 방지) 소요시간+당시 gameState를 남긴다.
+            Log("RFID", "search retry " + String(millis() - retryStartMs) + "ms ok=" + String(ok) +
+                        " gameState=" + GameStateName(gameState));
+            if (!ok) {
                 rfid_tagPresent = rfid_dataReady = false;
                 return;
             }
@@ -105,6 +111,7 @@ void RfidHalUpdate() {
         return;
     }
 
+    unsigned long holdRetryStartMs = millis();
     bool found = DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0;
     if (!found) {
         GainMode otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
@@ -115,6 +122,10 @@ void RfidHalUpdate() {
         } else {
             ApplyGain(currentGain);   // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
         }
+        // [진단 로그] "카드를 뗀 직후" 최악 경로(1차 실패 -> Gain 전환 -> 재확인) 실측 -
+        // 정답 애니메이션 stutter와 시간이 겹치는지 gameState로 바로 대조 가능.
+        Log("RFID", "hold retry " + String(millis() - holdRetryStartMs) + "ms found=" + String(found) +
+                    " gameState=" + GameStateName(gameState));
     }
 
     if (found) {
