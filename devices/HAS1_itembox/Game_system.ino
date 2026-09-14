@@ -125,8 +125,9 @@ void ChangeGameState(GameState next) {
 // 토글은 "카드가 리더에 새로 올라온 순간"(presence edge)에만 1회 실행한다.
 // (예전엔 3초 시간 쿨다운으로 재토글을 막았는데, 카드를 3초 넘게 얹어 두면 박스 개방
 //  소요시간(4초)보다 쿨다운이 짧아 모터가 이동 중에 자동으로 다시 토글되어 방향이
-//  뒤집히며 절반만 열리다/닫히다 마는 문제가 있었다. RfidTagPresent()의 500ms
-//  디바운스를 그대로 신뢰해 "완전히 뗐다가 다시 얹었을 때"만 새 토글로 인정한다.)
+//  뒤집히며 절반만 열리다/닫히다 마는 문제가 있었다. RfidTagPresent()의 TAG_REMOVE_TIME_MS
+//  (rfid.ino, 현재 300ms) 디바운스를 그대로 신뢰해 "완전히 뗐다가 다시 얹었을 때"만
+//  새 토글로 인정한다.)
 static bool AdminCardToggle() {
     static bool adminTagLatched = false;  // 이번 물리적 태그 세션에서 이미 토글을 실행했는지
 

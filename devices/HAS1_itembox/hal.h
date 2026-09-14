@@ -29,6 +29,7 @@ void RfidHalUpdate();
 bool RfidTagPresent();
 bool RfidReadTag(uint8_t data[32]);
 bool RfidPeekTag(uint8_t data[32]);
+bool RfidScanNeeded();  // 연출/모터 이동 전용 gameState에서는 false — loop()가 스캔 자체를 건너뜀
 
 // ── Encoder ──────────────────────────────────────────────────────────────
 #define ENCODER_MAX 95

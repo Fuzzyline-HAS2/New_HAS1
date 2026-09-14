@@ -37,7 +37,7 @@ void loop() {
     if (motorR.due)   MotorHalUpdate();
     if (encoderR.due) EncoderHalUpdate();
     if (blinkR.due)   BlinkHalUpdate();
-    if (rfidR.due)    RfidHalUpdate();
+    if (rfidR.due && RfidScanNeeded()) RfidHalUpdate();
 
     // [3] 서버 수신 소비 — Core0이 직렬화해 넣은 JSON 수신, Core1에서만 my 역직렬화
     char jsonBuf[512];

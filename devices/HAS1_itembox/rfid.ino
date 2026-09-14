@@ -79,6 +79,14 @@ void RfidInit() {
 // 호출 빈도 제어는 rfidR.due가 담당 — "얼마나 자주 부를지"는 함수 내부에서 재지 않는다.
 // (TAG_REMOVE_TIME_MS 판정에 쓰는 millis()는 "얼마나 오래 유지했는지" 계산용으로 별개)
 //
+// 주의: "200ms"는 최소 트리거 간격일 뿐 실제 소요시간이 아니다. 아래 두 경로 모두 실패
+// 시 PN532 명령을 2세트(NEAR+FAR) 연달아 쏘는데, 이게 실측 ~230ms로 200ms보다 길다.
+// 특히 탐색 모드는 태그가 없는 한 매번 이 경로를 타므로, 태그 미보유 상태에서는 이 함수가
+// 사실상 쉬지 않고 거의 매 loop()마다 다시 트리거되어 그 loop() 전체가 ~230ms씩 묶인다
+// (동일 loop() 안에서 도는 motorR 10ms/encoderR 20ms 폴링도 그만큼 밀림). 애니메이션/모터
+// 이동 상태는 RfidScanNeeded()로 이 비용 자체를 건너뛰지만, PUZZLE/ACTIVATE/READY처럼
+// RFID가 실제로 필요한 상태에서 태그가 없는 동안은 이 비용을 여전히 그대로 문다.
+//
 // 탐색 모드(태그 미보유): 현재 Gain으로 1회 시도 → 실패하면 반대 Gain으로 즉시 재시도
 //   (23dB↔33dB를 오가며 근접~4cm 전 구간을 커버, 둘 다 실패하면 이번 tick은 미검출)
 // 유지 모드(태그 보유): 현재 Gain으로 먼저 확인 → 실패하면 반대 Gain으로 즉시 재확인
@@ -153,6 +161,24 @@ void RfidHalUpdate() {
 // 캐시된 값 반환 — 하드웨어 접근 없음, loop()마다 안전하게 호출 가능
 bool RfidTagPresent() {
     return rfid_tagPresent;
+}
+
+// 연출(점멸 애니메이션)/모터 이동 상태에서는 RFID 스캔이 불필요 - 이 상태들은 유저에게
+// 결과를 보여주기 위한 것일 뿐 태그 입력을 소비하지 않는다. 탐색 모드(태그 없음)에서
+// 매 200ms 틱마다 NEAR+FAR 이중 시도가 ~230ms를 잡아먹어 loop()가 밀리고 점멸 타이밍이
+// 늘어지는 문제가 실측(RFID search retry 로그)으로 확인됨 - 이 창에서는 스캔 자체를
+// 건너뛰어 근본적으로 비용을 없앤다.
+bool RfidScanNeeded() {
+    switch (gameState) {
+        case GAME_CORRECT_ANIM:
+        case GAME_WRONG_ANIM:
+        case GAME_ITEM_FAIL_ANIM:
+        case GAME_TAGGER_ANIM:
+        case GAME_BOX_OPENING:
+            return false;
+        default:
+            return true;
+    }
 }
 
 // 캐시된 데이터 반환. 소비 마킹(dataReady=false)으로 동일 태그 중복 소비 방지.

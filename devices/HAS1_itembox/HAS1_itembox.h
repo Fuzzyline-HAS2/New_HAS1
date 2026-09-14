@@ -81,7 +81,11 @@ struct Runnable {
 Runnable motorR   = {  10, 0, false };  // MotorHalUpdate   10ms
 Runnable encoderR = {  20, 0, false };  // EncoderHalUpdate 20ms
 Runnable blinkR   = {  50, 0, false };  // BlinkHalUpdate   50ms (Step 4에서 사용)
-Runnable rfidR    = { 200, 0, false };  // RfidHalUpdate   200ms
+// RfidHalUpdate 200ms — 이건 "최소 몇 ms 지나야 다시 트리거하는지"일 뿐, 실제 소요시간을
+// 보장하지 않는다. 태그 미검출(탐색 모드) 시 NEAR+FAR 이중 시도로 실측 ~230ms가 걸려
+// 200ms 주기보다 오래 걸리므로, 그 상태에선 사실상 매 loop()마다 다시 트리거된 채로
+// 거의 쉬지 않고 도는 상태가 된다(rfid.ino RfidHalUpdate/RfidScanNeeded 참고).
+Runnable rfidR    = { 200, 0, false };
 
 // 게임 진행 상태 변수 =====================================================================
 int  answerCnt        = 0;
