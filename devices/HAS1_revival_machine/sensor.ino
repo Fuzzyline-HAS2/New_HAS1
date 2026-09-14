@@ -223,7 +223,8 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // device_state=="tagger"와 달리 여기서는 점멸 후에도 device_state가 계속 "activate"라
   // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 보라색에 머무르게 되므로 복원한다.
   has2wifi.Receive(tagUser);
-  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]));
+  String tag_role = (String)(const char *)tag["role"];
+  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role);
   if ((int)tag["is_open"] != 0)
   {
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
@@ -237,8 +238,30 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // 내려올 때(game_state.ino DataChange)에야 실제로 문을 연다.
   Serial.println("[RFID] Tag detected - sending situation to server: " + tagUser);
   last_open_tag_user = tagUser;  // DataChange()에서 open 확정 시 이 iotGlove의 is_open을 true로 쓰기 위해 기억
+
+  // 유령 태그 -> open 확정까지 소요시간 실측 시작 (ghost_timing.ino). 측정 종료는
+  // game_state.ino의 device_state=="open" 분기에서, SolenoidPulse 5초 delay 이전에 끊는다.
+  // role=="ghost"일 때만 기록한다 - 생존자/술래가 태그해도 서버가 open을 안 주는 게
+  // 정상 동작이라, 이 경우까지 재면 매번 타임아웃으로 잡혀 로그가 오염된다.
+  if (tag_role == "ghost")
+  {
+    ghost_pending_tag_user = tagUser;
+    ghost_tag_start_ms = millis();
+    ghost_poll_count = 0;
+    ghost_rssi_at_tag = WiFi.RSSI();
+    ghost_open_pending = true;
+  }
+  else
+  {
+    Serial.println("[GhostTiming] skip - role=" + tag_role + " (not ghost, open not expected)");
+  }
+
+  unsigned long situationStartMs = millis();
   bool situation_sent = has2wifi.Situation(tagUser, "revival_machine");
-  Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL"));
+  ghost_situation_ms = millis() - situationStartMs;
+  ghost_situation_ok = situation_sent;
+  Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL") +
+                 " took=" + String(ghost_situation_ms) + "ms");
 
   // Situation이 전송됐으면 서버가 곧 device_state="open"을 쓴다. 일반 폴링 경로
   // (has2wifi.Loop)는 request=Loop로 shift_machine 플래그를 먼저 확인하고, 플래그가 선

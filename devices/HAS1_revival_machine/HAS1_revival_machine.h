@@ -69,6 +69,24 @@ byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용�
 // 확정되는 시점(game_state.ino DataChange)에 그 iotGlove의 is_open을 true로 기록하는 데 쓴다.
 String last_open_tag_user = "";
 
+// ── 유령 태그 -> open 확정 소요시간 실측 (ghost_timing.ino, 구글시트 로깅) ──
+// 여러 iotGlove가 동시에 AP에 붙어있을 때 open까지 6~7초씩 걸린다는 현장 리포트 원인 추적용.
+// 측정 구간은 반드시 SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS)의 5초 블로킹 delay *이전*에
+// 끊어야 한다 - 예전에 이 delay 뒤에서 로그를 찍어 실제보다 5초 늦게 관측된 적이 있었다
+// (library_and_pin.h의 WIFI_POLL_INTERVAL_ACTIVATE_MS 주석 참고).
+bool          ghost_open_pending    = false;
+unsigned long ghost_tag_start_ms    = 0;
+String        ghost_pending_tag_user = "";
+int           ghost_poll_count      = 0;
+int           ghost_rssi_at_tag     = 0;
+unsigned long ghost_situation_ms    = 0;
+bool          ghost_situation_ok    = false;
+#define GHOST_OPEN_TIMEOUT_MS 15000  // 이 시간 안에도 open이 안 오면 타임아웃으로 기록하고 포기
+
+void SendGhostTimingToSheet(const String &tag_user, unsigned long total_ms, int poll_attempts,
+                             unsigned long situation_ms, bool situation_ok,
+                             int rssi_tag, int rssi_open, uint32_t free_heap, const char *note);
+
 bool send_nfc_err = false;
 
 // 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현) — GainMode는 currentGain 등

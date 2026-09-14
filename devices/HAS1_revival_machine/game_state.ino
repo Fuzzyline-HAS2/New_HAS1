@@ -54,6 +54,22 @@ void DataChange()
         return;
     }
 
+    // 유령 태그 -> open 대기 중이면 이번 호출도 폴링 1회로 카운트한다(빠른경로 호출 포함).
+    // GHOST_OPEN_TIMEOUT_MS 안에도 open이 안 오면 타임아웃으로 기록하고 포기 - 6~7초보다
+    // 훨씬 오래 걸리거나 아예 안 열리는 최악의 경우도 놓치지 않기 위함.
+    if (ghost_open_pending)
+    {
+        ghost_poll_count++;
+        if (millis() - ghost_tag_start_ms > GHOST_OPEN_TIMEOUT_MS)
+        {
+            Serial.println("[GhostTiming] TIMEOUT waiting for open (" + String(GHOST_OPEN_TIMEOUT_MS) + "ms)");
+            SendGhostTimingToSheet(ghost_pending_tag_user, millis() - ghost_tag_start_ms, ghost_poll_count,
+                                   ghost_situation_ms, ghost_situation_ok, ghost_rssi_at_tag,
+                                   WiFi.RSSI(), ESP.getFreeHeap(), "timeout");
+            ghost_open_pending = false;
+        }
+    }
+
     // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
     // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
     // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다(HAS1_itembox와 동일 이슈).
@@ -98,6 +114,22 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "open")
         {
+            // 반드시 SolenoidPulse(5초 블로킹 delay) *이전*에 측정을 끊는다 - 그 뒤에서 재면
+            // 실제보다 5초 늦게 관측된다(WIFI_POLL_INTERVAL_ACTIVATE_MS 주석에 적힌 예전 실수 반복 방지).
+            if (ghost_open_pending)
+            {
+                unsigned long totalMs = millis() - ghost_tag_start_ms;
+                int rssiOpen = WiFi.RSSI();
+                uint32_t freeHeap = ESP.getFreeHeap();
+                Serial.println("[GhostTiming] OPEN confirmed: " + String(totalMs) + "ms polls=" + String(ghost_poll_count) +
+                               " situation=" + String(ghost_situation_ms) + "ms rssi_tag=" + String(ghost_rssi_at_tag) +
+                               " rssi_open=" + String(rssiOpen) + " heap=" + String(freeHeap));
+                SendGhostTimingToSheet(ghost_pending_tag_user, totalMs, ghost_poll_count,
+                                       ghost_situation_ms, ghost_situation_ok, ghost_rssi_at_tag,
+                                       rssiOpen, freeHeap, "");
+                ghost_open_pending = false;
+            }
+
             NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
             SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // 승인 확정 시점에 실제로 문을 연다
             NeoFunc = NeoNo;
