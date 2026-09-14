@@ -62,7 +62,11 @@ void CrashReportInit() {
         crash_prefs.end();
     }
     else if (r != ESP_RST_DEEPSLEEP) {
-        // 소프트 리셋 계열 — RTC 그대로 살아있음
+        // 소프트 리셋 계열 — RTC 그대로 살아있는 게 정상이지만, 실측(2026-09-14)에서
+        // TASK_WDT 재부팅 후에도 g_last_fn/g_last_uptime_ms/g_crash_count가 초기값으로
+        // 읽히는 경우가 있었다(정확한 원인 불명 - 워치독 패닉이 RTC 도메인까지 건드렸거나
+        // 재초기화 타이밍 이슈로 추정). RTC가 비어있으면 30초마다 flush해둔 NVS 백업으로
+        // 대체해 "마지막 위치 정보 자체가 통째로 날아가는" 상황을 막는다.
         // ESP_RST_TASK_WDT / ESP_RST_PANIC → [CRASH] (배선을 빠르게 뺐다 꽂았다 반복하다
         // loop()가 멈추는 문제 추적용 — 워치독이 30초 안에 못 돌면 여기로 잡힌다)
         // ESP_RST_SW (ESP.restart() 등) → [RESET]
@@ -70,10 +74,26 @@ void CrashReportInit() {
                          r == ESP_RST_INT_WDT  || r == ESP_RST_PANIC);
         g_crash_count++;
 
+        bool rtc_looks_valid = (g_last_fn[0] != '\0');
+        String fn_to_use      = rtc_looks_valid ? String(g_last_fn) : "";
+        uint32_t uptime_to_use = g_last_uptime_ms;
+        uint32_t loop_to_use   = g_loop_count;
+        bool used_nvs_fallback = false;
+
+        if (!rtc_looks_valid) {
+            crash_prefs.begin(CRASH_NS, true);
+            fn_to_use       = crash_prefs.getString("fn", "");
+            uptime_to_use   = crash_prefs.getULong("uptime", 0);
+            loop_to_use     = crash_prefs.getULong("loop", 0);
+            crash_prefs.end();
+            used_nvs_fallback = fn_to_use.length() > 0;
+        }
+
         snprintf(g_crash_msg, sizeof(g_crash_msg),
-            "reason=%s uptime=%lums fn=%s loop=%lu crash#%u",
-            ResetReasonStr(r), g_last_uptime_ms, g_last_fn,
-            g_loop_count, (unsigned)g_crash_count);
+            "reason=%s uptime=%lums fn=%s loop=%lu crash#%u%s",
+            ResetReasonStr(r), uptime_to_use, fn_to_use.c_str(),
+            loop_to_use, (unsigned)g_crash_count,
+            used_nvs_fallback ? " nvs_fallback_rtc_lost" : (rtc_looks_valid ? "" : " no_data"));
 
         Serial.println((is_crash ? "[CRASH] " : "[RESET] ") + String(g_crash_msg));
         g_crash_pending        = true;

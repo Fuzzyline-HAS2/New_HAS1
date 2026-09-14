@@ -34,7 +34,12 @@ void TimerInit(){
 // WifiTimer 콜백 (wifiTime = 2000ms마다 실행): 서버와 통신해 my/tag 등의 JSON을 갱신하고,
 // 변경분이 있으면 DataChanged() 콜백을 통해 게임 상태 전환을 처리한다.
 void WifiIntervalFunc(){
-    BREADCRUMB("WifiIntervalFunc");
+    // 2초마다 찍히는 브레드크럼이라 다른 함수 브레드크럼이 안 남았어도 "직전에 어느
+    // device_state였는지"는 최소 2초 해상도로 남는다 - "어느 상태에서 멈췄는지" 질문에
+    // 직접 답하기 위함.
+    char stateBuf[40];
+    snprintf(stateBuf, sizeof(stateBuf), "Wifi:ds=%s", (const char *)my["device_state"]);
+    BREADCRUMB(stateBuf);
     has2wifi.Loop(DataChanged);
     CrashReportSend((const char *)my["device_name"]);
     CrashNvsFlush();

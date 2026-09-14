@@ -83,6 +83,7 @@ void WireResetTracking() {
 //      게이지 LED(BatteryPackSend)를 갱신한다.
 //   5) 확정된 개수가 최대치(max_battery_pack)에 도달하면 BatteryFinish()로 다음 단계 진행.
 void WirePollMain() {
+    BREADCRUMB("WirePollMain");
     if (millis() - wireLastSampleTime < 20) return;
     wireLastSampleTime = millis();
 

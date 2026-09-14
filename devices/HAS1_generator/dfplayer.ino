@@ -49,11 +49,13 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
 #define MP3_WAIT_TIMEOUT_MS 2000
 void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
+    BREADCRUMB("Mp3PlayLargeFolderAndWait");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     unsigned long start = millis();
     while (millis() - start < MP3_WAIT_TIMEOUT_MS) {
         if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) break;
     }
+    BREADCRUMB("Mp3PlayLargeFolderAndWait:done");
 }
 
 // 남은 발전기 개수 안내 — 맞는 음원 트랙이 없어서(재생하면 StartFinish()가 직전에 튼 (1,4)

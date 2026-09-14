@@ -161,6 +161,7 @@ void RfidInit()
 // (rfid_num은 현재 1로 고정되어 있어 for문은 사실상 MAINPN532 1개만 순회한다.)
 void RfidLoopMain()
 {
+  BREADCRUMB("RfidLoopMain");
   uint8_t data[32];
 
   for (int i = 0; i < rfid_num; ++i)
@@ -179,6 +180,7 @@ void RfidLoopMain()
 // 새로 올라온 순간(lastTagState: false->true)에만 처리한다.
 void TaggerRfidLoop()
 {
+  BREADCRUMB("TaggerRfidLoop");
   static bool lastTagState = false;
   uint8_t data[32];
   bool tagOnReader = RfidDetectTag(data);
