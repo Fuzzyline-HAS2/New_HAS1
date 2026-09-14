@@ -20,8 +20,9 @@ static int colorTable[7][3] = {
     {0,   0,   255},  // BLUE
     {255, 0,   255},  // PURPLE
 };
-// 엔코더 거리 단계별 파란색 농도 (내부 전용)
-static int encBlue[4][3] = {{0,0,64},{0,0,128},{0,0,192},{0,0,255}};
+// 엔코더 링 배경색 (내부 전용) — 예전엔 24칸(한 바퀴)마다 4단계로 밝기가 계단식으로
+// 바뀌어서 돌리다 보면 갑자기 밝아졌다/어두워졌다 하는 것처럼 보였다. 단일 농도로 통일.
+static int encBlue[3] = {0, 0, 128};
 
 static void setColor(int stripIdx, int c[3]) {
     pixels[stripIdx].fill(pixels[stripIdx].Color(c[0], c[1], c[2]));
@@ -55,10 +56,9 @@ void NeoSetBrightness(int b) {
 }
 
 void NeoEncoderUpdate(long value) {
-    int  grade = (int)(value / 24);        // 0~3: 파란색 농도 단계
-    int  pos   = 23 - (int)(value % 24);  // 빨간 마커 위치
+    int  pos = 23 - (int)(value % 24);  // 빨간 마커 위치 (24칸 링을 한 바퀴씩 돎)
     for (int i = 0; i < NumPixels[NEO_ENCODER]; i++)
-        pixels[NEO_ENCODER].setPixelColor(i, pixels[NEO_ENCODER].Color(encBlue[grade][0], encBlue[grade][1], encBlue[grade][2]));
+        pixels[NEO_ENCODER].setPixelColor(i, pixels[NEO_ENCODER].Color(encBlue[0], encBlue[1], encBlue[2]));
     pixels[NEO_ENCODER].setPixelColor(pos, pixels[NEO_ENCODER].Color(colorTable[RED][0], colorTable[RED][1], colorTable[RED][2]));
     pixels[NEO_ENCODER].show();
 }
