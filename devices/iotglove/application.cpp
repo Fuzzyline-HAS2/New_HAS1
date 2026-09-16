@@ -142,6 +142,16 @@ const char* phaseName(Phase phase) {
   }
 }
 
+const char* roleName(Role role) {
+  switch (role) {
+    case Role::Neutral: return "neutral";
+    case Role::Player: return "player";
+    case Role::Tagger: return "tagger";
+    case Role::Ghost: return "ghost";
+    default: return "unknown";
+  }
+}
+
 void reportServerChanges(uint32_t now) {
   const ServerSnapshot& server = game.server();
   const bool fresh = serverFresh(now);
@@ -178,6 +188,17 @@ void printDiagnostics(uint32_t now) {
   remoteConsoleLogf("[remote] dropped_usb_bytes=%lu dropped_telnet_bytes=%lu rejected_commands=%lu\n",
       (unsigned long)console.usbDroppedBytes, (unsigned long)console.telnetDroppedBytes,
       (unsigned long)console.rejectedCommands);
+  remoteConsoleLogf("[inputs] chip_gpio26=%d button_gpio27=%d chip_debounced=%u button_debounced=%u chip_model=%u\n",
+      digitalRead(IOTGLOVE_CHIP_PIN), digitalRead(IOTGLOVE_BUTTON_PIN),
+      chipInput.value(), buttonInput.value(), game.chipPresent());
+  const ServerSnapshot& server = game.server();
+  remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld captures_allowed=%u count=%u server_count=%u sacrificed=%u open=%u\n",
+      roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
+      game.count(), server.revivalCount, server.sacrificed, server.open);
+  // feedback() consumes event haptics. Diagnostics only read the last render.
+  remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u brightness8=%u\n",
+      haveOutputs, lastOutputs.red, lastOutputs.green, lastOutputs.blue, lastOutputs.lit,
+      lastOutputs.motor, lastBrightness);
   diagnosticLog.append(
       "[diag] TTGO fw=%d partition=%d; UART TX32->6 RX36<-5 reset12->1\n"
       "[peer] known=%u online=%u fw=%lu partition=%lu boot=%lu last_seen_ms=%s hello_age_ms=%s\n"
@@ -431,6 +452,7 @@ void render(uint32_t now) {
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now);
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
+  lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   const uint8_t percent = kTraining ? 100 : game.server().brightness;
   const uint8_t brightness = static_cast<uint8_t>((uint16_t(percent) * 255U) / 100U);
   if (!haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
