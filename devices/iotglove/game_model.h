@@ -1,0 +1,117 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+namespace iotglove {
+
+enum class Profile : uint8_t { Origin, Training };
+enum class Phase : uint8_t { Unknown, Setting, Ready, Exploration, Active, Ended };
+enum class Role : uint8_t { Neutral, Player, Tagger, Ghost };
+enum class Display : uint8_t { Setting, Ready, Player, Ghost, Tagger, TaggerActive, Ended };
+enum class Haptic : uint8_t { None, Removed, Found };
+
+// Owned by the network task, copied through a queue. No String/JSON crosses tasks.
+struct ServerSnapshot {
+  bool valid = false;
+  uint32_t receivedAtMs = 0;
+  char session[40] = {};
+  char deviceName[24] = {};
+  Phase phase = Phase::Unknown;
+  Role role = Role::Neutral;
+  uint8_t revivalCount = 0;
+  uint32_t stepSeconds = 0;
+  bool sacrificed = false;
+  bool open = false;
+  bool capturesAllowed = false;
+  bool taggerActive = false;
+  uint8_t vibe = 0;
+  int32_t lifeChip = 0;
+  uint8_t brightness = 100;
+  bool updateRequested = false;
+  // Complete command identity is retained so github@12:7 -> github@13:7 is a
+  // new request even when updateRequested remains true. Zero targets = latest.
+  char updateCommand[40] = {};
+  uint32_t otaTtgoVersion = 0;
+  uint32_t otaBeetleVersion = 0;
+  bool resetRequested = false;
+};
+
+struct GameEvent {
+  enum class Kind : uint8_t { Capture, CancelCapture, Revive, ChipInserted, ChipRemoved, SetCount };
+  Kind kind = Kind::SetCount;
+  uint32_t sequence = 0;
+  char session[40] = {};
+  char deviceName[24] = {};
+  uint8_t value = 0;
+};
+
+struct Feedback {
+  Display display = Display::Setting;
+  uint8_t lit = 4;
+  Haptic haptic = Haptic::None;
+};
+
+// Debounces a physical level; update() returns exactly one event per stable edge.
+class DebouncedInput {
+ public:
+  explicit DebouncedInput(uint32_t intervalMs = 30) : intervalMs_(intervalMs) {}
+  void begin(bool level, uint32_t now);
+  bool update(bool level, uint32_t now);
+  bool value() const { return stable_; }
+ private:
+  uint32_t intervalMs_;
+  uint32_t candidateSince_ = 0;
+  bool stable_ = false;
+  bool candidate_ = false;
+};
+
+class GameModel {
+ public:
+  explicit GameModel(Profile profile) : profile_(profile) {}
+  void begin(bool chipPresent, uint32_t now);
+  void applyServer(const ServerSnapshot& snapshot, uint32_t now);
+  void chipChanged(bool present, uint32_t now);
+  void buttonPressed(uint32_t now);
+  void tick(uint32_t now);
+  bool peekEvent(GameEvent& out) const;
+  void consumeEvent();
+  // A command with uncertain outcome must not be blindly regenerated.
+  void commandUncertain(uint32_t sequence);
+  Feedback feedback();
+  bool chipPresent() const { return chipPresent_; }
+  bool synchronized() const { return haveServer_ && !needsSync_; }
+  bool queueOverflowed() const { return overflow_; }
+  bool canUseLifeDevice() const;
+  uint8_t count() const { return count_; }
+  const ServerSnapshot& server() const { return server_; }
+ private:
+  static constexpr size_t kCapacity = 12;
+  Profile profile_;
+  ServerSnapshot server_;
+  GameEvent queue_[kCapacity];
+  size_t head_ = 0;
+  size_t size_ = 0;
+  uint32_t sequence_ = 0;
+  uint32_t stepStart_ = 0;
+  uint32_t trainingStart_ = 0;
+  uint32_t intervalMs_ = 0;
+  uint8_t count_ = 0;
+  uint8_t observedCount_ = 0;
+  bool chipPresent_ = false;
+  bool trainingGhost_ = false;
+  bool haveServer_ = false;
+  bool needsSync_ = false;
+  bool overflow_ = false;
+  bool rolePending_ = false;
+  Role pendingRole_ = Role::Neutral;
+  bool countPending_ = false;
+  bool insertReported_ = false;
+  Haptic haptic_ = Haptic::None;
+  bool emit(GameEvent::Kind kind, uint8_t value = 0);
+  void attemptReturn();
+  void resetQueue();
+  bool activeGhost() const;
+};
+
+}  // namespace iotglove

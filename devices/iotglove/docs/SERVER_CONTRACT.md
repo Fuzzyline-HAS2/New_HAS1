@@ -1,0 +1,74 @@
+# Origin 글러브 서버 연동 조사
+
+조사일: 2026-09-16. 기준: [fuzzyline-core main `bc6907f`](https://github.com/Fuzzyline-HAS2/fuzzyline-core/tree/bc6907fa78c9cae713bbbf068d0ad766fc12a92b). 소스와 기존 테스트 내용을 읽은 결과이며 운영 서버/DB에 접속하거나 서버를 실행하지 않았다. 서버 코드도 수정하지 않았다.
+
+## 실제 API 계약
+
+Node의 `GET /api/esp`와 호환 별칭 `GET /has2.php`를 사용한다. 서버는 기본 5000번과 선택적 ESP 호환 8080번 리스너를 제공한다. 펌웨어가 사용할 실제 호스트/포트는 `HAS2_Wifi first_store` 및 현장 설정을 맞춰야 한다. `/has2.php`가 있다고 Apache/PHP 서버로 가정하지 않는다. [README](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/README.md)
+
+| 작업 | 요청 내용 | 의미와 주의 |
+| --- | --- | --- |
+| 자기 장치 조회 | `request=ReceiveMine&table=device&mac=<MAC>` | 등록 MAC으로 장치와 그룹 상태를 조회한다. 미등록이면 HTTP 200 + `{}`도 가능 |
+| 변경 폴링 | `request=Loop&table=device&mac=<MAC>` | `shift_machine`, watchdog 등 확인. 최초/재접속 시 전체 동기화 유도 |
+| 상태/측정 보고 | `request=Send&table=device&key=<자기 장치>&column=<필드>&value=<값>` | 필드마다 SET/증감/별도 로직이 달라 일괄 취급 금지 |
+| 다른 장치 조회 | `request=Receive&table=device&key=<대상>` | 역할 등 조회. 요청 대상과 응답을 검증 |
+| 장치 사건 | `request=Situation&table=<사건>&key=<주체>&value=<대상>` | 사건별 주체/대상이 다르며 HTTP 200이 게임 처리 성공을 뜻하지 않음 |
+
+본게임 `device_type=iotglove`, `G1/G2`는 `iotglove_g1/g2`로 해석된다. 훈련소는 `training_device`/`training_iotglove`로 별도 해석한다. `ReceiveMine`의 필드는 숫자도 문자열로 반환되며 null은 null이다. 응답 전 `shift_machine=0`으로 낮추므로 응답 유실 때도 flag만 믿지 말고 주기적인 전체 재조회로 복구한다. [타입/테이블 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L368), [ReceiveMine](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L2099)
+
+## 글러브 필드와 시간
+
+| 필드 | 현재 서버 동작 | 펌웨어 계획 |
+| --- | --- | --- |
+| `role` | Origin은 `neutral/player/tagger/ghost`; `revival` 입력도 `ghost`로 정규화 | 다른 매장처럼 `revival`을 유령 wire 값으로 고정하지 않음 |
+| `life_chip` | **현재값에 value를 더함** | 칩 유무 스냅샷 0/1을 반복 전송하지 않음. 증감 보고의 중복·응답 유실을 별도 해결 |
+| `revival_count` | 정수 SET | 글러브가 시간 경과에 따라 0~4를 보고. 발각 reset도 값 0 보고를 기본안으로 검토 |
+| `revival_time` | Origin에서는 **카운트 한 칸의 충전 시간(초)** | count=0에서 시작하면 총 `4 × revival_time`. 60이면 240초이며 훈련소 9초와 다름. 실제 운영 값은 DB 조회 전 미확인 |
+| `is_open` | 정수 SET | 생명장치를 이미 열었는지 나타냄 |
+| `is_sacrificed` | 정수 SET | 생명칩 봉헌 여부 필드. 존재 자체가 자동 포획 추적 구현을 뜻하지 않음 |
+| `battery_remaining` | 실수 SET; DB REAL | 전압 또는 %로 변환하지 않고 받은 실수를 저장 |
+| `location` | 문자열 SET, 서버가 `vibe` 재계산 | Origin 방 ID를 사용 |
+| `vibe` | 위치 계산 결과 수신 | 같은 방 **3**, 인접 방 **1**, 그 외 **0**. 주석의 같은 방=2보다 실제 함수 반환값을 기준으로 함 |
+| `esp_version` | 공통 device 메타에 저장 | TTGO 버전 보고. Nextion 버전은 신규 펌웨어에서 보고하지 않음 |
+
+근거: [SET/증감 분류](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L204), [숫자 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L3288), [카운트 소유권/시간 해석](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/lib/glove-role-timer.js#L134), [테마별 역할/타이머](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/theme-family.js#L57).
+
+`role=ghost` 보고는 서버에서 `is_open=0`, `is_sacrificed=0`을 함께 설정한다. 따라서 역할 보고를 재시도 가능한 단순 SET으로 취급하면 이미 진행된 상태를 지울 수 있다. `role=player` 보고는 life_chip을 최소 1로 만들며, Origin에서는 Error 전용 `revival_due_at` 검사를 적용하지 않는다. 본게임 setting/stop 중 역할 보고는 성공 ACK를 반환해도 무시될 수 있다. [역할 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L1534), [Send 역할 분기](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L2640)
+
+Origin에서는 컨택 단축 `Situation/revival_cooldown`이 무시된다. Error의 서버 만료시각 방식과 Origin의 펌웨어 충전 카운트 방식을 섞지 않는다. count 증가, 시작 시점, 발각 reset, 운영자가 count/time을 바꿀 때의 로컬 기준점 복구를 별도로 설계한다. [컨택 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L4438)
+
+## Notion 상세 규칙과 확인된 차이
+
+다음은 확인한 main의 동작이며, 운영 브랜치나 추가 구현이 있는지 확인해야 한다. 기획을 삭제하거나 서버가 이미 전부 처리한다고 가정하지 않는다.
+
+1. **유령 대기/봉헌 확정:** 상태를 표현할 `ghost`, `is_sacrificed`, `is_open`은 있다. UI도 봉헌 전 ghost를 구분한다. 다만 조사한 서버 소스에서는 제단 봉헌 대상을 확정해 `is_sacrificed`를 올리거나 “미확정 생명 수 = 문제 유령 수”로 일괄 복구하는 자동 처리 경로를 찾지 못했다. 제단 봉헌 큐는 생명장치의 활성화 시점을 결정하는 별도 기능이다. [UI](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-client/src/pages/component_dashboard/PlayerCard.js#L285), [제단→활성화 큐](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/game-engine.js#L4417)
+2. **생명장치 개방:** `Situation/revival_machine`은 `key=생명장치`, `value=글러브`다. 현재 서버는 장치 상태와 `role=ghost`를 검사하지만, 이 분기에서 글러브의 `revival_count=4`, `is_sacrificed=1`, `is_open=0`을 모두 검사하지 않는다. `is_open=1` 보고는 New_HAS1 생명장치 펌웨어의 개방 처리에 있다. 따라서 글러브 추가만으로 서버 개방 조건까지 완성되지 않는다. [서버 검사](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L4101), [현재 생명장치 펌웨어](../../HAS1_revival_machine/sensor.ino)
+3. **칩 이벤트:** `life_chip`은 증감이고, 전용 물리 칩 장착/제거 및 발각 요청 타입은 조사한 허용 목록에 없다. 단순히 새 사건명을 만들어 호출할 수 없다. `life_chip`, `role`, `revival_count`를 순서대로 쓰는 방식을 쓰더라도 중간 상태·역할 재전송·응답 유실 복구가 필요하다. 최신 기획의 전역 정합성은 서버와 계약을 확정해야 한다.
+4. **훈련소:** 서버의 G9P1 초기 역할은 tagger, G9P3~9는 player, G9P2는 동적 역할(신규 시드 neutral)이다. Origin의 G9P2 `is_open=0/is_sacrificed=1/revival_count=4`는 고정 보호된다. 이 서버용 태그 권한을 독립 훈련소 샘플의 실제 LED 9초 충전과 동일 상태로 취급하지 않는다. [훈련 계약](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/lib/training-glove-roles.js)
+
+개념 상태 매핑의 후보는 `player`=생존자, `ghost+is_sacrificed=0`=유령 대기, `ghost+is_sacrificed=1+is_open=0`=확정 유령, `ghost+is_open=1`=부활 직전이다. 이는 현 필드로 기획을 표현하는 **설계안**이며 모든 자동 전이가 구현되었다는 뜻은 아니다. 칩 플래그는 별도로 유지한다.
+
+## 위치/배터리
+
+- Origin 방 ID와 인접 관계는 [config/audio-layouts.json](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/config/audio-layouts.json)의 origin을 따른다. 주요 방은 `bambooForest/livingRoom/sleepingRoom/toilet/undergroundRoom/hallway`. 비콘 장치명→방 매핑은 실제 장치 메타와 대조한다.
+- `computeVibe`는 실제로 같은 방=3을 반환한다. 위치가 비어 있으면 0이지만 같은 미확인 문자열 두 개를 같은 방으로 볼 가능성이 있으므로, 펌웨어의 위치 유효성/만료 조건을 진동에 적용하고 서버의 unknown 처리도 점검한다. [계산 함수](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L160)
+- 구 글러브는 `battery_remaining`에 소수 2자리 **전압(V)**을 보낸다. 서버는 실수 저장만 하며, 별도 [칼럼 설명 문서](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/docs/iot-glove-table-columns.md)는 %로 설명해 불일치한다. 기본안은 기존 전압 보고 호환이며, 단위를 명시하고 화면/운영값을 확인한 뒤 적용한다. 임의로 0~100 값을 혼용하지 않는다.
+- 하드웨어 배터리 필드는 게임 아이템 수량 `battery_pack`과 별개다. 배터리 미연결·포화 등 무효 측정값을 정상 전압으로 보고하지 않는다.
+
+## HAS2_Wifi adapter에 필요한 검증
+
+New_HAS1 `b43a316`의 로컬 first_store 사본 기준이다. CI가 가져오는 upstream first_store 최신과 구현 착수 시 다시 대조한다.
+
+- `Send`는 void, `Situation`은 HTTP 200 여부만 반환한다. 특히 `revival_machine`은 성공/거절 모두 HTTP 200에 `open/not_open`을 반환한다. 사업 로직 결과나 확정 상태는 응답/재조회로 확인해야 한다.
+- `ReceiveMine/Loop`도 void이고 JSON 파싱 실패를 외부에 반환하지 않는다. 검증된 상태 스냅샷을 만들려면 first_store 라이브러리에 결과/파싱 유효성을 노출하는 보완이 필요한지 확인한다. `shift_machine`과 본문만 보고 최신 성공이라고 단정하지 않는다.
+- `MaintainWifi`/`Setup`은 재접속 실패 때 TTGO를 재부팅한다. 네트워크 task를 분리하는 것만으로 단절 중 입력/표시 유지가 보장되지 않는다. first_store에서 재시도/재부팅 정책을 설정 가능하게 할지 검토한다.
+- `SendAsync`를 승인 필요한 게임 상태 변경에 사용하지 않는다. 공유 JSON/HTTP는 단일 task가 소유하고, 검증된 복사본을 게임 task로 넘긴다.
+- `life_chip` 증감이나 역할 전환의 응답이 사라졌을 때 무조건 재전송하지 않는다. 현재 증감 API에는 요청별 dedup key가 없으므로 재조회 및 재동기화 절차를 계약에 포함한다.
+
+근거: [로컬 라이브러리](../../../libraries/HAS2_Wifi/HAS2_Wifi.cpp). 라이브러리/서버 변경은 이번 문서 조사에서 수행하지 않았으며, 필요 범위와 적용 위치를 구현 전에 확정한다.
+
+## 남은 확인
+
+1. 현재 운영 서버도 조사한 main 기준인지, 최신 Notion 생명 추적을 처리하는 별도 브랜치/코드가 있는지.
+2. 배터리 종류/셀 수, TTGO 실물의 ADC 연결과 분압 회로. 기존 GPIO35/raw 보정 상수를 그대로 사용할 근거는 아직 없음.
+3. 타이머 시작 시점과 부분 진행 복구, 동적 시간 변경 시 동작, 세부 LED/진동 패턴은 펌웨어 정책으로 정한다. 카운트 한 칸의 단위와 Origin의 비컨택 방식은 소스로 확인 완료.
