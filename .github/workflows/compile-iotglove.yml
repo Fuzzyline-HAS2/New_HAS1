@@ -1,0 +1,86 @@
+name: Compile IoT glove
+run-name: "IoT glove compile checks by @${{ github.actor }}"
+
+on:
+  pull_request:
+    paths:
+      - "devices/iotglove/**"
+      - "libraries/IoTGloveProtocol/**"
+      - "scripts/firmware_targets.py"
+      - "scripts/write_firmware_secret.py"
+      - "scripts/archive_iotglove_release.py"
+      - ".github/workflows/compile-iotglove.yml"
+      - ".github/workflows/deploy-firmware.yml"
+  push:
+    paths:
+      - "devices/iotglove/**"
+      - "libraries/IoTGloveProtocol/**"
+      - "scripts/firmware_targets.py"
+      - "scripts/write_firmware_secret.py"
+      - "scripts/archive_iotglove_release.py"
+      - ".github/workflows/compile-iotglove.yml"
+      - ".github/workflows/deploy-firmware.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iotglove-compile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ESP32_CORE_VERSION: "3.3.11"
+  ESP32_BOARD_INDEX: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tooling regression checks
+        run: python3 -m unittest discover -s devices/iotglove/tools -p 'test_*.py'
+      - name: Firmware host tests
+        run: python3 devices/iotglove/tools/run_tests.py
+
+  compile:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [ttgo, training, beetle]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Set up Arduino
+        run: arduino-cli config init --overwrite
+      - name: Install ESP32 core
+        run: |
+          arduino-cli core update-index --additional-urls "$ESP32_BOARD_INDEX"
+          for attempt in 1 2 3; do
+            if arduino-cli core install "esp32:esp32@$ESP32_CORE_VERSION" --additional-urls "$ESP32_BOARD_INDEX"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 15
+          done
+      - name: Install pinned registry dependencies
+        run: arduino-cli lib install "Adafruit NeoPixel@1.12.0" "ArduinoJson@7.4.3"
+      - name: Prepare current first_store and SecureOTA dependencies
+        run: python3 devices/iotglove/tools/prepare_libraries.py --libraries-dir "$RUNNER_TEMP/iotglove-libraries"
+      - name: Compile with a temporary placeholder key
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          python3 devices/iotglove/tools/compile.py "$PROFILE" \
+            --libraries-dir "$RUNNER_TEMP/iotglove-libraries" \
+            --output-dir "$RUNNER_TEMP/compile-only"
+      # Placeholder-key firmware must not be published as a release artifact.
+      - name: Record dependency revisions
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          echo "### $PROFILE — compile only" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/iotglove-libraries/iotglove-dependencies.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

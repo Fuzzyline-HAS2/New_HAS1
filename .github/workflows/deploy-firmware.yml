@@ -17,6 +17,8 @@ on:
           - HAS1_duct
           - HAS1_escape_main
           - HAS1_tagmachine_main
+          - iotglove
+          - iotglove_beetle
         default: HAS1_itembox
       update_partition:
         description: "파티션 스키마도 업데이트 (partitions.bin/sig 재생성 + 배포)"
@@ -26,8 +28,13 @@ on:
 permissions:
   contents: write
 
+# All targets bump and push source versions on the selected branch. Serialize
+# manual deployments across targets/branches, including their fixed release tags.
+concurrency:
+  group: deploy-firmware
+  cancel-in-progress: false
+
 env:
-  DEVICE_DIR: devices/${{ github.event.inputs.device }}
   ESP32_CORE_VERSION: "3.3.11"
   ESP32_BOARD_INDEX: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
 
@@ -53,23 +60,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 보드별 FQBN 결정
-        # HAS1_itembox/HAS1_generator/HAS1_altar/HAS1_duct는 TTGO(esp32:esp32:ttgo-t1)지만 min_spiffs 파티션 사용.
-        # HAS1_revival_machine/HAS1_escape_main/HAS1_tagmachine_main은 로컬 .vscode/arduino.json·build 설정 기준
-        # PartitionScheme=default, UploadSpeed=921600.
+      - name: 장치 경로와 보드별 FQBN 결정
+        env:
+          TARGET_DEVICE: ${{ inputs.device }}
         run: |
-          case "${{ inputs.device }}" in
-            HAS1_itembox|HAS1_generator|HAS1_altar|HAS1_duct)
-              echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=115200,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=min_spiffs,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
-              ;;
-            HAS1_revival_machine|HAS1_escape_main|HAS1_tagmachine_main)
-              echo "FQBN=esp32:esp32:ttgo-t1:UploadSpeed=921600,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=default,DebugLevel=none,EraseFlash=none" >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "지원하지 않는 device: ${{ inputs.device }}" >&2
-              exit 1
-              ;;
-          esac
+          python3 scripts/firmware_targets.py "$TARGET_DEVICE" >> "$GITHUB_ENV"
+
+      - name: 배포 서명 키 확인 및 secrets.h 생성
+        env:
+          HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
+        run: python3 scripts/write_firmware_secret.py "$DEVICE_DIR"
 
       - name: arduino-cli 설치
         uses: arduino/setup-arduino-cli@v2
@@ -106,30 +106,25 @@ jobs:
             "EspSoftwareSerial@8.1.0"
 
       - name: 커스텀 라이브러리 설치 (SecureOTA, HAS2_Wifi, SimpleTimer)
+        env:
+          TARGET_DEVICE: ${{ inputs.device }}
         run: |
           LIB_DIR="$HOME/Arduino/libraries"
           mkdir -p "$LIB_DIR"
-          git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
           # Fuzzyline-HAS/libraries는 여러 저장소(다른 store들)가 공용으로 쓰고, 각자
           # 자기 브랜치(New_HAS1=first_store, 다른 저장소=third_store 등)를 갖고 있다.
           # CI는 항상 first_store의 최신 커밋을 새로 받아온다 (로컬 개발용 사본은
           # libraries/HAS2_Wifi에 별도로 있음 - libraries/README.md 참고).
-          git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
-          cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
-          git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
-          cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" ]]; then
+            python3 devices/iotglove/tools/prepare_libraries.py --libraries-dir "$LIB_DIR"
+          else
+            git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
+            git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
+            cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
+            git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
+            cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
+          fi
           echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
-
-      - name: secrets.h 생성
-        run: |
-          cat > "$DEVICE_DIR/secrets.h" <<EOF
-          #ifndef SECRETS_H
-          #define SECRETS_H
-
-          #define HMAC_SECRET   "${{ secrets.HMAC_SECRET }}"
-
-          #endif // SECRETS_H
-          EOF
 
       - name: 버전 증가
         id: bump
@@ -140,10 +135,26 @@ jobs:
             python "$SECUREOTA_SCRIPTS/ci_deploy.py" bump "$GITHUB_WORKSPACE/$DEVICE_DIR" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: IoT 글러브 빌드 소스 기록
+        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle'
+        env:
+          TARGET_DEVICE: ${{ inputs.device }}
+        run: |
+          python3 scripts/archive_iotglove_release.py capture \
+            --device "$TARGET_DEVICE" \
+            --capture-file "$RUNNER_TEMP/iotglove-build-source.json" \
+            --dependencies "$HOME/Arduino/libraries/iotglove-dependencies.json"
+
       - name: 컴파일
+        env:
+          TARGET_DEVICE: ${{ inputs.device }}
         run: |
           mkdir -p "$RUNNER_TEMP/build-out"
-          arduino-cli compile --fqbn "$FQBN" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
+          EXTRA_LIBRARIES=()
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" ]]; then
+            EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/IoTGloveProtocol")
+          fi
+          arduino-cli compile --fqbn "$FQBN" "${EXTRA_LIBRARIES[@]}" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
 
       - name: 빌드 산출물 배치
         run: |
@@ -161,3 +172,20 @@ jobs:
             "$GITHUB_WORKSPACE/$DEVICE_DIR" \
             "${{ steps.bump.outputs.NEW_VER }}" \
             "${{ steps.bump.outputs.NEW_PARTITION_VER }}"
+
+      - name: IoT 글러브 버전별 보존 Release 추가
+        # Existing fixed-tag publication above remains unchanged. An archive
+        # failure fails this run but does not roll back the already updated tag.
+        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle'
+        env:
+          TARGET_DEVICE: ${{ inputs.device }}
+          WITH_PARTITIONS: ${{ inputs.update_partition }}
+          HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARCHIVE_OPTIONS=()
+          if [ "$WITH_PARTITIONS" = "true" ]; then ARCHIVE_OPTIONS+=(--with-partitions); fi
+          python3 scripts/archive_iotglove_release.py publish \
+            --device "$TARGET_DEVICE" \
+            --capture-file "$RUNNER_TEMP/iotglove-build-source.json" \
+            "${ARCHIVE_OPTIONS[@]}"
