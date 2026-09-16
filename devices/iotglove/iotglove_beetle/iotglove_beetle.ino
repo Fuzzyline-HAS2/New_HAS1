@@ -1,4 +1,4 @@
-#define FIRMWARE_VER 1
+#define FIRMWARE_VER 2
 #define PARTITION_VER 1
 #include "beetle.h"
 #include <esp_system.h>
