@@ -1,6 +1,6 @@
 # IoT 글러브
 
-TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. 현재 소프트웨어 구현과 로컬 검증 단계이며 실제 장치/운영 서버 검증 결과는 아직 없다.
+TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. G1P1 한 쌍에서 최초 USB 설치·UART·원격 리셋에 이어 두 보드의 v1→v2 순차 OTA와 Telnet 상태·PING·Beetle 로그 수신을 실측했다. 총 7대 중 나머지 6대의 초기 USB 설치·MAC 등록을 진행할 단계이며, 게임 전체·BLE 위치·배터리 보정은 별도 후속 검증이다.
 
 ## 파일과 보드
 
@@ -99,6 +99,6 @@ Beetle 완료 후 TTGO 시작 전에 게임/탐색으로 전환되면 남은 TTG
 
 서버 `watchdog=1`은 비활성 상태에서 0으로 응답 확인 후 Beetle 리셋 펄스를 보내고 TTGO도 재부팅한다. UART 단절만으로 자동 리셋하지 않는다. 정상 OTA 중 GPIO 리셋은 보류된다.
 
-서명 키는 각 보드의 ignored `secrets.h`와 Release 서명 키를 맞춘다. 최초 두 보드는 동일 `min_spiffs` 파티션으로 USB 설치하며 **현재 펌웨어는 파티션 OTA를 실행하지 않는다**. Actions의 파티션 파일 게시는 기존 배포 규칙상 가능하지만, 글러브 파티션 변경은 USB 절차가 필요하다. 최초 설치·TTGO 복구에 이어 GPIO1 리셋 수정본을 두 보드에 USB 설치하고 원격 재부팅·UART 복구를 확인했다. GitHub Release 게시와 장치 OTA는 아직 수행하지 않았다. 최신 실기 확인 결과는 [검증 기록](docs/VALIDATION.md)에 남긴다.
+서명 키는 각 보드의 ignored `secrets.h`와 Release 서명 키를 맞춘다. 최초 두 보드는 동일 `min_spiffs` 파티션으로 USB 설치하며 **현재 펌웨어는 파티션 OTA를 실행하지 않는다**. Actions의 파티션 파일 게시는 기존 배포 규칙상 가능하지만, 글러브 파티션 변경은 USB 절차가 필요하다. 최초 설치·TTGO 복구에 이어 GPIO1 리셋 수정본을 두 보드에 USB 설치하고 원격 재부팅·UART 복구를 확인했다. 두 대상의 GitHub Actions와 Release 서명 검증을 완료했고, G1P1에서 `github@2:2`로 Beetle과 TTGO가 차례로 v2에 재부팅한 뒤 파티션 1·서버 fresh 상태·Telnet 재접속을 확인했다. 최초 업데이트 당시 TTGO v1은 Beetle `LOG`를 소비하지 않았으므로, 업데이트 진행 증거는 UART 기록에, v2의 BOOT 로그·상태·PING 수신 증거는 이후 Telnet 기록에 구분한다. 최신 실기 확인 결과는 [검증 기록](docs/VALIDATION.md)에 남긴다.
 
 개발 현황은 [SW 개발](https://app.notion.com/p/3dd0bd3810bf81eb8bf9f947c26d1333) 한 항목에서 관리한다. 테스트로 확인한 문제는 재현 조건을 갖춘 뒤 별도 서브아이템으로 분리한다.
