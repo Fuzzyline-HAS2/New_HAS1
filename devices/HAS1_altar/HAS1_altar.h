@@ -99,14 +99,14 @@ Adafruit_NeoPixel pixels_side(NUMPIXELS_SIDE, NEOPIXEL_PIN_SIDE, NEO_GRB + NEO_K
 Adafruit_NeoPixel pixels_square2(NUMPIXELS_SQUARE2, NEOPIXEL_PIN_SQUARE2, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel pixels_pn532(NUMPIXELS_PN532, NEOPIXEL_PIN_PN532, NEO_GRB + NEO_KHZ800);
 
-// Neopixel 색상정보
+// Neopixel 색상정보 (다른 장치들과 동일하게 풀스케일 255 기준 — 실제 밝기는 setBrightness()가 담당)
 int black[3] = {0, 0, 0};
-int white[3] = {20, 20, 20};
-int red[3] = {20, 0, 0};
-int yellow[3] = {20, 20, 0};
-int green[3] = {0, 20, 0};
-int purple[3] = {20, 0, 20};
-int purple_white[3] = {20, 10, 20}; // purple + white 중간톤 (blink 진입 시 side용)
+int white[3] = {255, 255, 255};
+int red[3] = {255, 0, 0};
+int yellow[3] = {255, 255, 0};
+int green[3] = {0, 255, 0};
+int purple[3] = {255, 0, 255};
+int purple_white[3] = {255, 128, 255}; // purple + white 중간톤 (blink 진입 시 side용)
 
 void applyBrightness();
 void lightColor(Adafruit_NeoPixel &pixels, int color[3]);

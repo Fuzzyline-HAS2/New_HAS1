@@ -462,7 +462,7 @@ void NeoGaming()
   int mag;
   if (max_chip <= 0)
   {
-    mag = 20;
+    mag = GAUGE_PURPLE_MAX;
   }
   else
   {
@@ -574,9 +574,9 @@ void NeoChipBlinkActivate()
 
 void NeoWin()
 {
-  lightRgb(pixels_round, 0, 0, 20);
-  lightRgb(pixels_side, 0, 0, 20);
-  lightRgb(pixels_square, 0, 0, 20);
+  lightRgb(pixels_round, 0, 0, 255);
+  lightRgb(pixels_side, 0, 0, 255);
+  lightRgb(pixels_square, 0, 0, 255);
 }
 
 void NeoLose()
