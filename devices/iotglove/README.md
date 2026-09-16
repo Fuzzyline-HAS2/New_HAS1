@@ -1,6 +1,6 @@
 # IoT 글러브
 
-TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. G1P1 한 쌍에서 최초 USB 설치·UART·원격 리셋에 이어 두 보드의 v1→v2 순차 OTA와 Telnet 상태·PING·Beetle 로그 수신을 실측했다. 총 7대 중 나머지 6대의 초기 USB 설치·MAC 등록을 진행할 단계이며, 게임 전체·BLE 위치·배터리 보정은 별도 후속 검증이다.
+TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. **G1P1~G1P8 총 8대, 16개 보드의 초기 설치를 완료**했다. **G1P1~G1P7은 두 보드 v3 OTA·새 부팅·Telnet 검증을 완료**했으며, G1P8은 USB v2 설치까지 확인했다. 장치별 실측과 재시도 이력은 [설치 현황](docs/ROLLOUT.md)과 [검증 기록](docs/VALIDATION.md)을 따른다. 게임 전체·BLE 위치·배터리 보정은 후속 검증으로 남긴다.
 
 ## 파일과 보드
 
