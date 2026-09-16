@@ -1,6 +1,6 @@
 # IoT 글러브
 
-TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. **G1P1~G1P8 총 8대, 16개 보드의 초기 설치를 완료**했다. **G1P1~G1P7은 두 보드 v3 OTA·새 부팅·Telnet 검증을 완료**했으며, G1P8은 USB v2 설치까지 확인했다. 장치별 실측과 재시도 이력은 [설치 현황](docs/ROLLOUT.md)과 [검증 기록](docs/VALIDATION.md)을 따른다. 게임 전체·BLE 위치·배터리 보정은 후속 검증으로 남긴다.
+TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·발각 버튼·4칸 NeoPixel·진동·BLE 위치·배터리를 사용한다. **G1P1~G1P8 총 8대, 16개 보드의 초기 설치와 v3 OTA·새 부팅·Telnet 검증을 완료**했다. 장치별 실측과 재시도 이력은 [설치 현황](docs/ROLLOUT.md)과 [검증 기록](docs/VALIDATION.md)을 따른다. 게임 전체·BLE 위치·배터리 보정은 후속 검증으로 남긴다.
 
 ## 파일과 보드
 
@@ -68,10 +68,12 @@ Beetle의 초기 설치가 끝난 뒤에는 **TTGO USB Serial 115200 또는 같�
 
 | TTGO 명령 | 확인 내용 |
 | --- | --- |
-| `s` 또는 `?` | IP·MAC, 서버 valid/fresh·device·phase, 로그 유실량, peer known/online, 펌웨어·파티션·부팅 ID, 마지막 유효 수신/HELLO 경과시간, heartbeat의 freshness·uptime·scan·OTA busy, 위치 freshness/방, UART 송수신 누계 |
+| `s` 또는 `?` | IP·MAC, 서버 valid/fresh·device·phase, GPIO26/27 원시값·디바운스 입력·모델 칩 상태, 역할·동기화·life_chip·포획 허용·로컬/서버 소생 카운트·봉헌/개방, 마지막 LED/모터 출력과 밝기, 로그 유실량, peer known/online, 펌웨어·파티션·부팅 ID, 마지막 유효 수신/HELLO 경과시간, heartbeat의 freshness·uptime·scan·OTA busy, 위치 freshness/방, UART 송수신 누계 |
 | `p` | 현재 PING 요청 ID와 **동일한 ID의 유효 HELLO**를 확인하고 RTT 출력. 자동 PING도 2초마다 같은 방식으로 추적 |
 | `b` | GPIO12→GPIO1에 리셋 펄스를 보낸 뒤 최대 15초 동안 새 부팅 ID와 펄스 이후 발급한 PING의 일치 응답을 확인 |
 | `u` | 두 보드 순차 OTA 요청 |
+
+`inputs`의 GPIO 원시값은 조회 순간의 HIGH=1/LOW=0이며, 현재 칩·버튼 입력은 LOW를 장착·눌림으로 해석한다. `chip_debounced`/`button_debounced`는 30ms 안정화 후 논리값이고 `chip_model`은 게임 모델이 반영한 장착 여부다. `outputs`는 직전 렌더의 명령 캐시이며 `cache_valid=1`일 때 읽는다. RGB는 밝기 적용 전 값, `lit`은 점등 개수, `brightness8`은 0~255 밝기이며, `motor`는 마지막 GPIO13 출력 명령이다. 실제 발광·진동을 측정한 값은 아니므로 실물 관찰과 함께 비교한다. 상태 조회는 게임 피드백이나 입력을 소비하지 않는다.
 
 `probe.latest=matched`, `matched_fresh=1`은 현재 부팅 ID에 대해 최근 양방향 응답을 확인했다는 뜻이다. HEART, 부팅 시 ID 0 HELLO, 이전 요청의 응답, 1.5초 timeout 뒤 도착한 응답으로 이를 갱신하지 않는다. `online=1`만으로는 양방향 연결을 입증하지 않는다. `heart.fresh=0`이면 uptime/scan/busy는 과거 샘플이며, 서버와 게임 상태에 따라 정상 연결에서도 scan은 0일 수 있다. `rx`/`tx` 누계는 TTGO 부팅 이후 값이고 핀 전압 측정값은 아니다.
 
