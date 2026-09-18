@@ -10,6 +10,7 @@ using namespace iotglove;
 int main() {
   FeedbackEngine engine;
   Feedback state;
+  state.stateValid = true;
   state.display = Display::Ghost;
   state.lit = 2;
   state.haptic = Haptic::Removed;

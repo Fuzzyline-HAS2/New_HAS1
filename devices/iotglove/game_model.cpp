@@ -1,4 +1,5 @@
 #include "game_model.h"
+#include "state_policy.h"
 
 #include <string.h>
 
@@ -71,7 +72,7 @@ void GameModel::commandUncertain(uint32_t /* sequence */) {
 }
 
 bool GameModel::activeGhost() const {
-  return haveServer_ && server_.phase == Phase::Active && server_.role == Role::Ghost;
+  return haveServer_ && gameMutationsAllowed(server_) && server_.role == Role::Ghost;
 }
 
 void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
@@ -79,6 +80,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   if (!snapshot.valid) {
     needsSync_ = true;
     server_.valid = false;
+    haptic_ = Haptic::None;
     resetQueue();
     return;
   }
@@ -87,11 +89,14 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
       strcmp(snapshot.deviceName, server_.deviceName) != 0;
   const bool phaseChanged = haveServer_ && snapshot.phase != server_.phase;
   const bool roleChanged = haveServer_ && snapshot.role != server_.role;
+  const bool controlChanged = haveServer_ &&
+      gameMutationsAllowed(snapshot) != gameMutationsAllowed(server_);
   const bool recovering = needsSync_;
   const bool playerAcknowledged = rolePending_ && pendingRole_ == Role::Player &&
       snapshot.role == Role::Player;
-  if (newSession || phaseChanged || recovering) {
+  if (newSession || phaseChanged || controlChanged || recovering) {
     resetQueue();
+    haptic_ = Haptic::None;
     insertReported_ = false;
     needsSync_ = overflow_ = false;
   }
@@ -101,7 +106,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   // Repeated snapshots do not reset a partly charged step. Remote changes and
   // interval changes deliberately restart only the current step, not the count.
   const bool countAcknowledged = countPending_ && receivedCount == count_;
-  if (newSession || phaseChanged || roleChanged || recovering ||
+  if (newSession || phaseChanged || controlChanged || roleChanged || recovering ||
       nextInterval != intervalMs_ || (receivedCount != observedCount_ && !countPending_)) {
     count_ = receivedCount;
     countPending_ = false;
@@ -117,8 +122,8 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   // plus a present physical chip does allow completing an already-started return.
   if (newSession || recovering)
     insertReported_ = chipPresent_ && snapshot.lifeChip == 1;
-  if (!newSession && !phaseChanged && !recovering && playerAcknowledged &&
-      !chipPresent_ && server_.phase == Phase::Active && server_.capturesAllowed &&
+  if (!newSession && !phaseChanged && !controlChanged && !recovering && playerAcknowledged &&
+      !chipPresent_ && gameMutationsAllowed(server_) && server_.capturesAllowed &&
       emit(GameEvent::Kind::Capture)) {
     // A removal during revival acknowledgement belongs to the next capture.
     // It was not also reported as a ghost delta, which would count it twice.
@@ -129,7 +134,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   }
   // A physical insertion during the capture round trip is processed only once
   // its ghost role is confirmed. No fabricated boot/reconnect chip delta.
-  if (!newSession && !phaseChanged && !recovering && roleChanged &&
+  if (!newSession && !phaseChanged && !controlChanged && !recovering && roleChanged &&
       server_.role == Role::Ghost && chipPresent_ && insertReported_) attemptReturn();
 }
 
@@ -145,7 +150,7 @@ void GameModel::chipChanged(bool present, uint32_t now) {
     tick(now);
     return;
   }
-  if (!synchronized() || server_.phase != Phase::Active) return;
+  if (!synchronized() || !gameMutationsAllowed(server_)) return;
   if (rolePending_ && pendingRole_ == Role::Player) return;
   if (server_.role == Role::Player && !rolePending_) {
     if (!present && server_.capturesAllowed && emit(GameEvent::Kind::Capture)) {
@@ -225,16 +230,38 @@ Feedback GameModel::feedback() {
   out.haptic = haptic_;
   haptic_ = Haptic::None;
   if (profile_ == Profile::Training) {
+    out.stateValid = true;  // Fixed default identity preserves explicit training events.
     out.display = trainingGhost_ ? Display::Ghost : Display::Player;
     out.lit = trainingGhost_ ? count_ : 4;
     return out;
   }
-  if (!haveServer_ || server_.phase == Phase::Setting || server_.phase == Phase::Unknown) return out;
-  if (server_.phase == Phase::Ended) { out.display = Display::Ended; return out; }
-  if (server_.phase == Phase::Ready || server_.phase == Phase::Exploration || needsSync_) {
-    out.display = Display::Ready;
+  out.stateValid = synchronized() && server_.valid;
+  out.role = server_.role;
+  out.deviceState = server_.deviceState;
+  out.phase = server_.phase;
+  out.stateEpoch = server_.connectionEpoch;
+  if (!haveServer_) return out;
+  // Terminal/exploration and stale-state displays cannot be overridden by roles.
+  if (server_.phase == Phase::Ended || server_.deviceState == DeviceState::Ended) { out.display = Display::Ended; return out; }
+  if (needsSync_ || server_.phase == Phase::Exploration || server_.deviceState == DeviceState::Exploration) {
+    out.display = server_.phase == Phase::Setting || server_.phase == Phase::Unknown ?
+        Display::Setting : Display::Ready;
     return out;
   }
+  if (server_.phase == Phase::Unknown) return out;
+  if (server_.deviceState == DeviceState::Setting || server_.deviceState == DeviceState::Ready) {
+    out.display = server_.deviceState == DeviceState::Setting ? Display::Setting : Display::Ready;
+    out.lit = chipPresent_ ? 4 : 3;
+    return out;
+  }
+  // The selection animation is meaningful before game_state becomes activate.
+  if (server_.role == Role::Tagger &&
+      (server_.deviceState == DeviceState::Blink || server_.deviceState == DeviceState::Activate)) {
+    out.display = server_.deviceState == DeviceState::Blink ? Display::TaggerBlink : Display::TaggerActive;
+    return out;
+  }
+  if (server_.phase == Phase::Setting) return out;
+  if (server_.phase == Phase::Ready) { out.display = Display::Ready; return out; }
   switch (server_.role) {
     case Role::Player:
       out.display = (rolePending_ && pendingRole_ == Role::Ghost) ? Display::Ghost :
@@ -242,7 +269,7 @@ Feedback GameModel::feedback() {
       out.lit = out.display == Display::Ghost ? 0 : 4;
       break;
     case Role::Ghost: out.display = Display::Ghost; out.lit = count_; break;
-    case Role::Tagger: out.display = server_.taggerActive ? Display::TaggerActive : Display::Tagger; break;
+    case Role::Tagger: out.display = Display::Tagger; break;
     default: out.display = Display::Ready; break;
   }
   return out;

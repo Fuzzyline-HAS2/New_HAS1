@@ -8,8 +8,8 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 | --- | --- |
 | `iotglove.ino`, `application.cpp` | TTGO 초기화, 센서/출력 루프, UART와 순차 OTA·리셋 조정 |
 | `game_model.h/.cpp` | 실제 펌웨어와 호스트 테스트가 공유하는 상태 전이·카운트·훈련 규칙 |
-| `glove_network.h/.cpp`, `network_policy.h` | first_store 전용 worker, 검증된 스냅샷, 순서가 있는 전송과 응답 확인 |
-| `feedback.h`, `battery.h`, `hardware_config.h` | 비차단 출력, 배터리 샘플 평균/범위 검사, 실물 설정 |
+| `glove_network.h/.cpp`, `network_policy.h`, `state_policy.h` | first_store 전용 worker, 검증된 스냅샷, 순서가 있는 전송과 응답 확인 |
+| `feedback.h`, `feedback_config.h`, `battery.h`, `hardware_config.h` | 비차단 출력·상태별 진동 설정, 배터리 샘플 평균/범위 검사, 실물 설정 |
 | `peer_state.h` | Beetle 부팅 식별자·heartbeat·위치 만료·OTA 완료 확인 |
 | [iotglove_beetle](iotglove_beetle/README.md) | BLE 위치 수집, GPIO 리셋 감지/WDT, 별도 OTA |
 | [공통 UART 라이브러리](../../libraries/IoTGloveProtocol/README.md) | 버전 프레임, 고정 길이 파서, 위치 필터·리셋 상태 처리 |
@@ -47,6 +47,33 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 역할 변경과 `life_chip` 증감은 서버에서 원자적으로 묶이지 않는다. 일부 쓰기만 반영된 경우 로그와 역할·서버 칩 수·물리 칩 상태를 운영자가 대조해 복구해야 하며, 글러브가 증감을 추측해 재시도하지 않는다.
 
+## 장치 상태 표시와 진동 설정
+
+2026-09-18 사용자 확정 기준이다. `game_state`는 게임 진행/OTA 및 서버 watchdog 제한, `device_state`는 아래 장치 표시를 구분하는 데 사용한다.
+
+| 조건 | LED | 칩 유무 |
+| --- | --- | --- |
+| `device_state=setting` | 하양 | 장착 4칸 / 미장착 3칸 |
+| `device_state=ready` | 빨강 | 장착 4칸 / 미장착 3칸 |
+| `role=tagger`, `device_state=blink` | 보라 점멸, 500ms마다 ON/OFF | 술래 결정 전 표시 |
+| `role=tagger`, `device_state=activate` | 보라 상시 점등 | 활성 술래 표시 |
+
+준비 상태에서도 GPIO26을 계속 읽고 30ms 안정화 후 점등 수를 갱신한다. 칩 유무만으로 준비 중 포획·생명 증감 명령을 보내지 않는다. 종료·탐색·서버 무효/만료 상태의 제한을 우선하며, `game_state=activate`에서 장치 준비 표시를 하더라도 게임 중 OTA 및 서버 watchdog 리셋 제한은 유지한다. 수동 `b` 리셋 명령은 기존 동작을 유지한다.
+
+진동은 [feedback_config.h](feedback_config.h)에서 상태별로 지정한다. 짧게 1회·길게 1회·짧게 2회 및 끄기를 선택할 수 있고 기본 길이는 각각 150ms, 300ms, 150ms ON → 100ms OFF → 150ms ON이다. 서버 필드를 추가하지 않으며 설정 변경은 펌웨어 릴리즈와 OTA로 반영한다.
+
+`feedback_config::Settings`의 해당 초기값을 `Pattern::Short1`, `Long1`, `Short2`, `Off` 중 하나로 바꾼다. 길이는 `shortMs`, `longMs`, `doubleGapMs`에서 조절한다.
+
+| 설정 | 기본 패턴 |
+| --- | --- |
+| `onSetting`, `onReady`, `onExploration`, `onPlayer` | `Short1` — 짧게 1회 |
+| `onGhost`, `onTaggerActive`, `onEnded` | `Long1` — 길게 1회 |
+| `onTaggerBlink` | `Short2` — 짧게 2회 |
+| `onRemoved` — 칩 제거 이벤트 | `Long1` — 기존 300ms |
+| `onFound` — 발각 이벤트 | `Short2` — 기존 150/100/150ms |
+
+상태 변경은 역할·장치 상태·게임 페이즈를 기준으로 감지한다. 동일 응답 폴링, LED 점멸 프레임, 칩 유무와 충전 칸 수 갱신은 추가 상태 진동을 만들지 않는다. 첫 동기화와 재접속은 현재 상태만 기준으로 저장한다. 칩 제거·발각 이벤트가 상태 변경 진동보다 우선하고, 상태 진동이 근접 진동보다 우선한다. OTA·리셋 중 진동은 취소하며 억제가 풀린 뒤 늦게 재생하지 않는다.
+
 ## 위치·배터리 설정
 
 Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)에 현장 `HAS3:장치명`의 **장치명 → 방**을 추가한다. 현재 기본값은 서버에서 확인한 방 이름/별칭만 포함하므로 실제 제단/생명장치 ID 매핑 전에는 위치가 미확인일 수 있다. 방 접두사를 추측하여 쓰지 않는다. 5초 이상 오래된 위치는 무효이며 서버 위치도 빈 문자열로 주기적으로 지운다.
@@ -68,7 +95,7 @@ Beetle의 초기 설치가 끝난 뒤에는 **TTGO USB Serial 115200 또는 같�
 
 | TTGO 명령 | 확인 내용 |
 | --- | --- |
-| `s` 또는 `?` | IP·MAC, 서버 valid/fresh·device·phase, GPIO26/27 원시값·디바운스 입력·모델 칩 상태, 역할·동기화·life_chip·포획 허용·로컬/서버 소생 카운트·봉헌/개방, 마지막 LED/모터 출력과 밝기, 로그 유실량, peer known/online, 펌웨어·파티션·부팅 ID, 마지막 유효 수신/HELLO 경과시간, heartbeat의 freshness·uptime·scan·OTA busy, 위치 freshness/방, UART 송수신 누계 |
+| `s` 또는 `?` | IP·MAC, 서버 valid/fresh·device·phase, GPIO26/27 원시값·디바운스 입력·모델 칩 상태, 역할·device_state·동기화·life_chip·포획 허용·로컬/서버 소생 카운트·봉헌/개방, 마지막 LED/모터 출력과 밝기, 로그 유실량, peer known/online, 펌웨어·파티션·부팅 ID, 마지막 유효 수신/HELLO 경과시간, heartbeat의 freshness·uptime·scan·OTA busy, 위치 freshness/방, UART 송수신 누계 |
 | `p` | 현재 PING 요청 ID와 **동일한 ID의 유효 HELLO**를 확인하고 RTT 출력. 자동 PING도 2초마다 같은 방식으로 추적 |
 | `b` | GPIO12→GPIO1에 리셋 펄스를 보낸 뒤 최대 15초 동안 새 부팅 ID와 펄스 이후 발급한 PING의 일치 응답을 확인 |
 | `u` | 두 보드 순차 OTA 요청 |

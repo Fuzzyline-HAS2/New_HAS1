@@ -7,6 +7,7 @@
 
 #include "battery.h"
 #include "feedback.h"
+#include "state_policy.h"
 #include "hardware_config.h"
 #include "glove_network.h"
 #include "peer_state.h"
@@ -192,9 +193,9 @@ void printDiagnostics(uint32_t now) {
       digitalRead(IOTGLOVE_CHIP_PIN), digitalRead(IOTGLOVE_BUTTON_PIN),
       chipInput.value(), buttonInput.value(), game.chipPresent());
   const ServerSnapshot& server = game.server();
-  remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld captures_allowed=%u count=%u server_count=%u sacrificed=%u open=%u\n",
+  remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld captures_allowed=%u count=%u server_count=%u sacrificed=%u open=%u device_state=%s\n",
       roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
-      game.count(), server.revivalCount, server.sacrificed, server.open);
+      game.count(), server.revivalCount, server.sacrificed, server.open, deviceStateName(server.deviceState));
   // feedback() consumes event haptics. Diagnostics only read the last render.
   remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u brightness8=%u\n",
       haveOutputs, lastOutputs.red, lastOutputs.green, lastOutputs.blue, lastOutputs.lit,
@@ -449,7 +450,7 @@ void sampleBattery(uint32_t now) {
 void render(uint32_t now) {
   const Feedback state = game.feedback();
   const bool fresh = !kTraining && game.synchronized() && serverFresh(now) && peer.locationFresh(now);
-  Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now);
+  Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.

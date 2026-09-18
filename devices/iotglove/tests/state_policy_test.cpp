@@ -1,0 +1,51 @@
+#include "state_policy.h"
+#include "network_policy.h"
+#include "ota_request.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include <initializer_list>
+using namespace iotglove;
+
+int main() {
+  ServerSnapshot s;
+  s.valid = true; s.role = Role::Player; s.lifeChip = 1; s.capturesAllowed = true;
+  strcpy(s.session, "current"); strcpy(s.deviceName, "G1P1");
+  GameEvent event; event.kind = GameEvent::Kind::Capture;
+  strcpy(event.session, s.session); strcpy(event.deviceName, s.deviceName);
+  for (const char* device : {"setting", "ready"}) {
+    assert(decodeServerStates("activate", device, s));
+    assert(s.phase == Phase::Active);  // Display preparation never permits live OTA.
+    assert(!otaAllowedPhase(s.phase));
+    assert(!gameMutationsAllowed(s));
+    assert(!commandAllowed(event, s) && !commandApplied(event, s));
+  }
+  assert(decodeServerStates("ready", "activate", s));
+  assert(s.phase == Phase::Ready && s.deviceState == DeviceState::Activate);
+  assert(!gameMutationsAllowed(s) && !commandAllowed(event, s));
+  assert(decodeServerStates("activate", "blink", s));
+  assert(s.deviceState == DeviceState::Blink && gameMutationsAllowed(s));
+  assert(decodeServerStates("activate", "activate", s));
+  assert(s.deviceState == DeviceState::Activate && commandAllowed(event, s));
+  for (const char* device : {"photo", "exploration"}) {
+    assert(decodeServerStates("activate", device, s));
+    assert(s.phase == Phase::Exploration && !commandAllowed(event, s));
+    assert(!otaAllowedPhase(s.phase));
+  }
+  for (const char* device : {"win", "lose", "stop"}) {
+    assert(decodeServerStates("activate", device, s));
+    assert(s.phase == Phase::Ended && !commandAllowed(event, s));
+  }
+  for (const char* device : {"github", "github@12:7", "b", "reset", "unknown"}) {
+    assert(decodeServerStates("activate", device, s));
+    assert(s.phase == Phase::Active && s.deviceState == DeviceState::Other);
+    assert(!otaAllowedPhase(s.phase));
+  }
+  assert(!decodeServerStates("bogus", "activate", s));
+  assert(!decodeServerStates(nullptr, "ready", s));
+  assert(!decodeServerStates("ready", nullptr, s));
+  assert(decodeServerStates("stop", "blink", s));
+  assert(s.phase == Phase::Ended);
+  assert(!strcmp(deviceStateName(DeviceState::Blink), "blink"));
+  puts("PASS: production state decoding, preparation mutation gates and OTA phase isolation");
+}
