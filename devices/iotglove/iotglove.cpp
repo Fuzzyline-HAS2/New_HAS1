@@ -506,7 +506,10 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   remoteConsoleLogf("[glove] firmware=%d profile=%s\n", firmware, kTraining ? "training" : "origin");
   diagnosticLog.append("[diag] TTGO console ready: s/? status, p UART probe, b Beetle reset, u OTA\n");
   if (!battery.configured()) remoteConsoleLogf("[battery] Disabled: configure measured ADC divider and battery range\n");
-  if (!kTraining) networkReady = networkBegin(firmware, partition);
+  if (!kTraining) {
+    networkReady = networkBegin(firmware, partition);
+    if (networkReady) networkReportChip(sensorChipPresent());
+  }
   hello(nextId()); sendMode();
 }
 
@@ -516,6 +519,7 @@ void gloveLoop() {
   pollNetwork(now);
   if (!kTraining) reportServerChanges(now);
   sensorPoll(game, now);
+  if (!kTraining && networkReady) networkReportChip(sensorChipPresent());
   game.tick(now);
   // Read-only status and bounded PING probes work without a server connection.
   for (unsigned n = 0; n < 8 && Serial.available(); ++n) {

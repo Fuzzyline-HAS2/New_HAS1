@@ -62,7 +62,7 @@ void worker(void*) {
   }
   HAS2_Wifi wifi;
   queueDiagnosticLog(Event::Ota, Code::WifiStart, record.request);
-  if (wifi.TrySetup("badland")) {
+  if (wifi.TrySetupFixed("badland", "badland_shoot")) {
     queueDiagnosticLog(Event::Ota, Code::WifiOk, record.request);
     const auto onSuccess = [record]() mutable {
       // Both updaters invoke this AFTER verification/commit and BEFORE restart.

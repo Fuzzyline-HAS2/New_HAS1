@@ -41,7 +41,7 @@ struct ServerSnapshot {
 };
 
 struct GameEvent {
-  enum class Kind : uint8_t { Capture, CancelCapture, Revive, ChipInserted, ChipRemoved, SetCount };
+  enum class Kind : uint8_t { SetCount };
   Kind kind = Kind::SetCount;
   uint32_t sequence = 0;
   char session[40] = {};
@@ -112,13 +112,9 @@ class GameModel {
   bool haveServer_ = false;
   bool needsSync_ = false;
   bool overflow_ = false;
-  bool rolePending_ = false;
-  Role pendingRole_ = Role::Neutral;
   bool countPending_ = false;
-  bool insertReported_ = false;
   Haptic haptic_ = Haptic::None;
   bool emit(GameEvent::Kind kind, uint8_t value = 0);
-  void attemptReturn();
   void resetQueue();
   bool activeGhost() const;
 };

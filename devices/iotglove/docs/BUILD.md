@@ -44,9 +44,13 @@ python3 devices/iotglove/tools/compile.py all \
 
 `all` 대신 `ttgo`, `training`, `beetle` 하나만 지정할 수 있다. `--arduino-cli`, `--jobs`, `--output-dir`도 지원한다. `IOTGLOVE_LIBRARY_DIR` 환경변수는 `--libraries-dir` 기본값이다.
 
-준비 스크립트는 매번 SecureOTA 최신, HAS2_Wifi **first_store 최신**, Arduino-SimpleTimer를 새로 받아 커밋을 기록한다. 글러브의 HAS2_Wifi에만 `has2-wifi-result-api.patch`를 적용하여 응답 성공 여부 및 재부팅 없는 연결 API를 추가한다. 원격 코드와 패치가 맞지 않으면 중단한다. 기존 7개 배포 대상은 패치 없이 기존 방식으로 빌드한다. 기존 라이브러리 디렉터리는 덮어쓰지 않으므로 갱신할 때 새 경로를 준비한다.
+준비 스크립트는 매번 SecureOTA 최신, HAS2_Wifi **first_store 최신**, Arduino-SimpleTimer를 새로 받아 커밋을 기록한다. 글러브의 HAS2_Wifi에만 `has2-wifi-result-api.patch`를 적용하여 응답 성공 여부, 재부팅 없는 `badland_shoot` 직접 연결, 글러브 칩 절대값 보고 API를 추가한다. 원격 코드와 패치가 맞지 않으면 중단한다. 기존 7개 배포 대상은 패치 없이 기존 방식으로 빌드한다. 기존 라이브러리 디렉터리는 덮어쓰지 않으므로 갱신할 때 새 경로를 준비한다.
 
 검증 빌드는 소스를 임시 스케치로 복사하고 그 안에만 placeholder `secrets.h`를 생성한다. 소스의 실제 `secrets.h`, 버전, 서명, Release를 바꾸지 않는다. 기본 출력은 Git에서 제외되는 `build/iotglove-compile-only/<profile>`이며, `iotglove-dependencies.json`에 실제 사용한 원격 커밋과 패치 해시를 남긴다. **이 placeholder 키 바이너리를 기기에 설치하거나 Release에 올리지 않는다.**
+
+## 서버 적용 순서
+
+이번 칩 보고는 `fuzzyline-core`의 `SetGloveChip`과 `ReceiveMine.chip_report_ready`가 필요하다. 서버 변경을 먼저 배포하고 등록 장치의 0/1 저장·역할 조건을 확인한 뒤 펌웨어를 릴리즈한다. 펌웨어를 먼저 설치하면 기존 서버가 요청을 거부하므로 칩 보고가 계속 미확정 상태로 남는다. 코드 푸시·컴파일 통과는 운영 서버 적용이나 실기기 검증을 뜻하지 않는다. 상세 계약은 [SERVER_CONTRACT.md](SERVER_CONTRACT.md)를 따른다.
 
 ## GitHub Actions
 

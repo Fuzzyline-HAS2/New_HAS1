@@ -56,7 +56,12 @@ revival devices. The verified Origin server configuration has room aliases but
 no device-prefix mapping. Default entries recognize room names themselves;
 unmapped real device IDs deliberately report `unknown` until configured.
 
-OTA uses the patched `first_store` HAS2_Wifi `TrySetup("badland")` API in a worker.
+OTA uses the patched `first_store` HAS2_Wifi
+`TrySetupFixed("badland", "badland_shoot")` API in a worker. The `badland` theme
+selects the existing server; `badland_shoot` is the only Wi-Fi target. Its existing
+credentials remain inside first_store. A failed connection returns false without
+trying saved or alternate APs, scanning candidates, or rebooting. Each request
+uses the existing connection timeout and OTA deadline.
 No `Setup()`/`Loop()` restart-on-Wi-Fi-failure path runs. The stock repository
 build scripts stage that patch. A normal unsigned build has OTA disabled; copy
 `secrets.h.example` to ignored `secrets.h` and supply the real deployment key for

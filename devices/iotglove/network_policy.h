@@ -9,30 +9,11 @@ inline bool sameEventSession(const GameEvent& e, const ServerSnapshot& s) {
          strcmp(e.session, s.session) == 0 && strcmp(e.deviceName, s.deviceName) == 0;
 }
 inline bool commandAllowed(const GameEvent& e, const ServerSnapshot& s) {
-  if (!sameEventSession(e, s)) return false;
-  switch (e.kind) {
-    case GameEvent::Kind::Capture: return s.capturesAllowed && s.role == Role::Player && s.lifeChip == 1;
-    case GameEvent::Kind::CancelCapture:
-      return s.role == Role::Ghost && !s.sacrificed && !s.open && s.lifeChip == 1;
-    case GameEvent::Kind::Revive:
-      return s.role == Role::Ghost && s.sacrificed && s.open &&
-             s.revivalCount == 4 && s.lifeChip == 1;
-    case GameEvent::Kind::ChipInserted: return s.role == Role::Ghost && s.lifeChip == 0;
-    case GameEvent::Kind::ChipRemoved: return s.role == Role::Ghost && s.lifeChip == 1;
-    case GameEvent::Kind::SetCount: return s.role == Role::Ghost && e.value <= (s.sacrificed ? 4 : 3);
-  }
-  return false;
+  return sameEventSession(e, s) && e.kind == GameEvent::Kind::SetCount &&
+         s.role == Role::Ghost && e.value <= (s.sacrificed ? 4 : 3);
 }
 inline bool commandApplied(const GameEvent& e, const ServerSnapshot& s) {
-  if (!sameEventSession(e, s)) return false;
-  switch (e.kind) {
-    case GameEvent::Kind::Capture: return s.role == Role::Ghost && s.lifeChip == 0;
-    case GameEvent::Kind::CancelCapture:
-    case GameEvent::Kind::Revive: return s.role == Role::Player && s.lifeChip == 1;
-    case GameEvent::Kind::ChipInserted: return s.role == Role::Ghost && s.lifeChip == 1;
-    case GameEvent::Kind::ChipRemoved: return s.role == Role::Ghost && s.lifeChip == 0;
-    case GameEvent::Kind::SetCount: return s.role == Role::Ghost && s.revivalCount == e.value;
-  }
-  return false;
+  return sameEventSession(e, s) && e.kind == GameEvent::Kind::SetCount &&
+         s.role == Role::Ghost && s.revivalCount == e.value;
 }
 }  // namespace iotglove

@@ -1,5 +1,6 @@
 #include "wifi_client.h"
 #include "network_policy.h"
+#include "chip_report.h"
 #include "library_and_pin.h"
 #include "secrets.h"
 #include <Arduino.h>
@@ -25,6 +26,9 @@ constexpr uint32_t kRetryMs = 5000;
 HAS2_Wifi wifi;
 QueueHandle_t snapshots, commands, results, locations, batteries, otaRequests;
 std::atomic<bool> forceSnapshot{false}, commandBusy{false};
+// 2 means no initial sensor sample yet; never retain an edge queue.
+std::atomic<uint8_t> physicalChip{2};
+ChipReportPolicy chipReport;
 std::atomic<NetworkOtaStatus> otaState{NetworkOtaStatus::Idle};
 struct Location { char room[32]; uint32_t sampledAt; };
 struct Battery { float volts; uint32_t sampledAt; };
@@ -59,12 +63,20 @@ bool number(JsonVariantConst value, long min, long max, long& out) {
   return out >= min && out <= max;
 }
 
-bool liveName(const char* name) {
-  // G9 has different protected training fields. Offline training never writes them.
-  if (!name || name[0] != 'G' || (name[1] != '1' && name[1] != '2') || name[2] != 'P') return false;
-  const size_t n = strlen(name);
-  if (n < 4 || n > 6) return false;
-  for (size_t i = 3; i < n; ++i) if (name[i] < '0' || name[i] > '9') return false;
+bool liveName(const char* name) { return ChipReportPolicy::liveDevice(name); }
+
+// ReceiveMine identifies the registration by this board's STA MAC. Its response
+// need not contain a known game state; the absolute-write API rechecks MAC/key.
+bool readChipIdentity() {
+  char name[24];
+  if (!wifi.ReceiveMineChecked() ||
+      !copyString(my["device_name"], name, sizeof(name)) || !liveName(name)) {
+    chipReport.disconnect();
+    return false;
+  }
+  long ready, life;
+  chipReport.bind(name, number(my["chip_report_ready"], 0, 1, ready) && ready == 1,
+      number(my["life_chip"], 0, 1, life) ? static_cast<int>(life) : -1);
   return true;
 }
 
@@ -107,7 +119,7 @@ bool decodeSnapshot(ServerSnapshot& out) {
   const bool connectionChanged = !hadValid || strcmp(lastDevice, out.deviceName);
   if (connectionChanged) ++connectionEpoch;
   out.connectionEpoch = connectionEpoch;
-  if (connectionChanged || out.phase != latest.phase ||
+  if (connectionChanged || out.role != latest.role || out.phase != latest.phase ||
       gameMutationsAllowed(out) != gameMutationsAllowed(latest)) ++generation;
   snprintf(out.session, sizeof(out.session), "%08lx-%lu", (unsigned long)bootId, (unsigned long)generation);
   strcpy(lastDevice, out.deviceName);
@@ -125,7 +137,7 @@ void publishInvalid() {
 
 bool refresh() {
   ServerSnapshot fresh;
-  if (!wifi.ReceiveMineChecked() || !decodeSnapshot(fresh)) { publishInvalid(); return false; }
+  if (!readChipIdentity() || !decodeSnapshot(fresh)) { publishInvalid(); return false; }
   // The game can be activate while the tagger still waits for the altar.
   // Resolve the configured tagger instead of inferring altar activation from phase.
   if (fresh.phase == Phase::Active && liveName(taggerName) && wifi.ReceiveChecked(taggerName)) {
@@ -152,20 +164,8 @@ void execute(const GameEvent& event) {
   if (!refresh()) result.status = GameResult::Status::Unknown;
   else if (commandAllowed(event, latest)) {
     bool ack = false;
-    switch (event.kind) {
-      case GameEvent::Kind::Capture:
-        // role=ghost resets flags, so send it only once. Re-read before delta.
-        ack = send("role", "ghost");
-        if (ack && refresh() && sameEventSession(event, latest) && latest.role == Role::Ghost && latest.lifeChip == 1)
-          ack = send("life_chip", "-1");
-        else ack = false;
-        break;
-      case GameEvent::Kind::CancelCapture:
-      case GameEvent::Kind::Revive: ack = send("role", "player"); break;
-      case GameEvent::Kind::ChipInserted: ack = send("life_chip", "1"); break;
-      case GameEvent::Kind::ChipRemoved: ack = send("life_chip", "-1"); break;
-      case GameEvent::Kind::SetCount: ack = send("revival_count", String(event.value)); break;
-    }
+    if (event.kind == GameEvent::Kind::SetCount)
+      ack = send("revival_count", String(event.value));
     const bool readBack = refresh();
     result.status = readBack && commandApplied(event, latest) ? GameResult::Status::Success :
         (ack && readBack ? GameResult::Status::Rejected : GameResult::Status::Unknown);
@@ -173,8 +173,38 @@ void execute(const GameEvent& event) {
       remoteConsoleLogf("[glove] command %lu unresolved; no automatic replay\n", (unsigned long)event.sequence);
   }
   // The consumer drains results before snapshots. One command in flight keeps
-  // a known order for physical chip deltas and role transitions.
+  // a known order for the remaining revival-count command.
   xQueueOverwrite(results, &result);
+}
+
+void observePhysicalChip() {
+  const uint8_t present = physicalChip.load();
+  if (present <= 1) chipReport.observe(present != 0);
+}
+
+void reportChip() {
+  observePhysicalChip();
+  if (!chipReport.due(millis())) return;
+  // Bind immediately before writing, independently of full snapshot decoding.
+  if (!readChipIdentity()) { publishInvalid(); return; }
+  observePhysicalChip();
+  ChipReportPolicy::Request request;
+  if (!chipReport.begin(millis(), request)) return;
+  wifi.SetGloveChipChecked(request.device, request.present);
+  const bool readBack = readChipIdentity();
+  long value, ready;
+  const char* device = my["device_name"] | "";
+  const bool verified = readBack && !strcmp(device, request.device) &&
+      number(my["life_chip"], 0, 1, value) && value == (request.present ? 1 : 0) &&
+      number(my["chip_report_ready"], 0, 1, ready) && ready == 1;
+  // A sensor update may arrive during either HTTP request. The old readback
+  // acknowledges only its own value; a newer physical value remains pending.
+  observePhysicalChip();
+  chipReport.finish(request, verified, millis());
+  if (!readBack) publishInvalid();
+  forceSnapshot.store(true);  // Read any server-owned role change on the next loop.
+  remoteConsoleLogf("[chip] absolute=%u readback=%s\n", request.present ? 1 : 0,
+      verified ? "confirmed" : "pending");
 }
 
 void checkManagement() {
@@ -251,7 +281,8 @@ void worker(void*) {
   Location location{};
   Battery battery{};
   while (true) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != "badland_shoot") {
+      chipReport.disconnect();
       publishInvalid();
       // Queued means no flash has started. Do not keep the application locked
       // behind an update that may otherwise wait forever in the reconnect loop.
@@ -261,7 +292,7 @@ void worker(void*) {
         remoteConsoleLogf("[OTA] TTGO queued request cancelled: WiFi disconnected\n");
         otaState.store(NetworkOtaStatus::Failed);
       }
-      if (!wifi.TrySetup("badland")) { vTaskDelay(pdMS_TO_TICKS(kRetryMs)); continue; }
+      if (!wifi.TrySetupFixed("badland", "badland_shoot")) { vTaskDelay(pdMS_TO_TICKS(kRetryMs)); continue; }
       versionReportedTo[0] = 0;
       forceSnapshot.store(true);
     }
@@ -280,6 +311,7 @@ void worker(void*) {
       }
       lastPoll = millis();
     }
+    reportChip();
     if (hadValid && xQueueReceive(locations, &location, 0) == pdTRUE) {
       // A lost/expired beacon clears the server field rather than leaving a
       // permanent room. Empty is understood by computeVibe as no location.
@@ -322,6 +354,7 @@ bool networkSubmit(const GameEvent& event) {
   commandBusy.store(false); return false;
 }
 void networkRequestSnapshot() { forceSnapshot.store(true); }
+void networkReportChip(bool present) { physicalChip.store(present ? 1 : 0); }
 void networkReportLocation(const char* room) {
   if (!locations || !room || strlen(room) >= sizeof(Location::room)) return;
   Location sample{}; strcpy(sample.room, room); sample.sampledAt = millis();

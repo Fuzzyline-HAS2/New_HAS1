@@ -8,23 +8,66 @@
      bool HttpRequest(String request, String string_request);
      void JsonParsing(String request, String json);
      void EnsureWifiCandidatesInitialized();
-@@ -82,6 +83,13 @@
+@@ -82,6 +83,15 @@
      HAS2_Wifi(String host, String php = "/has2.php");
  
      void SetDebugPrint(Print *debugPrint);
 +
 +    // Checked extension: single network worker; no restart on connection failure.
 +    bool TrySetup(String theme);
++    bool TrySetupFixed(String theme, const char *ssid);
 +    bool ReceiveMineChecked();
 +    bool ReceiveChecked(String name);
 +    bool LoopChecked();
 +    bool SendChecked(String name, String column, String value);
++    bool SetGloveChipChecked(String name, bool present);
  
      void Setup();
      void Setup(char *new_ssid, char *new_password);
+--- a/HAS2_Wifi/HAS2_Wifi.cpp
++++ b/HAS2_Wifi/HAS2_Wifi.cpp
+@@ -99,6 +99,38 @@
+       wifiCandidatesInitialized(false)
+ {
+     _activeHost = host;
++}
++
++bool HAS2_Wifi::TrySetupFixed(String theme, const char *ssid)
++{
++  if ((theme != "badland" && theme != "city") || ssid == nullptr || ssid[0] == '\0')
++  {
++    return false;
++  }
++
++  _theme = theme;
++  HOST_NAME = (_theme == "city") ? "http://172.30.1.44" : "http://172.30.1.43";
++  _activeHost = HOST_NAME;
++  server = HOST_NAME + PHP_FILE_NAME;
++  // Never auto-reconnect using a previously saved AP while selecting this one.
++  WiFi.persistent(false);
++  WiFi.setAutoReconnect(false);
++  WiFi.mode(WIFI_STA);
++  my_mac = WiFi.macAddress();
++
++  HAS2_WifiCandidate *candidates = (_theme == "city") ? city_wifi_candidates : badland_wifi_candidates;
++  for (int i = 0; i < WIFI_COUNT; i++)
++  {
++    const HAS2_WifiCandidate &candidate = candidates[i];
++    if (String(candidate.ssid) != ssid) continue;
++    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) return true;
++    // Credentials stay in first_store. No NVS read, scan, ordering or fallback.
++    if (TryConnect(candidate.ssid, candidate.password, WIFI_CONNECT_TIMEOUT_MS) &&
++        WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) return true;
++    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true, true);
++    return false;
++  }
++  return false;
+ }
+
+ void HAS2_Wifi::EnsureWifiCandidatesInitialized()
 --- /dev/null
 +++ b/HAS2_Wifi/HAS2_Wifi_checked.cpp
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,81 @@
 +#include "HAS2_Wifi.h"
 +
 +// Additive first_store API. Legacy device methods and reconnect policy are unchanged.
@@ -100,4 +143,9 @@
 +bool HAS2_Wifi::SendChecked(String name, String column, String value) {
 +  return HttpRequestChecked("Send", server + "?request=Send&table=device&key=" + encodeQuery(name) +
 +                           "&column=" + encodeQuery(column) + "&value=" + encodeQuery(value));
++}
++
++bool HAS2_Wifi::SetGloveChipChecked(String name, bool present) {
++  return HttpRequestChecked("Send", server + "?request=SetGloveChip&mac=" + encodeQuery(my_mac) +
++                           "&key=" + encodeQuery(name) + "&value=" + (present ? "1" : "0"));
 +}
