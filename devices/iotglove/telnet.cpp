@@ -1,5 +1,5 @@
-#include "remote_console.h"
-#include "remote_console_policy.h"
+#include "telnet.h"
+#include "telnet_policy.h"
 
 #include <Arduino.h>
 #include <WiFi.h>

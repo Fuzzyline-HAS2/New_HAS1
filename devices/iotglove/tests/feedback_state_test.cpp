@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace iotglove;
 using feedback_config::Pattern;
@@ -88,7 +89,7 @@ static void semanticTransitionsAndNoReplay() {
   assert(!engine.update(f, 0, false, 4300).motor);
   f = state(Role::Ghost, DeviceState::Other, Phase::Active, Display::Ghost);
   assert(engine.update(f, 0, false, 5000).motor);
-  f.role = Role::Player; f.display = Display::Ready;  // No chip: still a semantic role change.
+  f.role = Role::Player; f.display = Display::Player;  // Role color is independent of the chip.
   assert(engine.update(f, 0, false, 6000).motor);
   assert(!engine.update(f, 0, false, 6150).motor);
   f.display = Display::Player; f.lit = 4;
@@ -142,26 +143,33 @@ static void prioritiesAndCancellation() {
   assert(!engine.update(f, 0, false, 4002).motor);
 }
 
-static void captureAcknowledgementDoesNotRepeat() {
+static void onlyServerRoleTransitionsSignal() {
+  GameModel game(Profile::Origin);
   FeedbackEngine engine;
-  auto f = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
-  engine.update(f, 0, false, 0);
-  f.haptic = Haptic::Removed; f.display = Display::Ghost;
-  assert(engine.update(f, 0, false, 1000).motor);
-  f.haptic = Haptic::None;
-  assert(!engine.update(f, 0, false, 1300).motor);
-  f.role = Role::Ghost;
-  assert(!engine.update(f, 0, false, 1600).motor);  // Delayed authoritative ack, beyond event duration.
-  f.role = Role::Player; f.display = Display::Player;
-  assert(engine.update(f, 0, false, 2000).motor);  // A genuine subsequent transition still signals.
-
-  Settings config; config.onRemoved = Pattern::Off;
-  FeedbackEngine disabled(config);
-  disabled.update(f, 0, false, 0);
-  f.haptic = Haptic::Removed;
-  assert(!disabled.update(f, 0, false, 1000).motor);
-  f.haptic = Haptic::None; f.role = Role::Ghost; f.display = Display::Ghost;
-  assert(disabled.update(f, 0, false, 1600).motor);  // No actual removal pulse to deduplicate.
+  game.begin(true, 0);
+  ServerSnapshot s;
+  s.valid = true; s.phase = Phase::Active; s.deviceState = DeviceState::Activate;
+  s.role = Role::Player; s.stepSeconds = 3; s.capturesAllowed = true;
+  strcpy(s.session, "run1"); strcpy(s.deviceName, "G1P1");
+  game.applyServer(s, 0);
+  assert(!engine.update(game.feedback(), 0, false, 0).motor);
+  game.chipChanged(false, 10);
+  auto out = engine.update(game.feedback(), 0, false, 10);
+  assert(out.green == 64 && out.lit == 4 && !out.motor);
+  game.chipChanged(true, 20);
+  assert(!engine.update(game.feedback(), 0, false, 20).motor);
+  s.role = Role::Ghost; s.revivalCount = 2; game.applyServer(s, 1000);
+  out = engine.update(game.feedback(), 0, false, 1000);
+  assert(out.blue == 64 && out.lit == 2 && out.motor);
+  game.applyServer(s, 1100);
+  assert(engine.update(game.feedback(), 0, false, 1100).motor);
+  assert(!engine.update(game.feedback(), 0, false, 1300).motor);
+  game.chipChanged(false, 1400);
+  assert(!engine.update(game.feedback(), 0, false, 1400).motor);
+  s.role = Role::Player; game.applyServer(s, 2000);
+  out = engine.update(game.feedback(), 0, false, 2000);
+  assert(out.green == 64 && out.lit == 4 && out.motor);
+  assert(!engine.update(game.feedback(), 0, false, 2150).motor);
 }
 
 static void wrapAndTaggerLeds() {
@@ -198,7 +206,7 @@ int main() {
   patternsAndConfiguration();
   semanticTransitionsAndNoReplay();
   prioritiesAndCancellation();
-  captureAcknowledgementDoesNotRepeat();
+  onlyServerRoleTransitionsSignal();
   wrapAndTaggerLeds();
-  puts("PASS: configured state haptics, priorities, reconnect/ack suppression and tagger LEDs");
+  puts("PASS: configured state haptics, priorities, reconnect suppression, authoritative roles and tagger LEDs");
 }

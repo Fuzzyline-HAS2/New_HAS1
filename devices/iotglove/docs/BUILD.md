@@ -12,6 +12,12 @@ ESP32 Arduino core는 **3.3.11**을 사용한다. [공유 매핑](../../../scrip
 
 두 보드는 `min_spiffs`의 1,966,080-byte OTA 앱 슬롯을 사용한다. Beetle은 ESP32C3 Dev Module, 160MHz, 4MB, USB CDC enabled로 빌드한다. [DFRobot 보드 문서](https://wiki.dfrobot.com/dfr0868/)의 C3/4MB/USB 정보를 바탕으로 core 3.3.11의 `boards.txt` 메뉴를 확인했다. 첫 USB 설치 때 동일 파티션으로 설치해야 한다.
 
+## 소스 파일과 독립 컴파일
+
+TTGO의 `iotglove.ino`는 버전과 `setup()`/`loop()` 진입점을 유지한다. `iotglove.cpp`, `sensor.cpp`, `game_state.cpp`, `wifi.cpp`, `telnet.cpp`는 각각 독립 컴파일되며 헤더로 선언을 공유한다. 기존 장치의 `.ino` 기능 탭과 역할·이름을 맞춘 것이며, `.cpp`를 include하거나 `.ino`로 결합하지 않는다. 서버 인터페이스 헤더는 공식 `WiFi.h`와 이름이 겹치지 않는 `wifi_client.h`다.
+
+Beetle은 `iotglove_beetle.ino`, `iotglove_beetle.h`, `library_and_pin.h`와 해당 폴더의 `.cpp` 파일을 별도로 컴파일한다. TTGO 빌드에 Beetle 소스를 포함하지 않는다. 두 보드 공용 `IoTGloveProtocol` 라이브러리는 기존처럼 명시적으로 제공한다. 호스트 테스트 러너는 같은 `game_state.cpp`를 링크한다. 파일명 정리는 위 스케치 경로·FQBN·Release 태그·버전 증가 규칙에 영향을 주지 않는다.
+
 ## 배포 없는 로컬 검증
 
 저장소 루트에서 실행한다. Python 3, C++17 컴파일러, Git, Arduino CLI가 필요하다.
@@ -38,9 +44,13 @@ python3 devices/iotglove/tools/compile.py all \
 
 `all` 대신 `ttgo`, `training`, `beetle` 하나만 지정할 수 있다. `--arduino-cli`, `--jobs`, `--output-dir`도 지원한다. `IOTGLOVE_LIBRARY_DIR` 환경변수는 `--libraries-dir` 기본값이다.
 
-준비 스크립트는 매번 SecureOTA 최신, HAS2_Wifi **first_store 최신**, Arduino-SimpleTimer를 새로 받아 커밋을 기록한다. 글러브의 HAS2_Wifi에만 `has2-wifi-result-api.patch`를 적용하여 응답 성공 여부 및 재부팅 없는 연결 API를 추가한다. 원격 코드와 패치가 맞지 않으면 중단한다. 기존 7개 배포 대상은 패치 없이 기존 방식으로 빌드한다. 기존 라이브러리 디렉터리는 덮어쓰지 않으므로 갱신할 때 새 경로를 준비한다.
+준비 스크립트는 매번 SecureOTA 최신, HAS2_Wifi **first_store 최신**, Arduino-SimpleTimer를 새로 받아 커밋을 기록한다. 글러브의 HAS2_Wifi에만 `has2-wifi-result-api.patch`를 적용하여 응답 성공 여부, 재부팅 없는 `badland_shoot` 직접 연결, 글러브 칩 절대값 보고 API를 추가한다. 원격 코드와 패치가 맞지 않으면 중단한다. 기존 7개 배포 대상은 패치 없이 기존 방식으로 빌드한다. 기존 라이브러리 디렉터리는 덮어쓰지 않으므로 갱신할 때 새 경로를 준비한다.
 
 검증 빌드는 소스를 임시 스케치로 복사하고 그 안에만 placeholder `secrets.h`를 생성한다. 소스의 실제 `secrets.h`, 버전, 서명, Release를 바꾸지 않는다. 기본 출력은 Git에서 제외되는 `build/iotglove-compile-only/<profile>`이며, `iotglove-dependencies.json`에 실제 사용한 원격 커밋과 패치 해시를 남긴다. **이 placeholder 키 바이너리를 기기에 설치하거나 Release에 올리지 않는다.**
+
+## 서버 적용 순서
+
+이번 칩 보고는 `fuzzyline-core`의 `SetGloveChip`과 `ReceiveMine.chip_report_ready`가 필요하다. 서버 변경을 먼저 배포하고 등록 장치의 0/1 저장·역할 조건을 확인한 뒤 펌웨어를 릴리즈한다. 펌웨어를 먼저 설치하면 기존 서버가 요청을 거부하므로 칩 보고가 계속 미확정 상태로 남는다. 코드 푸시·컴파일 통과는 운영 서버 적용이나 실기기 검증을 뜻하지 않는다. 상세 계약은 [SERVER_CONTRACT.md](SERVER_CONTRACT.md)를 따른다.
 
 ## GitHub Actions
 

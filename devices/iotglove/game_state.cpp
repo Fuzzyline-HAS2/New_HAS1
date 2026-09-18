@@ -1,4 +1,4 @@
-#include "game_model.h"
+#include "game_state.h"
 #include "state_policy.h"
 
 #include <string.h>
@@ -22,7 +22,7 @@ bool DebouncedInput::update(bool level, uint32_t now) {
 
 void GameModel::resetQueue() {
   head_ = size_ = 0;
-  rolePending_ = countPending_ = false;
+  countPending_ = false;
 }
 
 void GameModel::begin(bool chipPresent, uint32_t now) {
@@ -31,7 +31,6 @@ void GameModel::begin(bool chipPresent, uint32_t now) {
   trainingStart_ = stepStart_ = now;
   count_ = 0;
   haveServer_ = needsSync_ = overflow_ = false;
-  insertReported_ = false;
   haptic_ = Haptic::None;
   resetQueue();
 }
@@ -66,7 +65,7 @@ void GameModel::consumeEvent() {
 
 void GameModel::commandUncertain(uint32_t /* sequence */) {
   // The network adapter follows this with a fresh authoritative snapshot.
-  // Never retry life_chip deltas or role=ghost (which clears server flags).
+  // Discard queued count writes until an authoritative snapshot reconciles them.
   needsSync_ = true;
   resetQueue();
 }
@@ -92,15 +91,11 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   const bool controlChanged = haveServer_ &&
       gameMutationsAllowed(snapshot) != gameMutationsAllowed(server_);
   const bool recovering = needsSync_;
-  const bool playerAcknowledged = rolePending_ && pendingRole_ == Role::Player &&
-      snapshot.role == Role::Player;
-  if (newSession || phaseChanged || controlChanged || recovering) {
+  if (newSession || phaseChanged || controlChanged || roleChanged || recovering) {
     resetQueue();
     haptic_ = Haptic::None;
-    insertReported_ = false;
     needsSync_ = overflow_ = false;
   }
-  if (rolePending_ && snapshot.role == pendingRole_) rolePending_ = false;
   const uint32_t nextInterval = snapshot.stepSeconds <= 86400U ? snapshot.stepSeconds * 1000U : 0;
   const uint8_t receivedCount = snapshot.revivalCount > 4 ? 4 : snapshot.revivalCount;
   // Repeated snapshots do not reset a partly charged step. Remote changes and
@@ -118,24 +113,6 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   intervalMs_ = nextInterval;
   server_ = snapshot;
   haveServer_ = true;
-  // A reboot does not fabricate an insertion delta. A stored chip count of one
-  // plus a present physical chip does allow completing an already-started return.
-  if (newSession || recovering)
-    insertReported_ = chipPresent_ && snapshot.lifeChip == 1;
-  if (!newSession && !phaseChanged && !controlChanged && !recovering && playerAcknowledged &&
-      !chipPresent_ && gameMutationsAllowed(server_) && server_.capturesAllowed &&
-      emit(GameEvent::Kind::Capture)) {
-    // A removal during revival acknowledgement belongs to the next capture.
-    // It was not also reported as a ghost delta, which would count it twice.
-    rolePending_ = true;
-    pendingRole_ = Role::Ghost;
-    insertReported_ = false;
-    haptic_ = Haptic::Removed;
-  }
-  // A physical insertion during the capture round trip is processed only once
-  // its ghost role is confirmed. No fabricated boot/reconnect chip delta.
-  if (!newSession && !phaseChanged && !controlChanged && !recovering && roleChanged &&
-      server_.role == Role::Ghost && chipPresent_ && insertReported_) attemptReturn();
 }
 
 void GameModel::chipChanged(bool present, uint32_t now) {
@@ -150,35 +127,8 @@ void GameModel::chipChanged(bool present, uint32_t now) {
     tick(now);
     return;
   }
-  if (!synchronized() || !gameMutationsAllowed(server_)) return;
-  if (rolePending_ && pendingRole_ == Role::Player) return;
-  if (server_.role == Role::Player && !rolePending_) {
-    if (!present && server_.capturesAllowed && emit(GameEvent::Kind::Capture)) {
-      rolePending_ = true;
-      pendingRole_ = Role::Ghost;
-      insertReported_ = false;
-      haptic_ = Haptic::Removed;
-    }
-    return;
-  }
-  // Capture acknowledgement may arrive after a quick remove/reinsert cycle.
-  if (server_.role == Role::Ghost || (rolePending_ && pendingRole_ == Role::Ghost)) {
-    if (emit(present ? GameEvent::Kind::ChipInserted : GameEvent::Kind::ChipRemoved)) {
-      insertReported_ = present;
-      if (present) attemptReturn();
-    }
-  }
-}
-
-void GameModel::attemptReturn() {
-  if (!activeGhost() || !chipPresent_ || !insertReported_ || rolePending_ || needsSync_) return;
-  const bool pendingCapture = !server_.sacrificed && !server_.open;
-  const bool eligibleRevival = server_.sacrificed && server_.open && count_ == 4;
-  if ((pendingCapture || eligibleRevival) &&
-      emit(pendingCapture ? GameEvent::Kind::CancelCapture : GameEvent::Kind::Revive)) {
-    rolePending_ = true;
-    pendingRole_ = Role::Player;
-  }
+  // Origin reports the debounced physical state through the separate sensor
+  // observation lane. Only the server decides capture, cancellation and revival.
 }
 
 void GameModel::buttonPressed(uint32_t now) {
@@ -188,7 +138,7 @@ void GameModel::buttonPressed(uint32_t now) {
     haptic_ = Haptic::Found;
     return;
   }
-  if (!synchronized() || !activeGhost() || rolePending_) return;
+  if (!synchronized() || !activeGhost()) return;
   if (emit(GameEvent::Kind::SetCount, 0)) {
     count_ = 0;
     countPending_ = true;
@@ -205,7 +155,7 @@ void GameModel::tick(uint32_t now) {
         uint32_t(now - trainingStart_) / 3000U)) : 4;
     return;
   }
-  if (!synchronized() || !activeGhost() || rolePending_ || !intervalMs_) return;
+  if (!synchronized() || !activeGhost() || !intervalMs_) return;
   // Conservative pending-capture policy: start counting after capture, but cap
   // at 3 until altar confirmation. No life-device permission before sacrifice.
   const uint8_t cap = server_.sacrificed ? 4 : 3;
@@ -218,7 +168,6 @@ void GameModel::tick(uint32_t now) {
       stepStart_ += steps * intervalMs_;
     }
   }
-  attemptReturn();
 }
 
 bool GameModel::canUseLifeDevice() const {
@@ -264,9 +213,9 @@ Feedback GameModel::feedback() {
   if (server_.phase == Phase::Ready) { out.display = Display::Ready; return out; }
   switch (server_.role) {
     case Role::Player:
-      out.display = (rolePending_ && pendingRole_ == Role::Ghost) ? Display::Ghost :
-          (chipPresent_ ? Display::Player : Display::Ready);
-      out.lit = out.display == Display::Ghost ? 0 : 4;
+      // Physical chip changes and unacknowledged requests do not change the role color.
+      out.display = Display::Player;
+      out.lit = 4;
       break;
     case Role::Ghost: out.display = Display::Ghost; out.lit = count_; break;
     case Role::Tagger: out.display = Display::Tagger; break;

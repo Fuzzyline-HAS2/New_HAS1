@@ -4,16 +4,24 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 ## 파일과 보드
 
-| 위치 | 역할 |
-| --- | --- |
-| `iotglove.ino`, `application.cpp` | TTGO 초기화, 센서/출력 루프, UART와 순차 OTA·리셋 조정 |
-| `game_model.h/.cpp` | 실제 펌웨어와 호스트 테스트가 공유하는 상태 전이·카운트·훈련 규칙 |
-| `glove_network.h/.cpp`, `network_policy.h`, `state_policy.h` | first_store 전용 worker, 검증된 스냅샷, 순서가 있는 전송과 응답 확인 |
-| `feedback.h`, `feedback_config.h`, `battery.h`, `hardware_config.h` | 비차단 출력·상태별 진동 설정, 배터리 샘플 평균/범위 검사, 실물 설정 |
-| `peer_state.h` | Beetle 부팅 식별자·heartbeat·위치 만료·OTA 완료 확인 |
-| [iotglove_beetle](iotglove_beetle/README.md) | BLE 위치 수집, GPIO 리셋 감지/WDT, 별도 OTA |
-| [공통 UART 라이브러리](../../libraries/IoTGloveProtocol/README.md) | 버전 프레임, 고정 길이 파서, 위치 필터·리셋 상태 처리 |
-| [빌드 방법](docs/BUILD.md), [검증 기록](docs/VALIDATION.md) | compile-only 검증, Actions/Release, 실기기 절차 |
+기존 장치의 `library_and_pin.h`, `sensor`, `game_state`, `wifi`, `telnet` 역할 구분을 따른다. 주 `.ino`에는 버전과 진입점을 두고 기능은 `.cpp`와 명시적 헤더로 분리한다.
+
+| 글러브 파일 | 역할 | 기존 장치에서 대응하는 구성 |
+| --- | --- | --- |
+| `iotglove.ino`, `iotglove.h`, `iotglove.cpp` | TTGO 진입점·초기화·출력 루프, UART와 순차 OTA·리셋 조정 | 장치명 `.ino` / `.h` |
+| `library_and_pin.h` | 핀·배터리 보정·타임아웃·빌드 설정 | `library_and_pin.h` |
+| `sensor.h`, `sensor.cpp` | GPIO26/27 입력 설정·첫 샘플·디바운스·칩/버튼 이벤트·진단 조회 | `sensor.ino` |
+| `game_state.h`, `game_state.cpp` | 본게임·훈련 상태 전이와 카운트·타이머 규칙, 호스트 테스트 공유 | `game_state.ino` |
+| `wifi_client.h`, `wifi.cpp` | first_store worker, 서버 스냅샷·순차 전송·응답 확인 | `wifi.ino` |
+| `telnet.h`, `telnet.cpp`, `telnet_policy.h` | USB/Telnet 콘솔과 제한된 명령·로그 처리 | `telnet.h` / `telnet.ino` |
+| `feedback.h`, `feedback_config.h` | 비차단 LED·진동 출력과 상태별 진동 설정 | `neopixel.ino`, `vibration_motor.ino`의 출력 역할 |
+| `battery.h` | 배터리 샘플 평균·범위 검사; ADC 읽기와 보고는 `iotglove.cpp` | 장치 루프의 배터리 측정 역할 |
+| `chip_report.h`, `network_policy.h`, `state_policy.h`, `peer_state.h`, `ota_request.h`, `link_diagnostics.h` | 서버 상태·UART peer·OTA 요청·진단의 순수 정책과 상태 보관 | 각 기능에서 사용하는 보조 헤더 |
+| [iotglove_beetle](iotglove_beetle/README.md) | 별도 C3 스케치, BLE 위치·GPIO 리셋/WDT·OTA | 독립된 장치 폴더 |
+| [공통 UART 라이브러리](../../libraries/IoTGloveProtocol/README.md) | 버전 프레임·파서·위치 필터·리셋 상태 처리 | 두 보드 공용 Arduino 라이브러리 |
+| [빌드 방법](docs/BUILD.md), [검증 기록](docs/VALIDATION.md) | compile-only 검증, Actions/Release, 실기기 절차 | — |
+
+서버 헤더는 ESP32 공식 `WiFi.h`와 대소문자를 구분하지 않는 파일시스템에서도 충돌하지 않도록 `wifi_client.h`로 명명했다. 각 `.cpp`는 따로 컴파일하고 필요한 선언을 헤더로 포함한다. 기능 파일을 `.ino` 탭으로 합치거나 `.cpp`를 직접 include하지 않는다. 디렉터리·주 스케치·Release 태그는 그대로 유지한다.
 
 ## 배선
 
@@ -35,17 +43,19 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 기본 빌드는 Origin, `IOTGLOVE_TRAINING=1`은 서버에 쓰지 않는 독립 훈련이다. 훈련소는 칩 제거 시 파랑 1칸, 3/6/9초에 2/3/4칸, 조기 재장착은 9초 대기, 발각은 1칸부터 재시작한다. 샘플과 달리 **칩 없는 부팅은 유령**으로 시작한다.
 
-본게임은 등록 MAC으로 서버에서 G1/G2 참가자를 받는다. G9의 서버 훈련 권한과 이 독립 훈련 모드를 섞지 않도록 G9 응답은 본게임에서 수락하지 않는다. `tagger_name`이 가리키는 실제 술래의 `device_state=activate`를 확인한 뒤 포획을 허용한다. 제단 활성화 전 칩 제거를 물리적으로 막을 수는 없으며, 생존자 표시 대신 준비 표시를 유지한다. 잘못 빠진 칩은 재장착해야 한다.
+본게임은 등록 MAC으로 서버에서 G1/G2 참가자를 받는다. G9의 서버 훈련 권한과 이 독립 훈련 모드를 섞지 않도록 G9 응답은 본게임에서 수락하지 않는다. 펌웨어는 물리 칩 상태만 보고하고 포획·재장착 취소·소생에 따른 역할 전환은 서버가 처리한다. 서버는 활성 게임과 실제 술래의 `device_state=activate` 등을 확인한 뒤 포획을 허용한다. 활성 생존자 표시는 서버 역할을 기준으로 한다. `role=player`인 동안 칩 제거·재장착에도 초록 4칸을 유지하고, 서버가 `role=ghost`를 확인한 뒤 유령 표시로 바뀐다. 아래의 설정·준비·탐색·종료·서버 만료 표시 우선순위는 유지한다.
 
-- 유령대기는 봉헌 전 칩 재장착으로 복귀한다. 확정 유령은 `is_sacrificed=1`, `revival_count=4`, `is_open=1`, 실제 칩 장착을 모두 만족해야 복귀한다.
+- 유령대기는 봉헌 전·미개방 상태에서 칩 재장착으로 복귀한다. 확정 유령은 `is_sacrificed=1`, `revival_count=4`, `is_open=1`, 실제 칩 장착을 모두 만족해야 복귀한다.
 - 소생은 한 칸당 서버 `revival_time`초, 파랑 0~4칸이다. 발각은 0으로 초기화한다. 봉헌 전에는 최대 3으로 제한하고, 봉헌 시 현재 한 칸의 경과시간을 유지한다. 이는 문서의 미정 구간에 적용한 초기 정책이다.
-- 재부팅·재동기화는 서버 카운트부터 현재 한 칸을 다시 시작한다. 서버가 칩 1개를 확인하고 실제 칩도 꽂힌 경우 별도 증감 없이 복귀 조건을 다시 검사한다.
+- 재부팅·재동기화는 서버 카운트부터 현재 한 칸을 다시 시작한다. 펌웨어가 칩 상태를 다시 보고하면 서버가 복귀 조건을 검사한다. 이후 카운트·봉헌·개방 값이 바뀌는 경우에도 서버가 재검사한다.
 - 동적 시간 변경은 완료 칸 수를 유지하고 현재 칸을 다시 시작한다. 미확정 로컬 카운트는 해당 응답을 확인한 뒤 서버 변경을 반영한다.
-- 칩 이벤트/역할 변경은 하나씩 전송하고 재조회한다. `life_chip`은 증감 API이므로 응답 불확실 시 재전송하지 않는다. 서버의 봉헌·비정상 생명 복구와 원자적 이벤트 계약은 [서버 조사](docs/SERVER_CONTRACT.md)의 통합 확인 대상이다.
+- 첫 입력과 칩 변화는 모든 `game_state`/`device_state`에서 `SetGloveChip`으로 보고한다. 기존 `life_chip` 필드에 장착 `1` / 미장착 `0`을 설정하고, 같은 장치의 `ReceiveMine`에서 값과 `chip_report_ready=1`을 확인한다. 실패는 최소 5초 뒤 최신 상태로 재시도한다. 단절 중 과거 탈착을 재생하지 않으며 재접속·서버 재시작 후 현재 상태를 동기화한다. 독립 훈련은 서버에 보고하지 않는다.
 
-서버 통신은 전용 worker에서 수행한다. 첫 유효 응답 전, 자기 상태 조회 실패/무효 응답, 15초 이상 오래된 상태에서는 게임 쓰기를 멈춘다. 술래 조회 실패는 포획만 차단한다. 연결 복구 시 이전 큐를 재생하지 않는다. 서버에 실제 게임 epoch가 없어 단절 중 게임이 완전히 바뀌었다가 같은 상태로 돌아오는 경우의 식별은 서버 보완이 필요하다.
+TTGO와 Beetle OTA는 `badland_shoot`에 직접 연결한다. `first_store`의 기존 해당 AP 자격증명을 사용하며, 저장된 다른 AP나 후보 AP로 우회하지 않는다. 연결 실패 시 보드를 재부팅하지 않고 기존 재시도/OTA 실패 절차를 따른다. `badland`는 서버 테마 이름이며 SSID와 구분한다.
 
-역할 변경과 `life_chip` 증감은 서버에서 원자적으로 묶이지 않는다. 일부 쓰기만 반영된 경우 로그와 역할·서버 칩 수·물리 칩 상태를 운영자가 대조해 복구해야 하며, 글러브가 증감을 추측해 재시도하지 않는다.
+서버 통신은 전용 worker에서 수행한다. 첫 유효 응답 전, 자기 상태 조회 실패/무효 응답, 15초 이상 오래된 상태에서는 소생 카운트 쓰기를 멈춘다. 물리 칩 보고는 게임 상태 해석과 분리하며, 등록 MAC에 대응하는 유효한 G1/G2 장치명을 새로 확인해야 전송한다. 연결 복구와 역할 전환 시 이전 카운트 큐를 재생하지 않는다. 서버에 실제 게임 epoch가 없어 단절 중 게임이 완전히 바뀌었다가 같은 상태로 돌아오는 경우의 식별은 서버 보완이 필요하다.
+
+새 절대값 API를 포함한 `fuzzyline-core` 서버를 먼저 적용해야 한다. 기존 `Send&column=life_chip`은 다른 장치 호환을 위해 증감 동작을 유지하며, 새 글러브는 이 경로와 역할 쓰기를 사용하지 않는다. 새 API가 없는 서버에서는 칩 보고를 미확정 상태로 재시도한다. API·역할 조건과 후속 통합 범위는 [서버 계약](docs/SERVER_CONTRACT.md)을 따른다.
 
 ## 장치 상태 표시와 진동 설정
 
@@ -58,7 +68,7 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 | `role=tagger`, `device_state=blink` | 보라 점멸, 500ms마다 ON/OFF | 술래 결정 전 표시 |
 | `role=tagger`, `device_state=activate` | 보라 상시 점등 | 활성 술래 표시 |
 
-준비 상태에서도 GPIO26을 계속 읽고 30ms 안정화 후 점등 수를 갱신한다. 칩 유무만으로 준비 중 포획·생명 증감 명령을 보내지 않는다. 종료·탐색·서버 무효/만료 상태의 제한을 우선하며, `game_state=activate`에서 장치 준비 표시를 하더라도 게임 중 OTA 및 서버 watchdog 리셋 제한은 유지한다. 수동 `b` 리셋 명령은 기존 동작을 유지한다.
+준비 상태에서도 GPIO26을 계속 읽고 30ms 안정화 후 점등 수를 갱신한다. 준비 중에도 칩 상태 0/1을 보고하지만 포획·역할 변경 명령을 보내지 않는다. 종료·탐색·서버 무효/만료 상태의 제한을 우선하며, `game_state=activate`에서 장치 준비 표시를 하더라도 게임 중 OTA 및 서버 watchdog 리셋 제한은 유지한다. 수동 `b` 리셋 명령은 기존 동작을 유지한다.
 
 진동은 [feedback_config.h](feedback_config.h)에서 상태별로 지정한다. 짧게 1회·길게 1회·짧게 2회 및 끄기를 선택할 수 있고 기본 길이는 각각 150ms, 300ms, 150ms ON → 100ms OFF → 150ms ON이다. 서버 필드를 추가하지 않으며 설정 변경은 펌웨어 릴리즈와 OTA로 반영한다.
 
@@ -69,10 +79,10 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 | `onSetting`, `onReady`, `onExploration`, `onPlayer` | `Short1` — 짧게 1회 |
 | `onGhost`, `onTaggerActive`, `onEnded` | `Long1` — 길게 1회 |
 | `onTaggerBlink` | `Short2` — 짧게 2회 |
-| `onRemoved` — 칩 제거 이벤트 | `Long1` — 기존 300ms |
+| `onRemoved` — 독립 훈련의 칩 제거 이벤트 | `Long1` — 기존 300ms |
 | `onFound` — 발각 이벤트 | `Short2` — 기존 150/100/150ms |
 
-상태 변경은 역할·장치 상태·게임 페이즈를 기준으로 감지한다. 동일 응답 폴링, LED 점멸 프레임, 칩 유무와 충전 칸 수 갱신은 추가 상태 진동을 만들지 않는다. 첫 동기화와 재접속은 현재 상태만 기준으로 저장한다. 칩 제거·발각 이벤트가 상태 변경 진동보다 우선하고, 상태 진동이 근접 진동보다 우선한다. OTA·리셋 중 진동은 취소하며 억제가 풀린 뒤 늦게 재생하지 않는다.
+상태 변경은 역할·장치 상태·게임 페이즈를 기준으로 감지한다. 동일 응답 폴링, LED 점멸 프레임, 칩 유무와 충전 칸 수 갱신은 추가 상태 진동을 만들지 않는다. 첫 동기화와 재접속은 현재 상태만 기준으로 저장한다. 독립 훈련의 칩 제거·발각 이벤트가 상태 변경 진동보다 우선하고, 상태 진동이 근접 진동보다 우선한다. 본게임 칩 탈착만으로는 제거 진동을 만들지 않고 서버 역할 전환 진동을 사용한다. OTA·리셋 중 진동은 취소하며 억제가 풀린 뒤 늦게 재생하지 않는다.
 
 ## 위치·배터리 설정
 
@@ -80,7 +90,7 @@ Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)에 현장 `HAS3:장치명
 
 근접 진동 기본안은 같은 방(`vibe=3`) 1초당 100ms 두 번, 인접(`vibe=1`) 2초당 100ms 한 번이다. 칩/발각 진동이 우선하며 오래된 위치로는 울리지 않는다. 실제 방 경계에서 RSSI 필터와 진동 패턴을 조정한다.
 
-배터리는 `analogReadMilliVolts()`의 보정 ADC 값을 20ms마다 모아 16개를 평균한다. 다음 값을 [hardware_config.h](hardware_config.h)에 실측해 넣어야 보고가 활성화된다.
+배터리는 `analogReadMilliVolts()`의 보정 ADC 값을 20ms마다 모아 16개를 평균한다. 다음 값을 [library_and_pin.h](library_and_pin.h)에 실측해 넣어야 보고가 활성화된다.
 
 - `IOTGLOVE_BATTERY_PIN`: GPIO35는 기존 코드의 후보이며 실물 배선을 확인한다.
 - `IOTGLOVE_BATTERY_DIVIDER_RATIO`: 실제 분압비 `(R위 + R아래) / R아래`.

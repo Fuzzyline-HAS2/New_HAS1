@@ -1,5 +1,5 @@
 #pragma once
-#include "game_model.h"
+#include "game_state.h"
 
 namespace iotglove {
 struct GameResult {
@@ -15,6 +15,8 @@ bool networkPoll(ServerSnapshot& snapshot);
 bool networkPollResult(GameResult& result);
 bool networkSubmit(const GameEvent& event);
 void networkRequestSnapshot();
+// Latest debounced physical state; absolute reporting does not require a game phase.
+void networkReportChip(bool present);
 void networkReportLocation(const char* room);
 void networkReportBattery(float volts);
 // Call only after matching Beetle OTA updated/skipped result, outside a live game.

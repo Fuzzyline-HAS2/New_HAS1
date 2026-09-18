@@ -1,4 +1,4 @@
-#include "beetle.h"
+#include "iotglove_beetle.h"
 #include <BLEDevice.h>
 #include <host/ble_gap.h>
 #include <host/ble_hs.h>

@@ -1,6 +1,6 @@
 # IoT 글러브 구현 계획
 
-작성일: 2026-09-16. 상태: 계획 승인 후 1차 SW 구현 및 로컬 검증 진행. 아래는 최초 설계와 확인사항이며, 실제 구성/적용 정책은 [README](README.md), 수행 결과는 [검증 기록](docs/VALIDATION.md)을 따른다. 커밋·Release 게시·장치 OTA는 아직 수행하지 않았다.
+작성일: 2026-09-16. 상태: 계획 승인 후 1차 SW 구현 및 로컬 검증 진행. 아래는 최초 설계와 확인사항이며, 실제 구성/적용 정책은 [README](README.md), 수행 결과는 [검증 기록](docs/VALIDATION.md)을 따른다. 2026-09-16 최초 작성 당시에는 커밋·Release 게시·장치 OTA 수행 전이었다.
 
 ## 1. 목표와 기준 자료
 
@@ -34,7 +34,7 @@ Git 기준: `main`을 `8da42c9`에서 `origin/main`의 `b43a316`으로 fast-forw
 | --- | --- | --- |
 | 세팅 | 하양, 칩 있음 4칸 / 없음 3칸 | device_state=setting; 2026-09-18 사용자 변경 |
 | 준비 | 빨강, 칩 있음 4칸 / 없음 3칸 | device_state=ready; 탐색은 별도 기존 규칙 유지 |
-| 생존자 | 초록 | 생명칩 포획 가능 상태 |
+| 생존자 | 초록 4칸 | 활성 서버 role=player 동안 칩 제거·재장착에도 색 유지. role=ghost 확인 후 유령 표시 |
 | 유령 진행 | 파랑 충전 | 소생 진행 표시 |
 | 소생 가능 | 파랑 | 대기 완료 표시이며, 이것만으로 생존자 복귀는 아님 |
 | 활성 술래 | 보라 상시 점등 | role=tagger, device_state=activate; 2026-09-18 사용자 정정 |
@@ -52,7 +52,7 @@ stateDiagram-v2
     부활직전 --> 생존자: 생명칩 장착 + 소생 조건 충족
 ```
 
-- 참가자 진행 상태와 `chip_present`는 독립적으로 관리한다. 칩이 있다고 무조건 생존자, 없다고 즉시 확정 유령으로 만들지 않는다.
+- 참가자 진행 상태와 물리 칩 유무는 독립적으로 관리한다. 2026-09-18 사용자 결정에 따라 물리 칩은 기존 `life_chip` 필드에 0/1로 설정하며 별도 `chip_present` 필드는 추가하지 않는다. 칩이 있다고 무조건 생존자, 없다고 즉시 확정 유령으로 만들지 않는다.
 - 맵 탐색 중에는 역할을 공개하지 않고 글러브 사용을 막는다. 탐색 종료 후 역할을 공개하되 제단 활성화 전에는 포획을 허용하지 않는다.
 - 유령 대기는 미션과 생명장치 사용 모두 불가하다. 제단 봉헌 때 대상이 정확히 1명이면 서버가 유령으로 확정한다.
 - 본게임 유령의 `revival_count`는 0부터 최대 4까지 증가하고 LED는 0~4칸에 대응한다. 발각 버튼을 누르면 0으로 초기화되며, 생명장치는 봉헌 확정 및 count=4인 유령만 1회 사용할 수 있다. 유령 대기 중 재장착은 카운트와 무관하게 생존자로 복귀한다.
@@ -124,54 +124,70 @@ ESP32 core 3.3.11의 보정된 `analogReadMilliVolts()`와 검증된 분압비�
 
 기존 글러브는 `battery_remaining`에 전압(V, 소수 2자리)을 보고하고 현재 서버는 실수로 저장한다. 서버 문서의 % 표기와는 차이가 있으므로 **전압 보고 호환을 기본안**으로 두고 단위를 명시한다. 잔량 %는 배터리 특성/운영 화면 요구를 확인한 후 별도 추정값으로 검토한다. 주기는 기존 60초를 시작값으로 검토하며 훈련소 독립 모드는 로컬 측정만 한다.
 
-## 4. 디렉터리와 빌드 구조 제안
+## 4. 현재 디렉터리와 빌드 구조
 
-TTGO는 기존 저장소처럼 장치 루트의 Arduino 스케치로 유지하고, Beetle은 고유한 이름의 별도 스케치로 둔다. 아래는 최초 구조 제안이다. 실제 구현은 Arduino 전처리 충돌을 줄이기 위해 `application.cpp`, `game_model.cpp`, `glove_network.cpp` 등으로 나누었으며 [README](README.md)에 실제 파일을 정리했다.
+2026-09-18 현재 구현 구조다. TTGO는 장치 루트의 Arduino 스케치로, Beetle은 고유 이름의 별도 스케치로 유지한다. 기존 장치에서 쓰는 `library_and_pin`, `sensor`, `game_state`, `wifi`, `telnet` 이름에 기능을 대응시키되, 실제 구현은 `.cpp` 독립 컴파일을 유지한다. 본게임·훈련·소생 타이머는 `game_state.cpp`, 출력·UART·순차 OTA 조정은 `iotglove.cpp`에서 연결한다.
 
 ```text
 devices/iotglove/
 ├── PLAN.md
 ├── README.md
 ├── iotglove.ino                 # TTGO 진입점, FIRMWARE_VER/PARTITION_VER
-├── iotglove.h                   # 상태/이벤트 타입과 인터페이스
-├── library_and_pin.h            # TTGO 핀과 라이브러리
-├── hardware_config.h            # 확정 하드웨어 설정
-├── sensor.ino                   # 칩/버튼 디바운스 및 이벤트
-├── game_state.ino               # 본게임 상태 처리
-├── training.ino                 # 독립 훈련소 규칙
-├── feedback.ino                 # LED/비차단 진동
-├── battery.ino                  # 배터리 전압 측정/보정/서버 보고
-├── timer.ino                    # 소생 타이머/진행 표시
-├── wifi.ino                     # first_store 서버 adapter
-├── serial_communication.ino     # UART 수신/재동기화
-├── ota.ino                      # 두 보드 업데이트 조정
+├── iotglove.h
+├── iotglove.cpp                 # 초기화·메인 루프·출력·UART·OTA/리셋 조정
+├── library_and_pin.h            # 핀·배터리 보정·타임아웃·빌드 설정
+├── sensor.h
+├── sensor.cpp                   # 칩/버튼 입력·디바운스·모델 이벤트
+├── game_state.h
+├── game_state.cpp               # 본게임·독립 훈련·카운트/타이머
+├── wifi_client.h                # 공식 WiFi.h와 이름 충돌 방지
+├── wifi.cpp                     # first_store 서버 worker와 OTA
+├── chip_report.h                # 최신 물리 칩 0/1 보고·확인·재시도 정책
+├── telnet.h
+├── telnet.cpp                   # USB/Telnet 콘솔·로그
+├── telnet_policy.h
+├── feedback.h                   # 비차단 LED/진동 출력
+├── feedback_config.h            # 상태별 진동 패턴·시간 설정
+├── battery.h                    # 배터리 평균·범위 검사
+├── network_policy.h
+├── state_policy.h
+├── peer_state.h
+├── ota_request.h
+├── link_diagnostics.h
 ├── secrets.h.example
 ├── iotglove_beetle/
-│   ├── iotglove_beetle.ino       # Beetle 별도 진입점/버전
-│   ├── library_and_pin.h
-│   ├── ble_location.ino
-│   ├── serial_communication.ino
-│   ├── ota.ino
+│   ├── README.md
+│   ├── iotglove_beetle.ino       # Beetle 진입점·버전·메인 루프
+│   ├── iotglove_beetle.h         # 모듈 간 선언과 공용 타입
+│   ├── library_and_pin.h        # C3 핀·UART·시간 설정
+│   ├── beacon_map.h
+│   ├── ble_location.cpp
+│   ├── serial_communication.cpp
+│   ├── diagnostics.cpp
+│   ├── ota.cpp
+│   ├── ota_record.h
 │   └── secrets.h.example
-├── docs/                       # 핀맵, 서버/UART 계약, 현장 검증 절차
-│   └── SERVER_CONTRACT.md       # 현재 서버 소스 조사와 기획 차이
-└── tests/                      # 실제 상태 처리/파서의 host 테스트
+├── docs/                       # BUILD·SERVER_CONTRACT·ROLLOUT·VALIDATION
+├── tools/                      # 격리 빌드·의존성 준비·호스트/Python 테스트
+└── tests/                      # 실제 상태 처리·정책·파서의 호스트 테스트
 ```
 
-주 `.ino` 이름은 스케치 폴더명과 일치시킨다. Beetle은 `src/` 밖에 두고 독립 target으로 컴파일한다. 두 보드 공용 헤더가 필요하면 Arduino 라이브러리로 묶어 두 target에 명시적으로 제공한다. 상위 폴더 상대 include가 Arduino 임시 빌드에서도 동작한다고 가정하지 않는다. 근거: [Arduino 스케치 규격](https://docs.arduino.cc/arduino-cli/sketch-specification/).
+`sensorConfigurePins()`는 기존 초기화 위치에서 입력 핀을 설정하고, `sensorBegin()`은 첫 샘플을 저장한다. `sensorPoll()`은 기존처럼 칩 변화 다음 버튼 눌림을 모델에 전달한다. 디바운스된 값과 즉시 읽은 GPIO 값은 별도 조회 함수로 구분한다. ADC 읽기·배터리 보고 순서는 `iotglove.cpp`에 유지한다.
+
+주 `.ino` 이름은 스케치 폴더명과 일치한다. Beetle은 TTGO의 `src/` 밖에 있고 독립 target으로 컴파일한다. `.cpp`는 Arduino의 `.ino` 결합·자동 함수 선언에 의존하지 않고 필요한 선언을 헤더에서 가져온다. 두 보드 공용 코드는 `libraries/IoTGloveProtocol` Arduino 라이브러리로 각각 명시적으로 제공한다. 경로·FQBN·버전 매크로·서명 키·Release 태그는 파일 정리로 바꾸지 않는다. 근거: [Arduino 스케치 규격](https://docs.arduino.cc/arduino-cli/sketch-specification/).
 
 ## 5. 통신과 복구 설계
 
 ### 서버 adapter
 
-1. `HAS2_Wifi`는 **first_store**만 사용한다. 참조 글러브의 vendor 라이브러리와 매장 주소는 복사하지 않는다.
-2. [서버 계약표](docs/SERVER_CONTRACT.md)의 `role`, `game_state`, `device_state`, `revival_count`, `is_open`, `is_sacrificed`, `life_chip`을 기준으로 한다. `life_chip`은 증감이며 `revival_count`는 SET이다. 기획 명칭을 새 API 이름으로 임의 채택하지 않는다.
-3. 계약표에는 주체/대상, 송신 필드, 정상 응답, 서버 상태 반영 확인 방법, 중복 처리, 재접속 처리를 적는다. 특히 기존 `taken`은 현재 생명칩 기반 포획 이벤트와 동일하지 않다.
-4. `HAS2_Wifi::Send`는 void이므로 호출 완료를 서버 승인으로 취급하지 않는다. `Situation`의 bool도 전송 결과와 게임 상태 반영을 구분한다. 비멱등 이벤트는 무조건 재전송하지 않고 서버와 dedup/ack 또는 재조회 규칙을 맞춘다.
-5. TTGO 네트워크 작업은 한 task에서 소유하고, 센서/LED loop와 큐로 분리한다. 상태 스냅샷은 최신값으로 합칠 수 있지만 칩 제거/버튼 같은 이벤트를 덮어쓰지 않는다. 큐 한계와 유실 처리도 정한다.
-6. 목표는 Wi-Fi 불가 상태에서도 입력/표시를 유지하는 것이다. 단, 로컬 HAS2_Wifi는 연결 실패 시 ESP.restart()하므로 task 분리만으로 충족되지 않는다. upstream first_store의 결과/파싱 유효성 노출 및 재접속 정책을 확인하고 필요한 보완 범위를 정한다. 본게임 재부팅/단절 후에는 유효한 서버 상태로 재동기화하고, `role=ghost` 재전송으로 is_open/is_sacrificed가 다시 초기화되지 않게 한다.
+1. `HAS2_Wifi`는 **first_store**만 사용한다. 두 보드는 `TrySetupFixed("badland", "badland_shoot")`로 해당 AP에 직접 연결하고 저장 AP·후보 AP 순회로 우회하지 않는다. 비밀번호는 기존 라이브러리 항목을 사용한다.
+2. [서버 계약](docs/SERVER_CONTRACT.md)의 `SetGloveChip`으로 기존 `life_chip`을 0/1로 설정한다. 기존 `Send`의 life_chip 증감은 호환용으로 유지하고 새 글러브는 호출하지 않는다. `revival_count`는 기존 SET이다.
+3. 물리 칩 보고는 모든 게임·장치 상태에서 동작하며 역할 전환은 서버가 결정한다. 펌웨어는 `role`, 포획·소생·칩 증감 이벤트를 보내지 않는다. `player` 출력은 서버 역할이 바뀔 때까지 초록 4칸이다.
+4. HTTP ACK만으로 확정하지 않는다. 등록 MAC과 일치하는 장치명을 확인하고 쓰기 후 같은 장치의 `life_chip`과 `chip_report_ready=1`을 재조회한다. 실패는 최소 5초 후 재시도하며 새 입력을 과거 응답으로 지우지 않는다.
+5. HTTP/JSON은 한 worker가 소유한다. 칩 보고는 디바운스된 최신 상태 하나를 보관하며 단절 중 과거 탈착을 재생하지 않는다. 첫 연결·재접속·서버 재시작·장치 재배정 후 현재 상태를 다시 보고한다. 카운트 명령은 별도 순차 큐로 처리하고 역할/연결 전환 시 이전 큐를 폐기한다.
+6. Wi-Fi 불가 중에도 입력과 표시 루프는 동작한다. 새 연결 API는 실패 시 재부팅하지 않는다. 알려지지 않은 게임 상태여도 유효한 등록 장치명은 칩 보고에 사용할 수 있으며, 무효/오래된 게임 응답에서는 카운트 쓰기를 멈춘다. 독립 훈련 profile은 서버 통신을 시작하지 않는다.
 
-서버는 사용자 지정 fuzzyline-core `main/bc6907f`를 확인했다. 칩 제거·장착은 비멱등 life_chip 증감과 role 보고에 걸치며, Notion의 봉헌 확정/미확정 생명 일괄 복구 경로는 현재 main에서 확인하지 못했다. 운영 브랜치 확인과 필요한 서버/라이브러리 보완을 연동 의존 작업으로 명시한다. 이번 조사에서 외부 서버나 공용 라이브러리는 수정하지 않았다.
+2026-09-16 `main/bc6907f` 및 2026-09-18 `main/8c73ef70` 조사에서 기존 `Send life_chip`의 증감 계약을 확인했다. 2026-09-18 추가 요청에 따라 서버에 글러브 전용 절대값 API와 역할 판정을 추가한다. 운영 서버에 해당 변경을 먼저 적용한 뒤 새 펌웨어를 배포해야 한다. 기획의 전역 봉헌 추적·다수 유령 복구 전체를 이번 API 추가만으로 완료 처리하지 않는다.
 
 ### TTGO ↔ Beetle
 
@@ -244,7 +260,7 @@ devices/iotglove/
 - 리셋/WDT: GPIO12→GPIO1 요청 1회당 재부팅 1회, 요청 HIGH 유지 중 재부팅 반복 방지, 전원 순서/TTGO 재부팅 시 오동작 방지, 감시 task 강제 정지 시 WDT의 실제 재부팅, 정상 BLE/OTA 중 불필요한 WDT 발동 방지, 재부팅 뒤 UART 상태/위치 복구.
 - 시간/출력: 동적 소생 시간 변경, millis wraparound, 느린 HTTP 중 버튼/LED 반응, 진동 패턴 우선순위, 전원 투입 직후 모터 OFF.
 - 배터리: 멀티미터 대비 전압 오차, USB 연결/분리, Wi-Fi·LED·진동 부하, 미연결/포화 값, 보고 단위(V) 일치와 비차단 측정.
-- 서버 계약: 카운트 한 칸=revival_time, life_chip 증감 재전송 방지, role=ghost 재보고 시 플래그 초기화 방지, ReceiveMine 응답 유실 후 강제 재조회, open/not_open 및 ACK와 상태 반영 구분.
+- 서버 계약: 카운트 한 칸=revival_time, life_chip 절대값 재시도·초기/재접속/서버 재시작 동기화, 반복 칩 보고의 역할/플래그 중복 변경 방지, ReceiveMine 응답 유실 후 강제 재조회, open/not_open 및 ACK와 상태 반영 구분.
 - 배포: 두 target의 실제 컴파일/이미지 크기, 버전 파싱, 바이너리 혼입 방지, 정상 OTA·같은 버전 skip·잘못된 서명·Beetle timeout, OTA 후 설정/서버 재연결.
 
 테스트는 구현된 순수 상태 처리/파서 함수를 직접 검증하고, 별도 모형으로 실제 펌웨어를 대체하지 않는다. 하드웨어/서버 통합 결과는 실측 로그로 남긴다. 최초 계획 단계에서는 테스트하지 않았으며 이후 소프트웨어 빌드/회귀 결과는 [검증 기록](docs/VALIDATION.md)에 기록한다. 실기기 검증은 별도 수행해야 한다.

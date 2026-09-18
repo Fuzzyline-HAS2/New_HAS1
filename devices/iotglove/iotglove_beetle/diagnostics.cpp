@@ -1,4 +1,4 @@
-#include "beetle.h"
+#include "iotglove_beetle.h"
 #include <IoTGloveDiagnostics.h>
 
 namespace beetle {

@@ -1,4 +1,5 @@
-#include "../game_model.h"
+#include "../game_state.h"
+#include "../feedback.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -72,40 +73,59 @@ static void trainingResetAndBoot() {
   g.tick(19000); assert(g.count() == 2);
 }
 
-static void captureAndEarlyReinsert() {
-  GameModel g(Profile::Origin);
-  g.begin(true, 0);
-  g.chipChanged(false, 10); noEvent(g);  // no mutation before server sync
-  auto s = snapshot(Role::Player);
-  g.applyServer(s, 100);
-  assert(g.feedback().display == Display::Ready);  // absent at boot, not green
-  g.chipChanged(true, 110); noEvent(g);
-  g.chipChanged(false, 120);
-  pop(g, GameEvent::Kind::Capture);
-  assert(g.feedback().display == Display::Ghost);
-  g.chipChanged(true, 130);
-  pop(g, GameEvent::Kind::ChipInserted);
-  noEvent(g);
-  s.role = Role::Ghost;
-  g.applyServer(s, 140);
-  pop(g, GameEvent::Kind::CancelCapture);
-  g.applyServer(s, 150); noEvent(g);  // no repeated role=player
-  s.role = Role::Player;
-  g.applyServer(s, 160);
-  assert(g.feedback().display == Display::Player);
-
-  // Re-removal while cancelling capture must not double-decrement inventory.
-  g.chipChanged(false, 200); pop(g, GameEvent::Kind::Capture);
-  s.role = Role::Ghost; g.applyServer(s, 210);
-  g.chipChanged(true, 220); pop(g, GameEvent::Kind::ChipInserted);
-  pop(g, GameEvent::Kind::CancelCapture);
-  g.chipChanged(false, 230); noEvent(g);
-  s.role = Role::Player; g.applyServer(s, 240);
-  pop(g, GameEvent::Kind::Capture);
-  noEvent(g);
+static void chipChangesNeverRequestRolesOrLife() {
+  for (Role role : {Role::Neutral, Role::Player, Role::Ghost, Role::Tagger}) {
+    for (DeviceState device : {DeviceState::Other, DeviceState::Setting, DeviceState::Ready,
+         DeviceState::Blink, DeviceState::Activate, DeviceState::Exploration, DeviceState::Ended}) {
+      GameModel g(Profile::Origin);
+      g.begin(true, 0);
+      auto s = snapshot(role); s.deviceState = device; s.lifeChip = 1;
+      g.applyServer(s, 10);
+      g.chipChanged(false, 20);
+      assert(!g.chipPresent() && g.server().role == role && g.server().lifeChip == 1);
+      assert(g.feedback().haptic == Haptic::None); noEvent(g);
+      g.chipChanged(true, 30);
+      assert(g.chipPresent() && g.server().role == role && g.server().lifeChip == 1);
+      assert(g.feedback().haptic == Haptic::None); noEvent(g);
+      s.valid = false; g.applyServer(s, 40);
+      g.chipChanged(false, 50);
+      assert(!g.chipPresent()); noEvent(g);  // Observation still updates while offline.
+    }
+  }
 }
 
-static void countAndRevival() {
+static void playerColorWaitsForAuthoritativeRole() {
+  GameModel g(Profile::Origin);
+  FeedbackEngine engine;
+  g.begin(true, 0);
+  auto s = snapshot(Role::Player);
+  s.deviceState = DeviceState::Activate;
+  g.applyServer(s, 10);
+  auto out = engine.update(g.feedback(), 0, false, 10);
+  assert(out.red == 0 && out.green == 64 && out.blue == 0 && out.lit == 4);
+  g.chipChanged(false, 20);
+  noEvent(g);
+  out = engine.update(g.feedback(), 0, false, 20);
+  assert(out.red == 0 && out.green == 64 && out.blue == 0 && out.lit == 4);
+  g.applyServer(s, 30);  // Physical removal cannot override the server role.
+  out = engine.update(g.feedback(), 0, false, 30);
+  assert(out.red == 0 && out.green == 64 && out.blue == 0 && out.lit == 4);
+  g.chipChanged(true, 40);
+  out = engine.update(g.feedback(), 0, false, 40);
+  assert(out.green == 64 && out.blue == 0 && out.lit == 4);
+  s.role = Role::Ghost; s.revivalCount = 2;
+  g.applyServer(s, 50);
+  out = engine.update(g.feedback(), 0, false, 50);
+  assert(out.red == 0 && out.green == 0 && out.blue == 64 && out.lit == 2);
+  noEvent(g);
+  g.chipChanged(false, 60); noEvent(g);
+  s.role = Role::Player; g.applyServer(s, 70);
+  out = engine.update(g.feedback(), 0, false, 70);
+  assert(out.red == 0 && out.green == 64 && out.blue == 0 && out.lit == 4);
+  noEvent(g);  // Server revival while chip is absent never triggers client recapture.
+}
+
+static void countAndServerRevival() {
   GameModel g(Profile::Origin);
   g.begin(false, 0);
   auto s = snapshot();
@@ -127,13 +147,15 @@ static void countAndRevival() {
   pop(g, GameEvent::Kind::SetCount, 4);
   assert(g.canUseLifeDevice());
   g.chipChanged(true, 18200);
-  pop(g, GameEvent::Kind::ChipInserted);
-  noEvent(g);  // cannot revive before is_open
+  noEvent(g);  // Physical observation does not mutate life or role.
   s.revivalCount = 4; s.open = true;
   g.applyServer(s, 18300);
   g.tick(18300);
-  pop(g, GameEvent::Kind::Revive);
-  assert(!g.canUseLifeDevice());
+  noEvent(g);  // Even all revival conditions wait for a server role transition.
+  assert(g.feedback().display == Display::Ghost && !g.canUseLifeDevice());
+  s.role = Role::Player; g.applyServer(s, 18400);
+  assert(g.feedback().display == Display::Player);
+  noEvent(g);
 }
 
 static void foundRetainsChipAndOpen() {
@@ -141,12 +163,12 @@ static void foundRetainsChipAndOpen() {
   g.begin(false, 0);
   auto s = snapshot(); s.sacrificed = true; s.open = true; s.revivalCount = 2;
   g.applyServer(s, 100);
-  g.chipChanged(true, 200); pop(g, GameEvent::Kind::ChipInserted);
+  g.chipChanged(true, 200); noEvent(g);
   g.buttonPressed(300); pop(g, GameEvent::Kind::SetCount, 0);
   assert(g.chipPresent() && !g.canUseLifeDevice());
   s.revivalCount = 0; g.applyServer(s, 500);
   g.tick(12300); pop(g, GameEvent::Kind::SetCount, 4);
-  pop(g, GameEvent::Kind::Revive);
+  noEvent(g);  // Automatic revival belongs to the server.
 }
 
 static void rebootRestoreAndPendingCountOrder() {
@@ -157,7 +179,7 @@ static void rebootRestoreAndPendingCountOrder() {
   g.applyServer(s, 100);
   noEvent(g);  // no new physical insertion delta after reboot
   g.tick(3100); pop(g, GameEvent::Kind::SetCount, 4);
-  pop(g, GameEvent::Kind::Revive);
+  noEvent(g);  // Automatic revival belongs to the server.
 
   GameModel resetting(Profile::Origin);
   resetting.begin(false, 0);
@@ -170,6 +192,19 @@ static void rebootRestoreAndPendingCountOrder() {
   s.revivalCount = 0; resetting.applyServer(s, 3300);
   resetting.tick(6099); assert(resetting.count() == 0);
   resetting.tick(6100); pop(resetting, GameEvent::Kind::SetCount, 1);
+}
+
+static void roleChangeDropsQueuedCounts() {
+  GameModel g(Profile::Origin); g.begin(false, 0);
+  auto s = snapshot(Role::Ghost); g.applyServer(s, 0);
+  g.tick(3000);
+  GameEvent count; assert(g.peekEvent(count) && count.value == 1);
+  s.role = Role::Player; g.applyServer(s, 3100);
+  noEvent(g); assert(g.count() == 0);
+  g.tick(10000); g.buttonPressed(10001); noEvent(g);
+  s.role = Role::Ghost; g.applyServer(s, 11000);
+  g.tick(13999); noEvent(g);
+  g.tick(14000); pop(g, GameEvent::Kind::SetCount, 1);
 }
 
 static void remoteChangesAndFailures() {
@@ -244,14 +279,15 @@ static void explicitPreparationStates() {
       }
     }
   }
-  // A display change out of live play discards an unsubmitted capture safely.
-  GameModel g(Profile::Origin); g.begin(true, 0);
-  auto s = snapshot(Role::Player); s.deviceState = DeviceState::Activate;
-  g.applyServer(s, 0); g.chipChanged(false, 10);
-  s.deviceState = DeviceState::Ready; g.applyServer(s, 20);
+  // A display change out of live play discards an unsubmitted count safely.
+  GameModel g(Profile::Origin); g.begin(false, 0);
+  auto s = snapshot(Role::Ghost); s.deviceState = DeviceState::Activate;
+  g.applyServer(s, 0); g.tick(3000);
+  GameEvent count; assert(g.peekEvent(count) && count.kind == GameEvent::Kind::SetCount);
+  s.deviceState = DeviceState::Ready; g.applyServer(s, 3010);
   noEvent(g); assert(g.feedback().haptic == Haptic::None);
-  s.deviceState = DeviceState::Activate; g.applyServer(s, 30);
-  noEvent(g);  // Returning to active cannot fabricate the earlier physical edge.
+  s.deviceState = DeviceState::Activate; g.applyServer(s, 3020);
+  noEvent(g);  // Returning to active cannot replay the earlier queued count.
 }
 
 static void taggerDisplayAndSafety() {
@@ -287,8 +323,10 @@ static void taggerDisplayAndSafety() {
 int main() {
   trainingBoundaries();
   trainingResetAndBoot();
-  captureAndEarlyReinsert();
-  countAndRevival();
+  chipChangesNeverRequestRolesOrLife();
+  playerColorWaitsForAuthoritativeRole();
+  countAndServerRevival();
+  roleChangeDropsQueuedCounts();
   foundRetainsChipAndOpen();
   rebootRestoreAndPendingCountOrder();
   remoteChangesAndFailures();

@@ -1,4 +1,4 @@
-#include "application.h"
+#include "iotglove.h"
 
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
@@ -6,22 +6,22 @@
 #include <WiFi.h>
 
 #include "battery.h"
+#include "sensor.h"
 #include "feedback.h"
 #include "state_policy.h"
-#include "hardware_config.h"
-#include "glove_network.h"
+#include "library_and_pin.h"
+#include "wifi_client.h"
 #include "peer_state.h"
 #include "ota_request.h"
 #include "link_diagnostics.h"
-#include "remote_console.h"
-#include "remote_console_policy.h"
+#include "telnet.h"
+#include "telnet_policy.h"
 
 namespace {
 using namespace iotglove;
 
 constexpr bool kTraining = IOTGLOVE_TRAINING != 0;
 GameModel game(kTraining ? Profile::Training : Profile::Origin);
-DebouncedInput chipInput, buttonInput;
 FeedbackEngine feedbackEngine;
 BatterySampler battery(IOTGLOVE_BATTERY_DIVIDER_RATIO, IOTGLOVE_BATTERY_CALIBRATION,
                        IOTGLOVE_BATTERY_MIN_MV, IOTGLOVE_BATTERY_MAX_MV);
@@ -190,8 +190,8 @@ void printDiagnostics(uint32_t now) {
       (unsigned long)console.usbDroppedBytes, (unsigned long)console.telnetDroppedBytes,
       (unsigned long)console.rejectedCommands);
   remoteConsoleLogf("[inputs] chip_gpio26=%d button_gpio27=%d chip_debounced=%u button_debounced=%u chip_model=%u\n",
-      digitalRead(IOTGLOVE_CHIP_PIN), digitalRead(IOTGLOVE_BUTTON_PIN),
-      chipInput.value(), buttonInput.value(), game.chipPresent());
+      sensorChipRaw(), sensorButtonRaw(),
+      sensorChipPresent(), sensorButtonDown(), game.chipPresent());
   const ServerSnapshot& server = game.server();
   remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld captures_allowed=%u count=%u server_count=%u sacrificed=%u open=%u device_state=%s\n",
       roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
@@ -489,15 +489,13 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   // Set output latch before enabling the driver: motor OFF and reset idle LOW.
   digitalWrite(IOTGLOVE_MOTOR_PIN, LOW); pinMode(IOTGLOVE_MOTOR_PIN, OUTPUT);
   digitalWrite(IOTGLOVE_BEETLE_RESET_PIN, LOW); pinMode(IOTGLOVE_BEETLE_RESET_PIN, OUTPUT);
-  pinMode(IOTGLOVE_CHIP_PIN, INPUT_PULLUP);
-  pinMode(IOTGLOVE_BUTTON_PIN, INPUT_PULLUP);
+  sensorConfigurePins();
   Serial.begin(115200);
   beetleSerial.begin(IOTGLOVE_UART_BAUD, SERIAL_8N1, IOTGLOVE_UART_RX, IOTGLOVE_UART_TX);
   pixels.begin(); pixels.clear(); pixels.show();
   const uint32_t now = millis();
-  chipInput.begin(digitalRead(IOTGLOVE_CHIP_PIN) == LOW, now);
-  buttonInput.begin(digitalRead(IOTGLOVE_BUTTON_PIN) == LOW, now);
-  game.begin(chipInput.value(), now);
+  sensorBegin(now);
+  game.begin(sensorChipPresent(), now);
   bootId = esp_random(); requestSequence = esp_random();
   if (!remoteConsoleBegin(firmware, partition, bootId, !kTraining))
     remoteConsoleLogf("[remote] initialization failed; USB diagnostics remain available\n");
@@ -508,7 +506,10 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   remoteConsoleLogf("[glove] firmware=%d profile=%s\n", firmware, kTraining ? "training" : "origin");
   diagnosticLog.append("[diag] TTGO console ready: s/? status, p UART probe, b Beetle reset, u OTA\n");
   if (!battery.configured()) remoteConsoleLogf("[battery] Disabled: configure measured ADC divider and battery range\n");
-  if (!kTraining) networkReady = networkBegin(firmware, partition);
+  if (!kTraining) {
+    networkReady = networkBegin(firmware, partition);
+    if (networkReady) networkReportChip(sensorChipPresent());
+  }
   hello(nextId()); sendMode();
 }
 
@@ -517,8 +518,8 @@ void gloveLoop() {
   pollPeer(now);
   pollNetwork(now);
   if (!kTraining) reportServerChanges(now);
-  if (chipInput.update(digitalRead(IOTGLOVE_CHIP_PIN) == LOW, now)) game.chipChanged(chipInput.value(), now);
-  if (buttonInput.update(digitalRead(IOTGLOVE_BUTTON_PIN) == LOW, now) && buttonInput.value()) game.buttonPressed(now);
+  sensorPoll(game, now);
+  if (!kTraining && networkReady) networkReportChip(sensorChipPresent());
   game.tick(now);
   // Read-only status and bounded PING probes work without a server connection.
   for (unsigned n = 0; n < 8 && Serial.available(); ++n) {
