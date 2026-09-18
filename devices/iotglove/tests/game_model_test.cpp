@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <initializer_list>
 
 using namespace iotglove;
 
@@ -220,6 +221,69 @@ static void debounceAndOverflow() {
   noEvent(g);
 }
 
+static void explicitPreparationStates() {
+  for (Role role : {Role::Neutral, Role::Player, Role::Ghost, Role::Tagger}) {
+    for (Phase phase : {Phase::Setting, Phase::Ready, Phase::Active}) {
+      for (DeviceState device : {DeviceState::Setting, DeviceState::Ready}) {
+        GameModel g(Profile::Origin);
+        g.begin(false, 0);
+        auto s = snapshot(role);
+        s.phase = phase; s.deviceState = device; s.connectionEpoch = 7;
+        s.lifeChip = 1; s.sacrificed = true; s.open = true;
+        g.applyServer(s, 10);
+        auto f = g.feedback();
+        assert(f.display == (device == DeviceState::Setting ? Display::Setting : Display::Ready));
+        assert(f.lit == 3 && f.stateValid && f.stateEpoch == 7);
+        assert(f.role == role && f.phase == phase && f.deviceState == device);
+        g.chipChanged(true, 20);
+        assert(g.feedback().lit == 4);
+        g.chipChanged(false, 30);
+        g.buttonPressed(40); g.tick(10000);
+        assert(g.feedback().lit == 3 && g.count() == 0);
+        noEvent(g);  // Preparation edges/timers never mutate life_chip or role.
+      }
+    }
+  }
+  // A display change out of live play discards an unsubmitted capture safely.
+  GameModel g(Profile::Origin); g.begin(true, 0);
+  auto s = snapshot(Role::Player); s.deviceState = DeviceState::Activate;
+  g.applyServer(s, 0); g.chipChanged(false, 10);
+  s.deviceState = DeviceState::Ready; g.applyServer(s, 20);
+  noEvent(g); assert(g.feedback().haptic == Haptic::None);
+  s.deviceState = DeviceState::Activate; g.applyServer(s, 30);
+  noEvent(g);  // Returning to active cannot fabricate the earlier physical edge.
+}
+
+static void taggerDisplayAndSafety() {
+  for (Phase phase : {Phase::Setting, Phase::Ready, Phase::Active}) {
+    GameModel g(Profile::Origin); g.begin(false, 0);
+    auto s = snapshot(Role::Tagger); s.phase = phase;
+    s.deviceState = DeviceState::Blink; s.connectionEpoch = 1;
+    g.applyServer(s, 10);
+    auto f = g.feedback();
+    assert(f.display == Display::TaggerBlink && f.lit == 4 && f.stateValid);
+    s.deviceState = DeviceState::Activate; g.applyServer(s, 20);
+    f = g.feedback(); assert(f.display == Display::TaggerActive && f.stateEpoch == 1);
+    s.deviceState = DeviceState::Other; g.applyServer(s, 30);
+    assert(g.feedback().display != Display::TaggerBlink);  // Unknown is not blink.
+    noEvent(g);
+  }
+  GameModel g(Profile::Origin); g.begin(true, 0);
+  auto s = snapshot(Role::Tagger); s.deviceState = DeviceState::Blink;
+  s.connectionEpoch = 9;
+  g.applyServer(s, 0); assert(g.feedback().display == Display::TaggerBlink);
+  s.valid = false; g.applyServer(s, 10);
+  auto f = g.feedback(); assert(!f.stateValid && f.display == Display::Ready);
+  s.valid = true; s.connectionEpoch = 10; g.applyServer(s, 20);
+  f = g.feedback(); assert(f.stateValid && f.stateEpoch == 10);
+  for (Phase phase : {Phase::Exploration, Phase::Ended}) {
+    s.phase = phase; g.applyServer(s, 30);
+    f = g.feedback();
+    assert(f.display == (phase == Phase::Ended ? Display::Ended : Display::Ready));
+    g.chipChanged(false, 40); g.buttonPressed(50); g.tick(10000); noEvent(g);
+  }
+}
+
 int main() {
   trainingBoundaries();
   trainingResetAndBoot();
@@ -229,5 +293,7 @@ int main() {
   rebootRestoreAndPendingCountOrder();
   remoteChangesAndFailures();
   debounceAndOverflow();
+  explicitPreparationStates();
+  taggerDisplayAndSafety();
   puts("PASS: production game model, debounce, training, count, reconciliation and rollover");
 }

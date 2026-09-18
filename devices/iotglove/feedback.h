@@ -1,6 +1,6 @@
 #pragma once
 
-#include "game_model.h"
+#include "feedback_config.h"
 
 namespace iotglove {
 
@@ -12,13 +12,11 @@ struct Outputs {
 
 class FeedbackEngine {
  public:
-  Outputs update(const Feedback& state, uint8_t vibe, bool locationFresh, uint32_t now) {
-    if (state.haptic != Haptic::None) {
-      pattern_ = state.haptic;
-      patternStart_ = now;
-    }
-    if (state.display == Display::Setting || state.display == Display::Ready ||
-        state.display == Display::Ended) pattern_ = Haptic::None;
+  explicit FeedbackEngine(const feedback_config::Settings& settings = feedback_config::Settings{})
+      : settings_(settings) {}
+
+  Outputs update(const Feedback& state, uint8_t vibe, bool locationFresh, uint32_t now,
+                 bool suppressed = false) {
     Outputs out;
     out.lit = state.lit;
     switch (state.display) {
@@ -27,27 +25,97 @@ class FeedbackEngine {
       case Display::Ended: out.red = 64; break;
       case Display::Player: out.green = 64; break;
       case Display::Ghost: out.blue = 64; break;
-      case Display::Tagger: out.red = 48; out.blue = 64; break;
-      case Display::TaggerActive:
-        if ((now / 500U) % 2U == 0) { out.red = 48; out.blue = 64; }
+      case Display::Tagger:
+      case Display::TaggerActive: out.red = 48; out.blue = 64; break;
+      case Display::TaggerBlink:
+        if (display_ != Display::TaggerBlink) blinkStart_ = now;
+        if ((uint32_t(now - blinkStart_) / 500U) % 2U == 0) { out.red = 48; out.blue = 64; }
         break;
     }
-    const uint32_t elapsed = now - patternStart_;
-    if (pattern_ == Haptic::Removed && elapsed >= 300U) pattern_ = Haptic::None;
-    if (pattern_ == Haptic::Found && elapsed >= 400U) pattern_ = Haptic::None;
-    if (pattern_ == Haptic::Removed) out.motor = true;
-    else if (pattern_ == Haptic::Found) out.motor = elapsed < 150U || elapsed >= 250U;
-    else if (locationFresh && state.display == Display::Player) {
-      // Initial field-tuning policy: same room double pulse; adjacent single.
-      // Event haptics always override proximity, and expired location is silent.
-      if (vibe == 3) { const uint32_t t = now % 1000U; out.motor = t < 100U || (t >= 200U && t < 300U); }
-      else if (vibe == 1) out.motor = now % 2000U < 100U;
+
+    if (!state.stateValid || suppressed) {
+      cancel();
+      pendingGhostAck_ = false;
+      known_ = state.stateValid;
+      remember(state);
+      return out;
+    }
+    const bool baseline = !known_ || state.stateEpoch != epoch_;
+    const bool changed = !baseline && (state.role != role_ ||
+        state.deviceState != deviceState_ || state.phase != phase_);
+    const bool removedAcknowledged = changed && pendingGhostAck_ &&
+        role_ == Role::Player && state.role == Role::Ghost &&
+        state.deviceState == deviceState_ && state.phase == phase_;
+    if (baseline) {
+      cancel();
+      pendingGhostAck_ = false;
+    }
+    if (pattern_.total && uint32_t(now - patternStart_) >= pattern_.total) cancel();
+    // Stop any preceding activity before a new setting/ready/end notification.
+    // This is an edge, not a per-poll cancellation of the new notification.
+    if ((changed && quiescent(state)) ||
+        (state.display == Display::Ended && display_ != Display::Ended)) cancel();
+    if (changed) pendingGhostAck_ = false;
+
+    if (state.haptic != Haptic::None) {
+      const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
+      start(choice, Source::Event, now);
+      // A capture's later server acknowledgement must not repeat its vibration.
+      if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
+          state.phase == Phase::Active) pendingGhostAck_ = true;
+    } else if (changed && !removedAcknowledged && source_ != Source::Event) {
+      // Consume transitions during explicit events; never queue a stale replay.
+      start(feedback_config::forState(state, settings_), Source::State, now);
+    }
+    known_ = true;
+    remember(state);
+
+    if (pattern_.total) {
+      // The OFF gap is part of the pattern and also overrides proximity pulses.
+      out.motor = feedback_config::motorOn(pattern_, uint32_t(now - patternStart_));
+    } else if (locationFresh && state.display == Display::Player) {
+      if (vibe == 3) {
+        const uint32_t t = now % 1000U;
+        out.motor = t < 100U || (t >= 200U && t < 300U);
+      } else if (vibe == 1) out.motor = now % 2000U < 100U;
     }
     return out;
   }
+
  private:
-  Haptic pattern_ = Haptic::None;
+  enum class Source : uint8_t { None, State, Event };
+  feedback_config::Settings settings_;
+  feedback_config::Schedule pattern_;
   uint32_t patternStart_ = 0;
+  uint32_t blinkStart_ = 0;
+  Source source_ = Source::None;
+  bool known_ = false;
+  bool pendingGhostAck_ = false;
+  Role role_ = Role::Neutral;
+  DeviceState deviceState_ = DeviceState::Other;
+  Phase phase_ = Phase::Unknown;
+  Display display_ = Display::Setting;
+  uint32_t epoch_ = 0;
+
+  static bool quiescent(const Feedback& state) {
+    return state.phase == Phase::Setting || state.phase == Phase::Ready ||
+        state.phase == Phase::Exploration || state.phase == Phase::Ended ||
+        state.deviceState == DeviceState::Setting || state.deviceState == DeviceState::Ready ||
+        state.deviceState == DeviceState::Exploration || state.deviceState == DeviceState::Ended;
+  }
+  void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; }
+  void start(feedback_config::Pattern pattern, Source source, uint32_t now) {
+    pattern_ = feedback_config::schedule(pattern, settings_);
+    source_ = pattern_.total ? source : Source::None;
+    patternStart_ = now;
+  }
+  void remember(const Feedback& state) {
+    role_ = state.role;
+    deviceState_ = state.deviceState;
+    phase_ = state.phase;
+    display_ = state.display;
+    epoch_ = state.stateEpoch;
+  }
 };
 
 }  // namespace iotglove

@@ -30,7 +30,7 @@ struct Location { char room[32]; uint32_t sampledAt; };
 struct Battery { float volts; uint32_t sampledAt; };
 struct OtaRequest { uint32_t targetVersion = 0; char sourceCommand[40] = {}; };
 int version, partitionVersion;
-uint32_t bootId, generation = 0;
+uint32_t bootId, generation = 0, connectionEpoch = 0;
 bool hadValid = false;
 ServerSnapshot latest;
 char lastDevice[24] = {};
@@ -74,15 +74,7 @@ bool decodeSnapshot(ServerSnapshot& out) {
       !copyString(my["game_state"], game, sizeof(game)) ||
       !copyString(my["device_state"], lastDeviceState, sizeof(lastDeviceState)) ||
       !copyString(my["role"], role, sizeof(role))) return false;
-  if (!strcmp(game, "setting")) out.phase = Phase::Setting;
-  else if (!strcmp(game, "ready")) out.phase = Phase::Ready;
-  else if (!strcmp(game, "activate")) out.phase = Phase::Active;
-  else if (!strcmp(game, "stop") || !strcmp(game, "end")) out.phase = Phase::Ended;
-  else return false;
-  // Photo/exploration and end signals take priority over a stale activate game_state.
-  if (!strcmp(lastDeviceState, "photo") || !strcmp(lastDeviceState, "exploration")) out.phase = Phase::Exploration;
-  if (!strcmp(lastDeviceState, "win") || !strcmp(lastDeviceState, "lose") ||
-      !strcmp(lastDeviceState, "stop")) out.phase = Phase::Ended;
+  if (!decodeServerStates(game, lastDeviceState, out)) return false;
   if (!strcmp(role, "player")) out.role = Role::Player;
   else if (!strcmp(role, "tagger")) out.role = Role::Tagger;
   else if (!strcmp(role, "ghost") || !strcmp(role, "revival")) out.role = Role::Ghost;
@@ -107,13 +99,16 @@ bool decodeSnapshot(ServerSnapshot& out) {
     out.otaTtgoVersion = otaCommand.ttgo.version;
     out.otaBeetleVersion = otaCommand.beetle.version;
   }
-  out.taggerActive = out.role == Role::Tagger && !strcmp(lastDeviceState, "activate");
   out.capturesAllowed = false;
   taggerName[0] = 0;
   copyString(my["tagger_name"], taggerName, sizeof(taggerName));
   // The API has no game epoch. Use a local generation, invalidated on any loss
   // of synchronization or phase/device change. Never replay across a reconnect.
-  if (!hadValid || strcmp(lastDevice, out.deviceName) || out.phase != latest.phase) ++generation;
+  const bool connectionChanged = !hadValid || strcmp(lastDevice, out.deviceName);
+  if (connectionChanged) ++connectionEpoch;
+  out.connectionEpoch = connectionEpoch;
+  if (connectionChanged || out.phase != latest.phase ||
+      gameMutationsAllowed(out) != gameMutationsAllowed(latest)) ++generation;
   snprintf(out.session, sizeof(out.session), "%08lx-%lu", (unsigned long)bootId, (unsigned long)generation);
   strcpy(lastDevice, out.deviceName);
   out.receivedAtMs = millis(); out.valid = true;

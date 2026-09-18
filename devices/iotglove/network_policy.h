@@ -1,10 +1,11 @@
 #pragma once
 #include "game_model.h"
+#include "state_policy.h"
 #include <string.h>
 
 namespace iotglove {
 inline bool sameEventSession(const GameEvent& e, const ServerSnapshot& s) {
-  return s.valid && s.phase == Phase::Active &&
+  return s.valid && gameMutationsAllowed(s) &&
          strcmp(e.session, s.session) == 0 && strcmp(e.deviceName, s.deviceName) == 0;
 }
 inline bool commandAllowed(const GameEvent& e, const ServerSnapshot& s) {

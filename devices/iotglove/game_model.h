@@ -8,7 +8,8 @@ namespace iotglove {
 enum class Profile : uint8_t { Origin, Training };
 enum class Phase : uint8_t { Unknown, Setting, Ready, Exploration, Active, Ended };
 enum class Role : uint8_t { Neutral, Player, Tagger, Ghost };
-enum class Display : uint8_t { Setting, Ready, Player, Ghost, Tagger, TaggerActive, Ended };
+enum class DeviceState : uint8_t { Other, Setting, Ready, Blink, Activate, Exploration, Ended };
+enum class Display : uint8_t { Setting, Ready, Player, Ghost, Tagger, TaggerActive, TaggerBlink, Ended };
 enum class Haptic : uint8_t { None, Removed, Found };
 
 // Owned by the network task, copied through a queue. No String/JSON crosses tasks.
@@ -19,12 +20,14 @@ struct ServerSnapshot {
   char deviceName[24] = {};
   Phase phase = Phase::Unknown;
   Role role = Role::Neutral;
+  DeviceState deviceState = DeviceState::Other;
+  // Unlike mutation sessions, this epoch does not change for a game phase change.
+  uint32_t connectionEpoch = 0;
   uint8_t revivalCount = 0;
   uint32_t stepSeconds = 0;
   bool sacrificed = false;
   bool open = false;
   bool capturesAllowed = false;
-  bool taggerActive = false;
   uint8_t vibe = 0;
   int32_t lifeChip = 0;
   uint8_t brightness = 100;
@@ -50,6 +53,12 @@ struct Feedback {
   Display display = Display::Setting;
   uint8_t lit = 4;
   Haptic haptic = Haptic::None;
+  // Semantic identity excludes physical chip and progress changes.
+  Role role = Role::Neutral;
+  DeviceState deviceState = DeviceState::Other;
+  Phase phase = Phase::Unknown;
+  bool stateValid = false;
+  uint32_t stateEpoch = 0;
 };
 
 // Debounces a physical level; update() returns exactly one event per stable edge.
