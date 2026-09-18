@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Compile real relay/tag/local-timing logic against deterministic host fakes.
+
+No Arduino SDK or hardware is required. Generated includes and binaries live in
+TemporaryDirectory; production .ino files are never copied into the repository.
+"""
+from pathlib import Path
+import os
+import re
+import subprocess
+import tempfile
+
+TESTS = Path(__file__).resolve().parent
+DEVICE = TESTS.parent
+
+
+def extract_functions(source: Path, names: set[str]) -> str:
+    text = source.read_text()
+    # Mask strings/comments while retaining positions to match balanced braces.
+    masked = re.sub(
+        r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+        lambda match: re.sub(r"[^\n]", " ", match.group()),
+        text,
+        flags=re.S,
+    )
+    definitions = []
+    found = set()
+    for match in re.finditer(r"^(?:void|unsigned long)\s+(\w+)\([^;\n]*\)[^\n]*\n\{", masked, re.M):
+        if match[1] not in names:
+            continue
+        found.add(match[1])
+        start = masked.index("{", match.start())
+        depth = 1
+        end = start + 1
+        while depth:
+            depth += (masked[end] == "{") - (masked[end] == "}")
+            end += 1
+        line = text.count("\n", 0, match.start()) + 1
+        definitions.append(f'#line {line} "{source}"\n{text[match.start():end]}\n')
+    if found != names:
+        raise RuntimeError(f"Missing production functions: {names - found}")
+    return "\n".join(definitions)
+
+
+def main() -> None:
+    cases = [
+        "approved", "http200_without_open", "situation_failure", "deferred_approval",
+        "reopen_ghost", "reopen_survivor", "is_open_blocked", "tagger",
+        "admin_tagger", "admin_ready", "setting", "invalid_tag", "timeout",
+    ]
+    with tempfile.TemporaryDirectory(prefix="revival-host-tests-") as directory:
+        build = Path(directory)
+        names = {"CardChecking", "SolenoidInit", "SolenoidOn", "SolenoidOff", "SolenoidPulse", "NeoBlinkPurple"}
+        (build / "sensor_under_test.inc").write_text(extract_functions(DEVICE / "sensor.ino", names))
+        constants = {"SOLENOID_PIN", "SOLENOID_PULSE_MS", "SOLENOID_REVIVAL_PULSE_MS",
+                     "WIFI_POLL_INTERVAL_DEFAULT_MS", "WIFI_POLL_INTERVAL_ACTIVATE_MS"}
+        defines = []
+        for line in (DEVICE / "library_and_pin.h").read_text().splitlines():
+            match = re.match(r"#define\s+(\w+)\b", line)
+            if match and match[1] in constants:
+                defines.append(line)
+        if len(defines) != len(constants):
+            raise RuntimeError("Missing production relay/poll constants")
+        (build / "production_constants.inc").write_text("\n".join(defines) + "\n")
+        binary = build / "revival_host_tests"
+        subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                        "-I", str(build), "-I", str(DEVICE), str(TESTS / "host_tests.cpp"),
+                        "-o", str(binary)], check=True)
+        for case in cases:
+            subprocess.run([str(binary), case], check=True)
+    print(f"PASS: {len(cases)} production-path regression cases")
+
+
+if __name__ == "__main__":
+    main()

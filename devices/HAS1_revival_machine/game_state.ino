@@ -63,9 +63,6 @@ void DataChange()
         if (millis() - ghost_tag_start_ms > GHOST_OPEN_TIMEOUT_MS)
         {
             Serial.println("[GhostTiming] TIMEOUT waiting for open (" + String(GHOST_OPEN_TIMEOUT_MS) + "ms)");
-            SendGhostTimingToSheet(ghost_pending_tag_user, millis() - ghost_tag_start_ms, ghost_poll_count,
-                                   ghost_situation_ms, ghost_situation_ok, ghost_rssi_at_tag,
-                                   WiFi.RSSI(), ESP.getFreeHeap(), "timeout");
             ghost_open_pending = false;
         }
     }
@@ -114,24 +111,21 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "open")
         {
-            // 반드시 SolenoidPulse(5초 블로킹 delay) *이전*에 측정을 끊는다 - 그 뒤에서 재면
-            // 실제보다 5초 늦게 관측된다(WIFI_POLL_INTERVAL_ACTIVATE_MS 주석에 적힌 예전 실수 반복 방지).
+            NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
+            int rssiOpen = WiFi.RSSI();
+            uint32_t freeHeap = ESP.getFreeHeap();
+            // 승인 후에는 콘솔 출력보다 먼저 연다. HIGH 직후 시각을 반환하므로
+            // 로그를 5초 펄스 이후에 처리해도 total_ms에는 통전 시간이 섞이지 않는다.
+            unsigned long relayOnMs = SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);
             if (ghost_open_pending)
             {
-                unsigned long totalMs = millis() - ghost_tag_start_ms;
-                int rssiOpen = WiFi.RSSI();
-                uint32_t freeHeap = ESP.getFreeHeap();
-                Serial.println("[GhostTiming] OPEN confirmed: " + String(totalMs) + "ms polls=" + String(ghost_poll_count) +
-                               " situation=" + String(ghost_situation_ms) + "ms rssi_tag=" + String(ghost_rssi_at_tag) +
-                               " rssi_open=" + String(rssiOpen) + " heap=" + String(freeHeap));
-                SendGhostTimingToSheet(ghost_pending_tag_user, totalMs, ghost_poll_count,
-                                       ghost_situation_ms, ghost_situation_ok, ghost_rssi_at_tag,
-                                       rssiOpen, freeHeap, "");
+                unsigned long totalMs = relayOnMs - ghost_tag_start_ms;
                 ghost_open_pending = false;
+                Serial.println("[GhostTiming] RELAY ON: " + String(totalMs) + "ms polls=" + String(ghost_poll_count) +
+                               " role_receive=" + String(ghost_role_receive_ms) + "ms situation=" + String(ghost_situation_ms) + "ms rssi_tag=" + String(ghost_rssi_at_tag) +
+                               " rssi_open=" + String(rssiOpen) + " heap=" + String(freeHeap));
             }
 
-            NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
-            SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);  // 승인 확정 시점에 실제로 문을 연다
             NeoFunc = NeoNo;
             SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 이미 확정됐으니 폴링 다시 완화
 

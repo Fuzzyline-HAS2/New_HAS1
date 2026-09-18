@@ -170,6 +170,9 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     return;
   }
 
+  // 역할 조회와 승인 왕복까지 포함해 실제 릴레이 반응시간을 잰다.
+  const unsigned long tagDetectedMs = millis();
+
   // tagger(사용 불가) 상태: 생존자든 유령이든 태그하면 역할 상관없이 보라색으로
   // 3번 점멸만 하고(사용 불가 알림) 열리거나 서버로 아무것도 보내지 않는다.
   if ((String)(const char *)my["device_state"] == "tagger")
@@ -222,19 +225,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // 생명장치를 이미 연 적 있으면) 서버로 보내지 않고 사용 불가로 처리한다.
   // device_state=="tagger"와 달리 여기서는 점멸 후에도 device_state가 계속 "activate"라
   // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 보라색에 머무르게 되므로 복원한다.
+  const unsigned long roleReceiveStartMs = millis();
   has2wifi.Receive(tagUser);
+  const unsigned long roleReceiveMs = millis() - roleReceiveStartMs;
   String tag_role = (String)(const char *)tag["role"];
   Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role);
   if ((int)tag["is_open"] != 0)
   {
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
-    // is_open 여부와 무관하게 유령 태그 이벤트는 구글시트에 남긴다 - 서버로는 안 보내고
-    // (아래 로직 스킵) 여기서 바로 1회성으로 기록. RSSI/heap만 알 수 있고 situation/open
-    // 관련 값은 의미가 없으므로 0/false로, note로 이 경로임을 남긴다.
-    if (tag_role == "ghost")
-    {
-      SendGhostTimingToSheet(tagUser, 0, 0, 0, false, WiFi.RSSI(), 0, ESP.getFreeHeap(), "is_open_blocked");
-    }
     NeoBlinkPurple(3);
     NeopixelSet(yellow);  // activate 상태 색으로 복원
     return;
@@ -246,14 +244,14 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   Serial.println("[RFID] Tag detected - sending situation to server: " + tagUser);
   last_open_tag_user = tagUser;  // DataChange()에서 open 확정 시 이 iotGlove의 is_open을 true로 쓰기 위해 기억
 
-  // 유령 태그 -> open 확정까지 소요시간 실측 시작 (ghost_timing.ino). 측정 종료는
-  // game_state.ino의 device_state=="open" 분기에서, SolenoidPulse 5초 delay 이전에 끊는다.
+  // 유령 태그 -> 실제 릴레이 HIGH까지 측정. 사용자 조회 이전 시각을 사용하고,
+  // game_state.ino에서 SolenoidPulse가 반환하는 HIGH 시각으로 종료한다.
   // role=="ghost"일 때만 기록한다 - 생존자/술래가 태그해도 서버가 open을 안 주는 게
   // 정상 동작이라, 이 경우까지 재면 매번 타임아웃으로 잡혀 로그가 오염된다.
   if (tag_role == "ghost")
   {
-    ghost_pending_tag_user = tagUser;
-    ghost_tag_start_ms = millis();
+    ghost_tag_start_ms = tagDetectedMs;
+    ghost_role_receive_ms = roleReceiveMs;
     ghost_poll_count = 0;
     ghost_rssi_at_tag = WiFi.RSSI();
     ghost_open_pending = true;
@@ -266,7 +264,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   unsigned long situationStartMs = millis();
   bool situation_sent = has2wifi.Situation(tagUser, "revival_machine");
   ghost_situation_ms = millis() - situationStartMs;
-  ghost_situation_ok = situation_sent;
   Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL") +
                  " took=" + String(ghost_situation_ms) + "ms");
 
@@ -400,11 +397,13 @@ void SolenoidPulse()
   SolenoidPulse(SOLENOID_PULSE_MS);
 }
 
-void SolenoidPulse(unsigned long ms)
+unsigned long SolenoidPulse(unsigned long ms)
 {
   SolenoidOn();
+  const unsigned long relayOnMs = millis();
   delay(ms);
   SolenoidOff();
+  return relayOnMs;
 }
 
 //******************************************* Neopixel *******************************************
