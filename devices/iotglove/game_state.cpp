@@ -1,4 +1,4 @@
-#include "game_model.h"
+#include "game_state.h"
 #include "state_policy.h"
 
 #include <string.h>

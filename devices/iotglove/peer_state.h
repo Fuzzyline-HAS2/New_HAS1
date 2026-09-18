@@ -1,7 +1,7 @@
 #pragma once
 
 #include <IoTGloveProtocol.h>
-#include "hardware_config.h"
+#include "library_and_pin.h"
 
 namespace iotglove {
 

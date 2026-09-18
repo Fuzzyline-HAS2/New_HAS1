@@ -1,4 +1,4 @@
-#include "application.h"
+#include "iotglove.h"
 
 // SecureOTA CI increments the sketch version before compile/sign/release.
 #define FIRMWARE_VER 5

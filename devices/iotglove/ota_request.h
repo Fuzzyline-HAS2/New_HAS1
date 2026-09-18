@@ -1,7 +1,7 @@
 #pragma once
 
-#include "game_model.h"
-#include "hardware_config.h"
+#include "game_state.h"
+#include "library_and_pin.h"
 #include <string.h>
 
 namespace iotglove {

@@ -1,6 +1,6 @@
-#include "glove_network.h"
+#include "wifi_client.h"
 #include "network_policy.h"
-#include "hardware_config.h"
+#include "library_and_pin.h"
 #include "secrets.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -8,7 +8,7 @@
 #include <SecureOTA.h>
 #include <IoTGloveOta.h>
 #include <IoTGloveOtaClient.h>
-#include "remote_console.h"
+#include "telnet.h"
 #include <WiFi.h>
 #include <atomic>
 #include <errno.h>

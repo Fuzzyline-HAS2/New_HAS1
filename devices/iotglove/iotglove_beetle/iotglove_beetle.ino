@@ -1,6 +1,6 @@
 #define FIRMWARE_VER 3
 #define PARTITION_VER 1
-#include "beetle.h"
+#include "iotglove_beetle.h"
 #include <esp_system.h>
 
 namespace beetle {

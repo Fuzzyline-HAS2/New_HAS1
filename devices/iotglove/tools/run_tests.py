@@ -25,7 +25,7 @@ def main():
                 args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
                 "-I", str(ROOT / "libraries" / "IoTGloveProtocol" / "src"),
                 "-I", str(GLOVE), str(source),
-                str(GLOVE / "game_model.cpp"), "-o", str(binary),
+                str(GLOVE / "game_state.cpp"), "-o", str(binary),
             ]
             print(f"Host test: {source.name}", flush=True)
             subprocess.run(command, check=True)

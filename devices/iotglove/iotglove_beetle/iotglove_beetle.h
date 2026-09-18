@@ -7,7 +7,7 @@
 #include <IoTGloveDiagnostics.h>
 #include <atomic>
 #include <esp_task_wdt.h>
-#include "hardware_config.h"
+#include "library_and_pin.h"
 #include "beacon_map.h"
 
 namespace beetle {

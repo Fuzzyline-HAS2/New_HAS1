@@ -1,5 +1,22 @@
 # Beetle ESP32-C3
 
+The sketch folder and entry point remain `iotglove_beetle/iotglove_beetle.ino`.
+File names follow the repository's device layout while each `.cpp` compiles
+independently through explicit header declarations.
+
+| File | Role |
+| --- | --- |
+| `iotglove_beetle.ino` | Versions, setup/loop, reset and watchdog coordination |
+| `iotglove_beetle.h` | Shared module declarations and types |
+| `library_and_pin.h` | Pins, UART speed and timeout constants |
+| `ble_location.cpp`, `beacon_map.h` | BLE collection and explicit room mappings |
+| `serial_communication.cpp` | UART framing and command handling |
+| `diagnostics.cpp` | Bounded typed diagnostic log queue |
+| `ota.cpp`, `ota_record.h` | OTA worker and persistent request/result state |
+
+This file organization preserves board pins, firmware/partition versions,
+signing configuration and the `iotglove_beetle` release target.
+
 UART RX6/TX5, reset request input GPIO1 with pull-down, 115200 8N1. The TTGO owns
 the active HIGH reset pulse. Beetle must see LOW for 50 ms after boot to arm; a
 HIGH of at least 20 ms latches a request. After OTA is idle, the loop stops feeding

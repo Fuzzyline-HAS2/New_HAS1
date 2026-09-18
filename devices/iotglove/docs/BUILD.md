@@ -12,6 +12,12 @@ ESP32 Arduino core는 **3.3.11**을 사용한다. [공유 매핑](../../../scrip
 
 두 보드는 `min_spiffs`의 1,966,080-byte OTA 앱 슬롯을 사용한다. Beetle은 ESP32C3 Dev Module, 160MHz, 4MB, USB CDC enabled로 빌드한다. [DFRobot 보드 문서](https://wiki.dfrobot.com/dfr0868/)의 C3/4MB/USB 정보를 바탕으로 core 3.3.11의 `boards.txt` 메뉴를 확인했다. 첫 USB 설치 때 동일 파티션으로 설치해야 한다.
 
+## 소스 파일과 독립 컴파일
+
+TTGO의 `iotglove.ino`는 버전과 `setup()`/`loop()` 진입점을 유지한다. `iotglove.cpp`, `sensor.cpp`, `game_state.cpp`, `wifi.cpp`, `telnet.cpp`는 각각 독립 컴파일되며 헤더로 선언을 공유한다. 기존 장치의 `.ino` 기능 탭과 역할·이름을 맞춘 것이며, `.cpp`를 include하거나 `.ino`로 결합하지 않는다. 서버 인터페이스 헤더는 공식 `WiFi.h`와 이름이 겹치지 않는 `wifi_client.h`다.
+
+Beetle은 `iotglove_beetle.ino`, `iotglove_beetle.h`, `library_and_pin.h`와 해당 폴더의 `.cpp` 파일을 별도로 컴파일한다. TTGO 빌드에 Beetle 소스를 포함하지 않는다. 두 보드 공용 `IoTGloveProtocol` 라이브러리는 기존처럼 명시적으로 제공한다. 호스트 테스트 러너는 같은 `game_state.cpp`를 링크한다. 파일명 정리는 위 스케치 경로·FQBN·Release 태그·버전 증가 규칙에 영향을 주지 않는다.
+
 ## 배포 없는 로컬 검증
 
 저장소 루트에서 실행한다. Python 3, C++17 컴파일러, Git, Arduino CLI가 필요하다.

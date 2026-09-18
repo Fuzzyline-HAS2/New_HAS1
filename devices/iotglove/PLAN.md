@@ -124,41 +124,56 @@ ESP32 core 3.3.11의 보정된 `analogReadMilliVolts()`와 검증된 분압비�
 
 기존 글러브는 `battery_remaining`에 전압(V, 소수 2자리)을 보고하고 현재 서버는 실수로 저장한다. 서버 문서의 % 표기와는 차이가 있으므로 **전압 보고 호환을 기본안**으로 두고 단위를 명시한다. 잔량 %는 배터리 특성/운영 화면 요구를 확인한 후 별도 추정값으로 검토한다. 주기는 기존 60초를 시작값으로 검토하며 훈련소 독립 모드는 로컬 측정만 한다.
 
-## 4. 디렉터리와 빌드 구조 제안
+## 4. 현재 디렉터리와 빌드 구조
 
-TTGO는 기존 저장소처럼 장치 루트의 Arduino 스케치로 유지하고, Beetle은 고유한 이름의 별도 스케치로 둔다. 아래는 최초 구조 제안이다. 실제 구현은 Arduino 전처리 충돌을 줄이기 위해 `application.cpp`, `game_model.cpp`, `glove_network.cpp` 등으로 나누었으며 [README](README.md)에 실제 파일을 정리했다.
+2026-09-18 현재 구현 구조다. TTGO는 장치 루트의 Arduino 스케치로, Beetle은 고유 이름의 별도 스케치로 유지한다. 기존 장치에서 쓰는 `library_and_pin`, `sensor`, `game_state`, `wifi`, `telnet` 이름에 기능을 대응시키되, 실제 구현은 `.cpp` 독립 컴파일을 유지한다. 본게임·훈련·소생 타이머는 `game_state.cpp`, 출력·UART·순차 OTA 조정은 `iotglove.cpp`에서 연결한다.
 
 ```text
 devices/iotglove/
 ├── PLAN.md
 ├── README.md
 ├── iotglove.ino                 # TTGO 진입점, FIRMWARE_VER/PARTITION_VER
-├── iotglove.h                   # 상태/이벤트 타입과 인터페이스
-├── library_and_pin.h            # TTGO 핀과 라이브러리
-├── hardware_config.h            # 확정 하드웨어 설정
-├── sensor.ino                   # 칩/버튼 디바운스 및 이벤트
-├── game_state.ino               # 본게임 상태 처리
-├── training.ino                 # 독립 훈련소 규칙
-├── feedback.ino                 # LED/비차단 진동
-├── battery.ino                  # 배터리 전압 측정/보정/서버 보고
-├── timer.ino                    # 소생 타이머/진행 표시
-├── wifi.ino                     # first_store 서버 adapter
-├── serial_communication.ino     # UART 수신/재동기화
-├── ota.ino                      # 두 보드 업데이트 조정
+├── iotglove.h
+├── iotglove.cpp                 # 초기화·메인 루프·출력·UART·OTA/리셋 조정
+├── library_and_pin.h            # 핀·배터리 보정·타임아웃·빌드 설정
+├── sensor.h
+├── sensor.cpp                   # 칩/버튼 입력·디바운스·모델 이벤트
+├── game_state.h
+├── game_state.cpp               # 본게임·독립 훈련·카운트/타이머
+├── wifi_client.h                # 공식 WiFi.h와 이름 충돌 방지
+├── wifi.cpp                     # first_store 서버 worker와 OTA
+├── telnet.h
+├── telnet.cpp                   # USB/Telnet 콘솔·로그
+├── telnet_policy.h
+├── feedback.h                   # 비차단 LED/진동 출력
+├── feedback_config.h            # 상태별 진동 패턴·시간 설정
+├── battery.h                    # 배터리 평균·범위 검사
+├── network_policy.h
+├── state_policy.h
+├── peer_state.h
+├── ota_request.h
+├── link_diagnostics.h
 ├── secrets.h.example
 ├── iotglove_beetle/
-│   ├── iotglove_beetle.ino       # Beetle 별도 진입점/버전
-│   ├── library_and_pin.h
-│   ├── ble_location.ino
-│   ├── serial_communication.ino
-│   ├── ota.ino
+│   ├── README.md
+│   ├── iotglove_beetle.ino       # Beetle 진입점·버전·메인 루프
+│   ├── iotglove_beetle.h         # 모듈 간 선언과 공용 타입
+│   ├── library_and_pin.h        # C3 핀·UART·시간 설정
+│   ├── beacon_map.h
+│   ├── ble_location.cpp
+│   ├── serial_communication.cpp
+│   ├── diagnostics.cpp
+│   ├── ota.cpp
+│   ├── ota_record.h
 │   └── secrets.h.example
-├── docs/                       # 핀맵, 서버/UART 계약, 현장 검증 절차
-│   └── SERVER_CONTRACT.md       # 현재 서버 소스 조사와 기획 차이
-└── tests/                      # 실제 상태 처리/파서의 host 테스트
+├── docs/                       # BUILD·SERVER_CONTRACT·ROLLOUT·VALIDATION
+├── tools/                      # 격리 빌드·의존성 준비·호스트/Python 테스트
+└── tests/                      # 실제 상태 처리·정책·파서의 호스트 테스트
 ```
 
-주 `.ino` 이름은 스케치 폴더명과 일치시킨다. Beetle은 `src/` 밖에 두고 독립 target으로 컴파일한다. 두 보드 공용 헤더가 필요하면 Arduino 라이브러리로 묶어 두 target에 명시적으로 제공한다. 상위 폴더 상대 include가 Arduino 임시 빌드에서도 동작한다고 가정하지 않는다. 근거: [Arduino 스케치 규격](https://docs.arduino.cc/arduino-cli/sketch-specification/).
+`sensorConfigurePins()`는 기존 초기화 위치에서 입력 핀을 설정하고, `sensorBegin()`은 첫 샘플을 저장한다. `sensorPoll()`은 기존처럼 칩 변화 다음 버튼 눌림을 모델에 전달한다. 디바운스된 값과 즉시 읽은 GPIO 값은 별도 조회 함수로 구분한다. ADC 읽기·배터리 보고 순서는 `iotglove.cpp`에 유지한다.
+
+주 `.ino` 이름은 스케치 폴더명과 일치한다. Beetle은 TTGO의 `src/` 밖에 있고 독립 target으로 컴파일한다. `.cpp`는 Arduino의 `.ino` 결합·자동 함수 선언에 의존하지 않고 필요한 선언을 헤더에서 가져온다. 두 보드 공용 코드는 `libraries/IoTGloveProtocol` Arduino 라이브러리로 각각 명시적으로 제공한다. 경로·FQBN·버전 매크로·서명 키·Release 태그는 파일 정리로 바꾸지 않는다. 근거: [Arduino 스케치 규격](https://docs.arduino.cc/arduino-cli/sketch-specification/).
 
 ## 5. 통신과 복구 설계
 

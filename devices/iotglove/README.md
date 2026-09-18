@@ -4,16 +4,24 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 ## 파일과 보드
 
-| 위치 | 역할 |
-| --- | --- |
-| `iotglove.ino`, `application.cpp` | TTGO 초기화, 센서/출력 루프, UART와 순차 OTA·리셋 조정 |
-| `game_model.h/.cpp` | 실제 펌웨어와 호스트 테스트가 공유하는 상태 전이·카운트·훈련 규칙 |
-| `glove_network.h/.cpp`, `network_policy.h`, `state_policy.h` | first_store 전용 worker, 검증된 스냅샷, 순서가 있는 전송과 응답 확인 |
-| `feedback.h`, `feedback_config.h`, `battery.h`, `hardware_config.h` | 비차단 출력·상태별 진동 설정, 배터리 샘플 평균/범위 검사, 실물 설정 |
-| `peer_state.h` | Beetle 부팅 식별자·heartbeat·위치 만료·OTA 완료 확인 |
-| [iotglove_beetle](iotglove_beetle/README.md) | BLE 위치 수집, GPIO 리셋 감지/WDT, 별도 OTA |
-| [공통 UART 라이브러리](../../libraries/IoTGloveProtocol/README.md) | 버전 프레임, 고정 길이 파서, 위치 필터·리셋 상태 처리 |
-| [빌드 방법](docs/BUILD.md), [검증 기록](docs/VALIDATION.md) | compile-only 검증, Actions/Release, 실기기 절차 |
+기존 장치의 `library_and_pin.h`, `sensor`, `game_state`, `wifi`, `telnet` 역할 구분을 따른다. 주 `.ino`에는 버전과 진입점을 두고 기능은 `.cpp`와 명시적 헤더로 분리한다.
+
+| 글러브 파일 | 역할 | 기존 장치에서 대응하는 구성 |
+| --- | --- | --- |
+| `iotglove.ino`, `iotglove.h`, `iotglove.cpp` | TTGO 진입점·초기화·출력 루프, UART와 순차 OTA·리셋 조정 | 장치명 `.ino` / `.h` |
+| `library_and_pin.h` | 핀·배터리 보정·타임아웃·빌드 설정 | `library_and_pin.h` |
+| `sensor.h`, `sensor.cpp` | GPIO26/27 입력 설정·첫 샘플·디바운스·칩/버튼 이벤트·진단 조회 | `sensor.ino` |
+| `game_state.h`, `game_state.cpp` | 본게임·훈련 상태 전이와 카운트·타이머 규칙, 호스트 테스트 공유 | `game_state.ino` |
+| `wifi_client.h`, `wifi.cpp` | first_store worker, 서버 스냅샷·순차 전송·응답 확인 | `wifi.ino` |
+| `telnet.h`, `telnet.cpp`, `telnet_policy.h` | USB/Telnet 콘솔과 제한된 명령·로그 처리 | `telnet.h` / `telnet.ino` |
+| `feedback.h`, `feedback_config.h` | 비차단 LED·진동 출력과 상태별 진동 설정 | `neopixel.ino`, `vibration_motor.ino`의 출력 역할 |
+| `battery.h` | 배터리 샘플 평균·범위 검사; ADC 읽기와 보고는 `iotglove.cpp` | 장치 루프의 배터리 측정 역할 |
+| `network_policy.h`, `state_policy.h`, `peer_state.h`, `ota_request.h`, `link_diagnostics.h` | 서버 상태·UART peer·OTA 요청·진단의 순수 정책과 상태 보관 | 각 기능에서 사용하는 보조 헤더 |
+| [iotglove_beetle](iotglove_beetle/README.md) | 별도 C3 스케치, BLE 위치·GPIO 리셋/WDT·OTA | 독립된 장치 폴더 |
+| [공통 UART 라이브러리](../../libraries/IoTGloveProtocol/README.md) | 버전 프레임·파서·위치 필터·리셋 상태 처리 | 두 보드 공용 Arduino 라이브러리 |
+| [빌드 방법](docs/BUILD.md), [검증 기록](docs/VALIDATION.md) | compile-only 검증, Actions/Release, 실기기 절차 | — |
+
+서버 헤더는 ESP32 공식 `WiFi.h`와 대소문자를 구분하지 않는 파일시스템에서도 충돌하지 않도록 `wifi_client.h`로 명명했다. 각 `.cpp`는 따로 컴파일하고 필요한 선언을 헤더로 포함한다. 기능 파일을 `.ino` 탭으로 합치거나 `.cpp`를 직접 include하지 않는다. 디렉터리·주 스케치·Release 태그는 그대로 유지한다.
 
 ## 배선
 
@@ -80,7 +88,7 @@ Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)에 현장 `HAS3:장치명
 
 근접 진동 기본안은 같은 방(`vibe=3`) 1초당 100ms 두 번, 인접(`vibe=1`) 2초당 100ms 한 번이다. 칩/발각 진동이 우선하며 오래된 위치로는 울리지 않는다. 실제 방 경계에서 RSSI 필터와 진동 패턴을 조정한다.
 
-배터리는 `analogReadMilliVolts()`의 보정 ADC 값을 20ms마다 모아 16개를 평균한다. 다음 값을 [hardware_config.h](hardware_config.h)에 실측해 넣어야 보고가 활성화된다.
+배터리는 `analogReadMilliVolts()`의 보정 ADC 값을 20ms마다 모아 16개를 평균한다. 다음 값을 [library_and_pin.h](library_and_pin.h)에 실측해 넣어야 보고가 활성화된다.
 
 - `IOTGLOVE_BATTERY_PIN`: GPIO35는 기존 코드의 후보이며 실물 배선을 확인한다.
 - `IOTGLOVE_BATTERY_DIVIDER_RATIO`: 실제 분압비 `(R위 + R아래) / R아래`.

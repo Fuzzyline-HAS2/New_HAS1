@@ -1,6 +1,6 @@
 #pragma once
 
-#include "game_model.h"
+#include "game_state.h"
 
 namespace iotglove {
 namespace feedback_config {

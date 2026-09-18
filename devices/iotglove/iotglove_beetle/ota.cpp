@@ -1,4 +1,4 @@
-#include "beetle.h"
+#include "iotglove_beetle.h"
 #include <HAS2_Wifi.h>
 #include <SecureOTA.h>
 #include <Preferences.h>

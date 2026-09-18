@@ -1,4 +1,4 @@
-#include "remote_console_policy.h"
+#include "telnet_policy.h"
 
 #include <assert.h>
 #include <string>
