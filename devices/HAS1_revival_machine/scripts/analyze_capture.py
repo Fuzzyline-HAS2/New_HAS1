@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""capture_telnet.py가 만든 캡처를 읽어 태그->릴레이 구간을 분해한다 (펌웨어 v49 기준).
+"""capture_console.py가 만든 캡처를 읽어 태그->릴레이 구간을 분해한다 (펌웨어 v49 기준).
 
 왜 필요한가:
-  기기 로그에는 시각이 없다. capture_telnet.py가 받은 시각을 줄마다 붙여놓았으므로,
+  기기 로그에는 시각이 없다. capture_console.py가 받은 시각을 줄마다 붙여놓았으므로,
   여기서는 그 시각 차이로 각 HTTP 왕복과 "아무것도 찍히지 않는 침묵 구간"을 복원한다.
   태그를 유지했을 때 느려지는 시간은 로그 줄이 아니라 줄과 줄 사이에 있다.
 
@@ -610,7 +610,7 @@ def selftest():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("capture", nargs="?", help="capture_telnet.py가 만든 로그 파일")
+    parser.add_argument("capture", nargs="?", help="capture_console.py가 만든 로그 파일")
     parser.add_argument("--gap-ms", type=float, default=DEFAULT_GAP_MS,
                         help=f"침묵 구간으로 볼 최소 간격 (기본 {DEFAULT_GAP_MS}ms)")
     parser.add_argument("--timeline", action="store_true", help="사이클마다 전체 타임라인을 출력")
@@ -624,7 +624,7 @@ def main():
 
     entries, skipped = parse(args.capture)
     if not entries:
-        print("파싱된 줄이 없다. capture_telnet.py가 만든 파일이 맞는지 확인하라.", file=sys.stderr)
+        print("파싱된 줄이 없다. capture_console.py가 만든 파일이 맞는지 확인하라.", file=sys.stderr)
         return 1
     if skipped:
         print(f"(타임스탬프 형식이 아닌 {skipped}줄은 건너뛰었다)\n")

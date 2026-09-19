@@ -3,21 +3,52 @@
 현장 증상: **PN532에 태그를 유지하면 솔레노이드 동작 시작이 느리고, 태그 후 바로 떼면 빠르다.**
 
 기기는 로그에 시각을 찍지 않으므로(`telnet.ino`는 `Serial`을 그대로 미러링할 뿐이다) 받는 쪽에서
-줄마다 시각을 붙여야 한다. `capture_telnet.py`가 그 역할을 한다.
+줄마다 시각을 붙여야 한다. `capture_console.py`가 그 역할을 한다.
 
 ## 0. 준비
+
+펌웨어가 v49인지 확인한다. 부팅 로그의 `esp_version` 전송 또는 서버의 해당 컬럼으로 본다.
+
+### USB 시리얼 (권장)
+
+```bash
+python3 -m pip install pyserial
+python3 devices/HAS1_revival_machine/scripts/capture_console.py --serial /dev/ttyUSB0 --out revival_ab.log
+# macOS:   --serial /dev/cu.usbserial-0001
+# Windows: --serial COM3
+```
+
+포트 이름은 Linux `ls /dev/ttyUSB* /dev/ttyACM*`, macOS `ls /dev/cu.*`, Windows 장치 관리자에서
+확인한다. 아두이노 시리얼 모니터 등 다른 프로그램이 포트를 잡고 있으면 열리지 않는다.
+
+USB를 권장하는 이유:
+
+- 기기 텔넷 슬롯(동시 1개)을 쓰지 않는다. 텔넷 창을 따로 띄워둔 채 캡처할 수 있다.
+- **부팅부터 잡힌다.** 텔넷은 `TelnetInit()`이 Wi-Fi 연결 후에 시작되므로 그 이전 로그
+  (`LogMemoryStats("boot")`, Wi-Fi 접속, `RFID 연결성공`)를 놓친다.
+- **Wi-Fi가 끊기거나 ESP가 재시작해도 끊기지 않는다.** 혼잡이 용의선상에 있는 이번 측정에서는
+  바로 그 순간이 가장 중요한데, 텔넷 캡처는 그때 눈이 먼다.
+- `TelnetDebugConsole::write`는 항상 `HardwareDebugSerial`에 먼저 쓰므로(`telnet.ino`)
+  USB 쪽이 텔넷보다 적게 나올 일은 없다.
+
+포트를 여는 순간 DTR/RTS가 걸리면 ESP32가 리셋된다. 스크립트가 기본으로 막지만 보드/드라이버에
+따라 한 번 리셋될 수 있다. 리셋은 로그에 부팅 줄로 남고 분석기가 경고하므로, **시행을 시작하기
+전에 부팅이 끝나고 `device_state`가 `activate`로 돌아온 것을 확인**하면 된다.
+
+### 텔넷
+
+```bash
+python3 devices/HAS1_revival_machine/scripts/capture_console.py --telnet 172.30.1.9 --out revival_ab.log
+```
 
 - 캡처하는 PC가 기기와 같은 Wi-Fi(`172.30.1.0/24`)에 있어야 한다.
 - 기기 텔넷 서버는 **동시 접속 1개만** 허용한다(`telnet.ino` `TelnetRun`). PuTTY 등 다른 텔넷
   창이 열려 있으면 `Telnet already connected.`만 받고 끊긴다. 먼저 닫을 것.
-- 펌웨어가 v49인지 확인한다. 부팅 로그의 `esp_version` 전송 또는 서버의 해당 컬럼으로 본다.
 
-```bash
-python3 devices/HAS1_revival_machine/scripts/capture_telnet.py --out revival_ab.log
-```
+### 공통
 
 실행 중 문구를 입력하고 Enter를 치면 그 시점에 `### MARK <문구>` 줄이 삽입된다. 시행 구분에 쓴다.
-종료는 `q` + Enter.
+종료는 `q` + Enter. 어느 쪽으로 캡처하든 출력 형식과 분석 방법은 같다.
 
 ## 1. 반드시 지켜야 하는 전제 — 글러브를 돌려쓰면 측정이 무효가 된다
 
