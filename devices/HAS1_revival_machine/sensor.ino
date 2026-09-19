@@ -71,10 +71,9 @@ static bool ApplyGain(int mode)
 //    lastApplyGain=1002ms). RfidInit()의 setPassiveActivationRetries()가 이걸 유한하게 만든다.
 // 위상이 어긋난 채 돌다가 우연히 맞을 때만 읽히는 구조라, 카드가 응답하는 타이밍(=거리, 커플링)에
 // 따라 성패가 갈렸다 - "밀착하면 안 읽히고 2~3cm 띄우면 읽힌다"가 그 증상이다.
-// 판독 1회의 결말. "카드 자체를 못 봄"과 "카드는 봤는데 읽기 실패"를 갈라야 원인이 갈린다:
-// 전자가 반복되면 PN532에 ATQA조차 오지 않는 것(과결합/거리/RF), 후자면 데이터 교환 단계 문제.
-enum DetectResult { DETECT_NO_TARGET, DETECT_READ_FAIL, DETECT_OK };
-
+// 판독 1회의 결말(DetectResult, 헤더 정의). "카드 자체를 못 봄"과 "카드는 봤는데 읽기 실패"를
+// 갈라야 원인이 갈린다: 전자가 반복되면 PN532에 ATQA조차 오지 않는 것(과결합/거리/RF), 후자면
+// 데이터 교환 단계 문제.
 static DetectResult DetectAndReadEx(uint8_t outData[32], unsigned long &detectMs, unsigned long &readMs)
 {
   uint8_t uid[7];

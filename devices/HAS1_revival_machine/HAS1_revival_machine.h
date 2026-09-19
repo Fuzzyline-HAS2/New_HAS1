@@ -126,6 +126,12 @@ bool send_nfc_err = false;
 // 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 
+// PN532 판독 1회의 결말(sensor.ino DetectAndReadEx). .ino 안에서 정의하면 Arduino가 자동 생성한
+// 프로토타입("static DetectResult DetectAndReadEx(...)")이 enum 정의보다 앞에 삽입돼
+// 'DetectResult' does not name a type 로 빌드가 깨진다(v53 첫 빌드에서 실제 발생). GainMode와
+// 같은 이유로 헤더에 둔다.
+enum DetectResult { DETECT_NO_TARGET, DETECT_READ_FAIL, DETECT_OK };
+
 void RfidInit(void);
 void RfidLoop(void);
 void CardChecking(uint8_t rfidData[32]);
