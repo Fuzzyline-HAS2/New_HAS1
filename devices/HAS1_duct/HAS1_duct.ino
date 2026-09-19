@@ -9,7 +9,7 @@
  * 
  */
 
-#define FIRMWARE_VER 50
+#define FIRMWARE_VER 51
 #define PARTITION_VER 1
 #include "HAS1_duct.h"
 
