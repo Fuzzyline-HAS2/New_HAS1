@@ -13,7 +13,7 @@ Partition Scheme = default
 Verified with ESP32 core 3.3.11 and the deployment workflow's library versions:
 
 ```text
-Sketch uses 1275657 bytes.
+Sketch uses 1278141 bytes.
 Maximum default OTA app slot is 1310720 bytes.
 ```
 
@@ -33,6 +33,34 @@ requests. Approval now opens the relay before writing the local timing log.
 The server checks, immediate approval refresh, and ghost-only reopening rules are
 unchanged.
 
+During gameplay, a recognized tag is latched so holding it against the reader
+cannot repeat the role lookup, Situation request, or reopening pulse. The same
+tag rearms after both gains fail to read a card at least twice over 600ms; a
+single missed read does not rearm it. A different tag can be accepted once the
+previous request is resolved. Setting tags and `MMMM` administrator cards retain
+their existing behavior.
+
+While the first opening awaits approval, normal tags are ignored and the main
+loop prioritizes a direct `ReceiveMine()` every 300ms after the preceding query
+finishes. This bypasses the `Loop`/`shift_machine` gate and preserves the first
+tag's identity and timing. Regular PN532 detection and gain-switch retries are
+skipped while waiting. An administrator-only probe still runs at the current
+gain no more than once per second, and never on a loop iteration that performed
+an approval query. The probe's command waits are still synchronous.
+
+An HTTP send failure, game/device state change, or 15-second deadline clears the
+approval wait. The deadline is checked in the main loop even when the server's
+shift flag never changes; an in-flight synchronous HTTP operation must still
+return before the loop can enforce it. Known non-ghost tags keep their existing
+Situation event and immediate refresh, then release the wait so they cannot
+block the next ghost. `Situation()` only exposes HTTP success, so a rejected
+ghost request with unchanged device state expires at the deadline. Clearing a
+wait does not rearm a held tag, and it never opens the relay without a server
+`open` state. After an uncertain timeout or ghost-request HTTP failure, the
+original user's identity is retained for a late approval's `is_open` write;
+a subsequent game/device cancellation clears it. The timing measurement ends
+at timeout/failure and is not completed by that late opening.
+
 The `[GhostTiming] RELAY ON` elapsed time starts when a valid `G#P#` tag is
 recognized, before the role lookup, and ends at the actual relay GPIO HIGH
 timestamp returned by `SolenoidPulse`.
@@ -41,7 +69,7 @@ before logging or sending the glove's `is_open` update. The console timing line
 appears after that pulse but excludes its five seconds, and includes the separate
 `role_receive` and `situation` durations. Admin/setting/reopening pulses do not
 complete a pending first-open measurement. The local timeout message reports an
-approval wait exceeding 15 seconds; it does not represent a relay opening.
+approval wait reaching 15 seconds; it does not represent a relay opening.
 
 Diagnostics are available through the existing USB Serial/Telnet console only.
 No background task, queue, or external logging service is needed for these logs.

@@ -60,6 +60,12 @@ void SensorInit()
   pixels_side.begin();
   pixels_square2.begin();
   pixels_pn532.begin();
+  // 서버 brightness 수신 전까지 적용할 기준 밝기
+  pixels_square.setBrightness(DEFAULT_BRIGHTNESS);
+  pixels_round.setBrightness(DEFAULT_BRIGHTNESS);
+  pixels_side.setBrightness(DEFAULT_BRIGHTNESS);
+  pixels_square2.setBrightness(DEFAULT_BRIGHTNESS);
+  pixels_pn532.setBrightness(DEFAULT_BRIGHTNESS);
 
   // Rfid init
   RfidInit();
@@ -346,10 +352,15 @@ bool RfidNsecTag(int sec)
 //******************************************* Neopixel Helpers *******************************************
 void applyBrightness()
 {
+  // 값이 그대로면 건너뛴다 — 변경 감지를 호출부가 아니라 여기서 한다 (전 device 공통 방식).
+  static int prevServerBrightness = -1;  // -1: 첫 호출은 반드시 적용
   int b = (int)my["brightness"];
+  if (b == prevServerBrightness) return;
+  Serial.println("[DataChange] brightness: " + String(prevServerBrightness) + " -> " + String(b));
+  prevServerBrightness = b;
   int brightness;
   if (b <= 0 || b > 100)
-    brightness = 255;
+    brightness = DEFAULT_BRIGHTNESS;
   else
     brightness = map(b, 0, 100, 0, 255);
   pixels_square.setBrightness(brightness);

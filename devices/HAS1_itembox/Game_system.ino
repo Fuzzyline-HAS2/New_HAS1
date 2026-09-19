@@ -225,9 +225,22 @@ void UpdatePuzzleAnswers() {
 }
 
 // ── LED 밝기 갱신 ─────────────────────────────────────────────────────────────────
+// 서버 brightness(1~100)를 네오픽셀 밝기 범위(1~255)로 변환해 적용한다.
+// 범위를 벗어난 값(<=0 또는 >100)이 오면 DEFAULT_BRIGHTNESS로 대체 — 다른 HAS1 device와 동일.
 void UpdateBrightness() {
-    int b = myDoc["brightness"] | 0;
-    if (b != 0) NeoSetBrightness(b);
+    // 값이 그대로면 건너뛴다 — 다른 device의 brightness 변경 감지 가드와 같은 역할.
+    // NeoSetBrightness()가 두 스트립에 show()까지 내보내므로 폴링마다 반복하지 않는다.
+    static int prevServerBrightness = -1;  // -1: 첫 호출은 반드시 적용
+    int serverBrightness = jsonInt(myDoc["brightness"]);
+    if (serverBrightness == prevServerBrightness) return;
+    prevServerBrightness = serverBrightness;
+
+    int b;
+    if (serverBrightness <= 0 || serverBrightness > 100)
+        b = DEFAULT_BRIGHTNESS;
+    else
+        b = map(serverBrightness, 1, 100, 1, 255);
+    NeoSetBrightness(b);
 }
 
 // ── 서버 이벤트 처리 ────────────────────────────────────────────────────────────────

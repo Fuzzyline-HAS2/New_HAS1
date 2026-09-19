@@ -30,7 +30,11 @@ void NeopixelInit()
 // 범위를 벗어난 값(<=0 또는 >100)이 오면 DEFAULT_BRIGHTNESS로 안전하게 대체한다.
 void UpdateBrightness()
 {
+  // 값이 그대로면 건너뛴다 — 변경 감지를 호출부가 아니라 여기서 한다 (전 device 공통 방식).
+  static int prevServerBrightness = -1;  // -1: 첫 호출은 반드시 적용
   int serverBrightness = my["brightness"].as<int>();
+  if (serverBrightness == prevServerBrightness) return;
+  prevServerBrightness = serverBrightness;
   if (serverBrightness <= 0 || serverBrightness > 100) {
     ledBrightness = DEFAULT_BRIGHTNESS;
   } else {

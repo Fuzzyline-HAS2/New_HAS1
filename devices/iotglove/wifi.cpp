@@ -95,11 +95,16 @@ bool decodeSnapshot(ServerSnapshot& out) {
   long count, seconds, sacrificed, open, life, vibe, brightness;
   if (!number(my["revival_count"], 0, 4, count) || !number(my["revival_time"], 1, 86400, seconds) ||
       !number(my["is_sacrificed"], 0, 1, sacrificed) || !number(my["is_open"], 0, 1, open) ||
-      !number(my["life_chip"], 0, 100, life) || !number(my["vibe"], 0, 3, vibe) ||
-      !number(my["brightness"], 0, 100, brightness)) return false;
+      !number(my["life_chip"], 0, 100, life) || !number(my["vibe"], 0, 3, vibe)) return false;
   out.revivalCount = count; out.stepSeconds = seconds;
   out.sacrificed = sacrificed; out.open = open; out.lifeChip = life;
-  out.vibe = vibe; out.brightness = brightness;
+  out.vibe = vibe;
+  // Brightness converts here, as on the other HAS1 devices: server 1..100 maps onto raw
+  // 1..255, and anything outside that range falls back to kDefaultBrightness instead of
+  // rejecting the whole snapshot.
+  out.brightness = number(my["brightness"], 1, 100, brightness)
+      ? static_cast<uint8_t>(map(brightness, 1, 100, 1, 255))
+      : kDefaultBrightness;
   ota::Command otaCommand;
   const auto parsedOta = ota::parseCommand(lastDeviceState, otaCommand);
   out.updateRequested = parsedOta == ota::ParseResult::Valid;

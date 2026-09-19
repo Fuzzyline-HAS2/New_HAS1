@@ -36,8 +36,7 @@ void DataChanged()
         ptrCurrentMode = WaitFunc;
     }
   }
-  if (my["brightness"].as<int>() != cur["brightness"].as<int>())
-    UpdateBrightness();
+  UpdateBrightness();  // 변경 감지는 함수 내부에서 한다
   if((String)(const char*)my["device_state"] != (String)(const char*)cur["device_state"]){
     if((String)(const char*)my["device_state"] == "player_win"){
         AllNeoOn(BLUE);

@@ -56,7 +56,8 @@ void DataChange()
 
     bool any_change = false;
 
-    bool brightness_changed = ((int)my["brightness"] != (int)cur["brightness"]);
+    // 밝기 먼저 반영 — 이어지는 상태 전환이 새 밝기로 칠해지도록. 변경 감지·로그는 applyBrightness() 내부.
+    applyBrightness();
 
     if ((String)(const char *)my["game_state"] != (String)(const char *)cur["game_state"])
     {
@@ -66,30 +67,16 @@ void DataChange()
         any_change = true;
         if ((String)(const char *)my["game_state"] == "setting")
         {
-            if (brightness_changed) applyBrightness();
             SettingFunc();
         }
         else if ((String)(const char *)my["game_state"] == "ready")
         {
-            if (brightness_changed) applyBrightness();
             ReadyFunc();
         }
         else if ((String)(const char *)my["game_state"] == "activate")
         {
-            if (brightness_changed) applyBrightness();
             ActivateRunOnce();
         }
-    }
-    else if (brightness_changed)
-    {
-        applyBrightness();
-    }
-
-    if (brightness_changed)
-    {
-        Serial.println("[DataChange] brightness: " +
-            String((int)cur["brightness"]) + " -> " + String((int)my["brightness"]));
-        any_change = true;
     }
 
     if ((String)(const char *)my["device_state"] != (String)(const char *)cur["device_state"])
