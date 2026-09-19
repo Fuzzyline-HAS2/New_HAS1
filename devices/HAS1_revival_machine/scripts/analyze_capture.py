@@ -37,7 +37,11 @@ RELAY_PULSE_MS = 5000
 # 이 이상 벌어진 줄 간격을 "침묵 구간"으로 보고 따로 보고한다.
 DEFAULT_GAP_MS = 400
 
+# capture_console.py 형식. 마이크로초까지 있어 침묵 구간을 잴 수 있다.
 LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\s\s(?P<msg>.*)$")
+# 아두이노 IDE 시리얼 모니터 형식. 초 단위라 기기가 스스로 잰 값만 신뢰할 수 있고
+# 줄 사이 간격(침묵 구간) 분석은 사실상 불가능하다.
+ARDUINO_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+-->\s(?P<msg>.*)$")
 
 # 순서가 의미를 가진다. 먼저 맞는 항목이 이긴다.
 EVENTS = [
@@ -107,7 +111,7 @@ def classify(msg):
 
 
 def parse(path):
-    entries, skipped = [], 0
+    raw_entries, skipped, coarse = [], 0, False
     with open(path, encoding="utf-8", errors="replace") as handle:
         for lineno, raw in enumerate(handle, 1):
             line = raw.rstrip("\n")
@@ -115,26 +119,46 @@ def parse(path):
                 continue
             match = LINE_RE.match(line)
             if not match:
+                match = ARDUINO_LINE_RE.match(line)
+                if match:
+                    coarse = True
+            if not match:
                 # 기기가 개행 없이 조각을 보낸 경우 등. 버리되 셈은 해둔다.
                 skipped += 1
                 continue
-            ts = datetime.fromisoformat(match["ts"])
-            msg = match["msg"]
-            kind, fields = classify(msg)
-            if kind == "json_payload":
-                # Receive(글러브 행)와 ReceiveMine(기기 행)은 둘 다 JSON을 찍는다.
-                # 키 구성으로 가른다 - 이게 폴링 횟수를 세는 근거가 된다.
-                if '"device_state"' in msg or '"game_state"' in msg:
-                    fields = {"row": "device"}
-                elif '"role"' in msg or '"is_open"' in msg:
-                    fields = {"row": "glove"}
-                else:
-                    fields = {"row": "unknown"}
-            if "url" in fields:
-                request = REQUEST_RE.search(fields["url"])
-                fields["request"] = request["request"] if request else "?"
-            entries.append(Entry(ts, msg, kind, fields, lineno))
-    return entries, skipped
+            raw_entries.append((datetime.fromisoformat(match["ts"]), match["msg"], lineno))
+
+    # 한 줄이 두 줄로 쪼개져 도착하는 경우가 있다(시리얼 모니터 버퍼, MTU 경계).
+    # 앞뒤를 붙였을 때만 알려진 형식이 되면 원래 한 줄이었다고 보고 되붙인다.
+    repaired, index = [], 0
+    while index < len(raw_entries):
+        ts, msg, lineno = raw_entries[index]
+        if (classify(msg)[0] == "other" and index + 1 < len(raw_entries)
+                and classify(raw_entries[index + 1][1])[0] == "other"
+                and classify(msg + raw_entries[index + 1][1])[0] != "other"):
+            repaired.append((ts, msg + raw_entries[index + 1][1], lineno))
+            index += 2
+            continue
+        repaired.append((ts, msg, lineno))
+        index += 1
+
+    entries = []
+    for ts, msg, lineno in repaired:
+        kind, fields = classify(msg)
+        if kind == "json_payload":
+            # Receive(글러브 행)와 ReceiveMine(기기 행)은 둘 다 JSON을 찍는다.
+            # 키 구성으로 가른다 - 이게 폴링 횟수를 세는 근거가 된다.
+            if '"device_state"' in msg or '"game_state"' in msg:
+                fields = {"row": "device"}
+            elif '"role"' in msg or '"is_open"' in msg:
+                fields = {"row": "glove"}
+            else:
+                fields = {"row": "unknown"}
+        if "url" in fields:
+            request = REQUEST_RE.search(fields["url"])
+            fields["request"] = request["request"] if request else "?"
+        entries.append(Entry(ts, msg, kind, fields, lineno))
+    return entries, skipped, coarse
 
 
 def ms(later, earlier):
@@ -531,7 +555,7 @@ def selftest():
     handle.write(SELFTEST_LOG)
     handle.close()
     try:
-        entries, skipped = parse(handle.name)
+        entries, skipped, _ = parse(handle.name)
         assert skipped == 0, skipped
         trials = split_trials(entries)
         labels = [t["label"] for t in trials]
@@ -596,7 +620,7 @@ def selftest():
             handle2.write("\n".join(log_lines) + "\n")
             handle2.close()
             try:
-                sub_entries, _ = parse(handle2.name)
+                sub_entries, _, _ = parse(handle2.name)
                 sub_cycles = find_cycles(sub_entries)
                 assert len(sub_cycles) == 1, sub_cycles
                 assert expected in sub_cycles[0]["outcome"], sub_cycles[0]["outcome"]
@@ -622,12 +646,18 @@ def main():
     if not args.capture:
         parser.error("캡처 파일을 지정하거나 --selftest 를 쓰라")
 
-    entries, skipped = parse(args.capture)
+    entries, skipped, coarse = parse(args.capture)
     if not entries:
         print("파싱된 줄이 없다. capture_console.py가 만든 파일이 맞는지 확인하라.", file=sys.stderr)
         return 1
     if skipped:
         print(f"(타임스탬프 형식이 아닌 {skipped}줄은 건너뛰었다)\n")
+
+    if coarse:
+        print("[주의] 아두이노 시리얼 모니터 형식(초 단위)이다. 기기가 스스로 잰 값"
+              "([GhostTiming] RELAY ON의 total/role_receive/situation)은 그대로 신뢰할 수\n"
+              "       있지만, 줄 사이 간격으로 복원하는 침묵 구간 분석은 해상도가 모자라\n"
+              "       의미가 없다. 그 부분까지 보려면 capture_console.py로 다시 캡처하라.\n")
 
     unknown = sum(1 for e in entries if e.kind == "other")
     print(f"총 {len(entries):,}줄, 미분류 {unknown:,}줄 "
