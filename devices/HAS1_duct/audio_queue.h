@@ -31,6 +31,7 @@ void Mp3Run();
 void Mp3QueuePhrase(Mp3Phrase phrase);
 bool Mp3PreparePhrase(Mp3Phrase &phrase, bool refresh_remaining);
 bool Mp3SamePhrase(const Mp3Phrase &left, const Mp3Phrase &right);
+int Mp3LanguageFolder(uint8_t folder, bool english);
 Mp3Phrase Mp3MakePhrase(uint8_t folder, uint16_t file);
 
 #endif

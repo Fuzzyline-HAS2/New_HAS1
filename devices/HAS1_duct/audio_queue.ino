@@ -1,13 +1,20 @@
 #include "HAS1_duct.h"
 #include "mp3_durations.h"
 
+// 영어 음원 폴더: 01~04 → 05~08(+4). 폴더 09(개방 안내 합성음)는 영어판이 10이다.
+int Mp3LanguageFolder(uint8_t folder, bool english)
+{
+    if (!english) return folder;
+    return folder == 9 ? 10 : folder + 4;
+}
+
 Mp3Phrase Mp3MakePhrase(uint8_t folder, uint16_t file)
 {
     Mp3Phrase phrase = {};
     bool english = (String)(const char *)shift_machine["selected_language"] == "EN";
     phrase.count = 1;
     phrase.volume = english ? 26 : 30;
-    phrase.tracks[0].folder = folder + (english ? 4 : 0);
+    phrase.tracks[0].folder = (uint8_t)Mp3LanguageFolder(folder, english);
     phrase.tracks[0].file = file;
     return phrase;
 }

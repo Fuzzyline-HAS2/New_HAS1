@@ -109,6 +109,19 @@ int main(int argc, char** argv) {
               "active phrase finishes while obsolete pending blockade phrase is discarded");
         audioEvents.clear(); Mp3PlayLargeFolder(1, 2); CooltimeMp3(); SettingFunc(); drainAudio();
         check(audioEvents == std::vector<String>{"play:1:2"}, "game reset discards obsolete queued countdown without interrupting active audio");
+    } else if (test == "audio_folder9_language") {
+        check(Mp3TrackDurationMs(9, 712) == 3289 && Mp3TrackDurationMs(9, 719) == 1153,
+              "measured V2 folder 09 Korean opening fixtures");
+        check(Mp3TrackDurationMs(10, 712) == 2400 && Mp3TrackDurationMs(10, 719) == 1153,
+              "measured V2 folder 10 English opening fixtures");
+        Mp3PlayLargeFolder(9, 719); drainAudio();
+        check(audioEvents == std::vector<String>{"play:9:719"}, "Korean keeps folder 09");
+        shift_machine["selected_language"] = "EN";
+        Mp3PlayLargeFolder(9, 712); Mp3PlayLargeFolder(9, 719); Mp3PlayLargeFolder(1, 2); drainAudio();
+        check(audioEvents == std::vector<String>{"play:9:719", "play:10:712", "play:10:719", "play:5:2"},
+              "English maps folder 09 to 10 and other folders by +4");
+        check(audioStartTimes[2] - audioStartTimes[1] == 2400 + MP3_TRACK_MARGIN_MS,
+              "English outside opening uses its own measured length");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
