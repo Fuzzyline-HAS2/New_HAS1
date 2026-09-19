@@ -18,6 +18,11 @@
  */
 void TempleInit()
 {
+  // HAS2_Wifi 내부 로그(HTTP 실패/타임아웃, Wi-Fi 끊김, 응답 본문)를 USB+텔넷 콘솔로 보낸다.
+  // 라이브러리 기본은 아두이노 전역 Serial인데, 이 스케치는 #define Serial DebugSerial 로 별도
+  // HardwareSerial 인스턴스만 begin()하므로 그 기본 스트림에는 아무것도 나오지 않았다(2026-09-19
+  // 현장 캡처에서 확인). HAS1_altar와 같은 처리.
+  has2wifi.SetDebugPrint(&DebugSerial);
   has2wifi.Setup("badland");
   has2wifi.Send((String)(const char *)my["device_name"], "esp_version", String(FIRMWARE_VER));
   TelnetInit(); // Telnet 서버 시작 (WiFi 연결 완료 후) — 이후 Serial.* 출력은 telnet.ino로 미러링됨

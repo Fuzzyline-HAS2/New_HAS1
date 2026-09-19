@@ -58,7 +58,35 @@ phase happened to line up, which depended on how quickly the card answered, i.e.
 on distance and coupling. A glove held flat in the near-field dead zone answered
 marginally and failed; one held 2-3cm away answered promptly and read. This is
 the same desync `HAS1_escape_sub` fixed on 2026-08-12 by draining the response.
-The near/far gain switch is kept as it was so this change is a single variable.
+That change alone (v52) did not fix the flat-held read on hardware.
+
+## RxGain pinned, read diagnostics (v53)
+
+RxGain is pinned to 0x19 (23dB), matching `HAS1_escape_sub`'s measurement across
+three readers where 0x19 was the only setting with no dead reader. The near/far
+alternation was removed: with no card present it flipped the gain on every idle
+poll, so the gain at the moment a glove arrived was effectively random, and the
+near attempt always ran right after an RFConfiguration write.
+
+`DetectTag()` now logs `[RFID-T]` lines on the console (mirrored to telnet):
+
+```text
+[RFID-T] hit detect=42ms read=8ms after_fail=0 (read_fail=0) for=0ms gain=NEAR(0x19)
+[RFID-T] target FOUND but read FAILED detect=12ms read=9ms streak=3 gain=NEAR(0x19)
+[RFID-T] idle 5s: polls=16 no_target=16 read_fail=0 detect_avg=61ms detect_max=64ms gain=NEAR(0x19)
+```
+
+`readPassiveTargetID()` distinguishes "no target answered" from "target found but
+the page read failed". A flat-held glove that only ever produces `no_target`
+is not being seen by the PN532 at all (over-coupling / RF), whereas repeated
+`target FOUND but read FAILED` points at the data-exchange stage. `after_fail`
+and `for=` on a hit give the length of the failure streak that preceded it; read
+them together with the operator's contact marker in a capture.
+
+`TempleInit()` also routes the HAS2_Wifi library's own log stream to the console
+via `SetDebugPrint(&DebugSerial)`, as `HAS1_altar` does; until v53 those lines
+(HTTP errors, Wi-Fi drops, response bodies) went to a `Serial` instance this
+sketch never `begin()`s and were lost.
 
 ## Relay response and local timing
 
@@ -70,7 +98,7 @@ unchanged.
 
 During gameplay, a recognized tag is latched so holding it against the reader
 cannot repeat the role lookup, Situation request, or reopening pulse. The same
-tag rearms after both gains fail to read a card at least twice over 600ms; a
+tag rearms after reads fail at least twice over 600ms; a
 single missed read does not rearm it. A different tag can be accepted once the
 previous request is resolved. Setting tags and `MMMM` administrator cards retain
 their existing behavior.
@@ -78,7 +106,7 @@ their existing behavior.
 While the first opening awaits approval, normal tags are ignored and the main
 loop prioritizes a direct `ReceiveMine()` every 300ms after the preceding query
 finishes. This bypasses the `Loop`/`shift_machine` gate and preserves the first
-tag's identity and timing. Regular PN532 detection and gain-switch retries are
+tag's identity and timing. Regular PN532 detection is
 skipped while waiting. An administrator-only probe still runs at the current
 gain no more than once per second, and never on a loop iteration that performed
 an approval query. The probe's command waits are still synchronous.

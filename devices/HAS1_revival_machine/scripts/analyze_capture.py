@@ -47,6 +47,10 @@ ARDUINO_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+--
 EVENTS = [
     ("mark", re.compile(r"^### MARK ?(?P<text>.*)$")),
     ("tag_read", re.compile(r"^tag_user_data : (?P<user>.*)$")),
+    # v53 판독 진단. 밀착 증상이 있는 "판독 이전" 구간을 처음으로 보여주는 줄들.
+    ("rfid_hit", re.compile(r"^\[RFID-T\] hit detect=(?P<detect>\d+)ms read=(?P<read>\d+)ms after_fail=(?P<after_fail>\d+) \(read_fail=(?P<read_fail>\d+)\) for=(?P<for_ms>\d+)ms gain=(?P<gain>\S+)$")),
+    ("rfid_read_fail", re.compile(r"^\[RFID-T\] target FOUND but read FAILED detect=(?P<detect>\d+)ms read=(?P<read>\d+)ms streak=(?P<streak>\d+) gain=(?P<gain>\S+)$")),
+    ("rfid_idle", re.compile(r"^\[RFID-T\] idle (?P<secs>\d+)s: polls=(?P<polls>\d+) no_target=(?P<no_target>\d+) read_fail=(?P<read_fail>\d+) detect_avg=(?P<avg>\d+)ms detect_max=(?P<max>\d+)ms gain=(?P<gain>\S+)$")),
     ("role_known", re.compile(r"^\[RFID\] (?P<user>\S+) is_open=(?P<is_open>-?\d+) role=(?P<role>.*)$")),
     ("situation_intent", re.compile(r"^\[RFID\] Tag detected - sending situation to server: (?P<user>.*)$")),
     ("situation_done", re.compile(r"^\[RFID\] Situation send (?P<user>\S+) result=(?P<result>OK|FAIL) took=(?P<took>\d+)ms$")),

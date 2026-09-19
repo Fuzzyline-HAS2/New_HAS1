@@ -21,13 +21,17 @@ void SensorInit()
 }
 
 //********************************************* Rfid *********************************************
-// ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (HAS1_generator/HAS1_itembox와 동일 대응) ──
-// 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
-// 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
-// MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
-// 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
-// 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
-static GainMode currentGain = GAIN_NEAR;
+// ── PN532 RxGain: 23dB(0x19) 고정 ──
+// 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면 약 2cm 이하
+// 근거리에서 인식이 안 되는 특성이 실측으로 확인됐다(로트별 RF 편차, MCU/통신 문제 아님).
+// v52까지는 NEAR(23dB)/FAR(33dB)를 실패마다 뒤집어 근접~4cm를 이으려 했다. 그러나
+//  - 카드가 없는 유휴 폴링마다 gain이 뒤집혀 카드가 오는 순간의 gain이 사실상 무작위였고,
+//  - NEAR 시도가 항상 RFConfiguration 직후에 와서 RF 설정 직후의 안정 시간 영향을 받았으며,
+//  - HAS1_escape_sub 실측(리더 3개 x gain 5종)에서 0x19만 세 리더 모두 0이 없었다.
+// 그래서 v53부터 0x19로 고정한다(escape_sub와 동일). 중거리(3~4cm)가 필요해지면 FAR을
+// 재도입하되, 그때는 "카드를 찾았는데 읽기 실패"일 때만 시도하도록 한다(아래 [RFID-T] 진단이
+// 그 구분을 준다). TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+static const GainMode currentGain = GAIN_NEAR;
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
 // PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
@@ -67,25 +71,101 @@ static bool ApplyGain(int mode)
 //    lastApplyGain=1002ms). RfidInit()의 setPassiveActivationRetries()가 이걸 유한하게 만든다.
 // 위상이 어긋난 채 돌다가 우연히 맞을 때만 읽히는 구조라, 카드가 응답하는 타이밍(=거리, 커플링)에
 // 따라 성패가 갈렸다 - "밀착하면 안 읽히고 2~3cm 띄우면 읽힌다"가 그 증상이다.
-static bool DetectAndRead(uint8_t outData[32])
+// 판독 1회의 결말. "카드 자체를 못 봄"과 "카드는 봤는데 읽기 실패"를 갈라야 원인이 갈린다:
+// 전자가 반복되면 PN532에 ATQA조차 오지 않는 것(과결합/거리/RF), 후자면 데이터 교환 단계 문제.
+enum DetectResult { DETECT_NO_TARGET, DETECT_READ_FAIL, DETECT_OK };
+
+static DetectResult DetectAndReadEx(uint8_t outData[32], unsigned long &detectMs, unsigned long &readMs)
 {
   uint8_t uid[7];
   uint8_t uidLength = 0;
   // InListPassiveTarget을 보내고 응답을 끝까지 읽는다(drain). 카드가 없으면 PN532가
   // RFID_ACTIVATION_RETRIES 회 시도 후 "0 targets"로 스스로 끝내므로 false가 깨끗하게 돌아오고,
   // PN532는 다음 명령을 받을 수 있는 상태로 남는다. timeout은 그 자체 종료가 늦어질 때의 상한이다.
-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, RFID_DETECT_TIMEOUT_MS))
-    return false;
-  return nfc.ntag2xx_ReadPage(7, outData) != 0;
+  const unsigned long t0 = millis();
+  const bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, RFID_DETECT_TIMEOUT_MS);
+  detectMs = millis() - t0;
+  readMs = 0;
+  if (!found) return DETECT_NO_TARGET;
+  const unsigned long t1 = millis();
+  const bool ok = nfc.ntag2xx_ReadPage(7, outData) != 0;
+  readMs = millis() - t1;
+  return ok ? DETECT_OK : DETECT_READ_FAIL;
 }
 
-// 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도. 성공한 Gain은 currentGain에 남아 다음 호출에도 유지된다.
-static bool DetectWithGainSwitch(uint8_t outData[32])
+static bool DetectAndRead(uint8_t outData[32])
 {
-  if (DetectAndRead(outData)) return true;
-  currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-  ApplyGain(currentGain);
-  return DetectAndRead(outData);
+  unsigned long detectMs, readMs;
+  return DetectAndReadEx(outData, detectMs, readMs) == DETECT_OK;
+}
+
+// ── [RFID-T] 판독 진단 ──
+// 밀착 증상은 tag_user_data가 찍히기 "전"에 있어서 지금까지 어떤 로그에도 잡히지 않았다.
+// 성공은 즉시 1줄(직전 연속 실패 횟수·지속시간 포함), "카드는 봤는데 읽기 실패"는 1초에 1줄,
+// 카드 없는 유휴는 RFID_DIAG_SUMMARY_MS마다 1줄 요약. Serial은 텔넷으로도 미러링된다.
+static unsigned long rfidDiagWindowStartMs = 0;
+static unsigned int  rfidDiagPolls = 0, rfidDiagNoTarget = 0, rfidDiagReadFail = 0;
+static unsigned long rfidDiagDetectMsSum = 0, rfidDiagDetectMsMax = 0;
+static unsigned int  rfidDiagFailStreak = 0;          // 마지막 성공 이후 연속 실패 횟수
+static unsigned int  rfidDiagReadFailStreak = 0;      // 그중 "찾았는데 읽기 실패"
+static unsigned long rfidDiagFailStreakStartMs = 0;   // 연속 실패가 시작된 시각
+static unsigned long rfidDiagLastReadFailLogMs = 0;
+
+static void RfidDiagFlushSummary()
+{
+  if (rfidDiagPolls == 0) return;
+  Serial.println("[RFID-T] idle " + String((millis() - rfidDiagWindowStartMs) / 1000) + "s: polls=" + String(rfidDiagPolls) +
+                 " no_target=" + String(rfidDiagNoTarget) + " read_fail=" + String(rfidDiagReadFail) +
+                 " detect_avg=" + String(rfidDiagDetectMsSum / rfidDiagPolls) + "ms detect_max=" + String(rfidDiagDetectMsMax) +
+                 "ms gain=NEAR(0x19)");
+  rfidDiagPolls = rfidDiagNoTarget = rfidDiagReadFail = 0;
+  rfidDiagDetectMsSum = rfidDiagDetectMsMax = 0;
+  rfidDiagWindowStartMs = millis();
+}
+
+// 일반 게임 태그 판독 경로. gain은 고정이라 시도는 1회다.
+static bool DetectTag(uint8_t outData[32])
+{
+  unsigned long detectMs, readMs;
+  const DetectResult result = DetectAndReadEx(outData, detectMs, readMs);
+  const unsigned long now = millis();
+
+  if (rfidDiagWindowStartMs == 0) rfidDiagWindowStartMs = now;
+  rfidDiagPolls++;
+  rfidDiagDetectMsSum += detectMs;
+  if (detectMs > rfidDiagDetectMsMax) rfidDiagDetectMsMax = detectMs;
+
+  if (result == DETECT_OK)
+  {
+    // 직전 실패 연속이 있었다면 그 길이가 "카드를 대고 있었는데 안 읽힌 시간"의 상한이다
+    // (카드가 없던 시간도 섞이므로 접촉 시점 마커와 함께 봐야 한다).
+    Serial.println("[RFID-T] hit detect=" + String(detectMs) + "ms read=" + String(readMs) + "ms after_fail=" +
+                   String(rfidDiagFailStreak) + " (read_fail=" + String(rfidDiagReadFailStreak) + ") for=" +
+                   String(rfidDiagFailStreak ? now - rfidDiagFailStreakStartMs : 0) + "ms gain=NEAR(0x19)");
+    rfidDiagFailStreak = rfidDiagReadFailStreak = 0;
+    RfidDiagFlushSummary();
+    return true;
+  }
+
+  if (rfidDiagFailStreak == 0) rfidDiagFailStreakStartMs = now;
+  rfidDiagFailStreak++;
+  if (result == DETECT_READ_FAIL)
+  {
+    rfidDiagReadFail++;
+    rfidDiagReadFailStreak++;
+    if (now - rfidDiagLastReadFailLogMs >= RFID_DIAG_READFAIL_LOG_MS)
+    {
+      rfidDiagLastReadFailLogMs = now;
+      Serial.println("[RFID-T] target FOUND but read FAILED detect=" + String(detectMs) + "ms read=" + String(readMs) +
+                     "ms streak=" + String(rfidDiagReadFailStreak) + " gain=NEAR(0x19)");
+    }
+  }
+  else
+  {
+    rfidDiagNoTarget++;
+  }
+  if (now - rfidDiagWindowStartMs >= RFID_DIAG_SUMMARY_MS) RfidDiagFlushSummary();
+  return false;
 }
 
 /**
@@ -104,7 +184,6 @@ void RfidInit(void)
   // 카드가 없을 때 InListPassiveTarget이 스스로 끝나게 한다(기본 0xFF는 카드가 올 때까지 무한 대기).
   // 이게 없으면 DetectAndRead()가 실패한 뒤의 다음 명령이 바쁜 PN532에 막혀 타임아웃을 친다.
   nfc.setPassiveActivationRetries(RFID_ACTIVATION_RETRIES);
-  currentGain = GAIN_NEAR;
   ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
   Serial.println("RFID 연결성공");
 }
@@ -131,13 +210,13 @@ void RfidLoop()
   }
 
   uint8_t data[32];
-  bool detected = DetectWithGainSwitch(data);
+  bool detected = DetectTag(data);
   ObserveGameplayTag(detected);
   if (detected) CardChecking(data);
 }
 
 // 승인 조회를 먼저 처리하고, 조회하지 않는 루프에서만 1초 간격으로 관리자 카드를 확인한다.
-// 느린 Gain 재설정/반대 Gain 재시도와 일반 게임 태그 처리는 승인 대기 경로에서 제외한다.
+// 일반 게임 태그 처리와 [RFID-T] 진단 집계는 승인 대기 경로에서 제외한다.
 void AdminCardPollPending()
 {
   if (revival_approval_polled_this_loop ||
@@ -173,7 +252,7 @@ void AdminCardPollReady()
   }
 
   uint8_t data[32];
-  if (!DetectWithGainSwitch(data)) return;
+  if (!DetectTag(data)) return;
 
   String tagUser = "";
   for (int i = 0; i < 4; i++) tagUser += (char)data[i];

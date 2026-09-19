@@ -30,7 +30,7 @@ The 35 cases verify:
   different tags cannot replace the first pending request's identity or timing.
   An HTTP 200 response without `open` never actuates the relay.
 - Deferred approvals use direct `ReceiveMine` polling. Ordinary server `Loop`
-  calls and the full PN532 gain-switch read path stay idle during approval waits;
+  calls and the normal PN532 read path stay idle during approval waits;
   an iteration that performs approval polling does not also probe PN532.
 - A separate, rate-limited single-gain probe still accepts an administrator card
   while pending, without sending a new game request.

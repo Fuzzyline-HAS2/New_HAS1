@@ -69,6 +69,9 @@ Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 // readPassiveTargetID()가 응답을 기다리는 상한(ms). 위 재시도가 끝나는 시간보다 넉넉하면 되고,
 // PN532가 멈췄을 때 루프가 1000ms(라이브러리 기본)씩 묶이지 않게 하는 안전장치다.
 #define RFID_DETECT_TIMEOUT_MS 250
+// [RFID-T] 판독 진단 출력 간격. 유휴 요약 주기와 "찾았는데 읽기 실패" 줄의 최소 간격.
+#define RFID_DIAG_SUMMARY_MS 5000
+#define RFID_DIAG_READFAIL_LOG_MS 1000
 bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
 
@@ -101,7 +104,7 @@ unsigned long revival_approval_last_admin_poll_ms = 0;
 String revival_request_device_state = "";
 
 // 계속 붙어 있는 게임 태그는 결과가 나온 뒤에도 재전송하지 않는다.
-// 양쪽 Gain에서 읽기 실패가 2회 이상, 600ms 이상 이어져야 같은 태그를 재무장한다.
+// 읽기 실패가 2회 이상, 600ms 이상 이어져야 같은 태그를 재무장한다.
 bool gameplay_tag_latched = false;
 String gameplay_tag_user = "";
 bool gameplay_tag_missing = false;
@@ -117,10 +120,10 @@ void AdminCardPollPending();
 
 bool send_nfc_err = false;
 
-// 근접 인식 Dead Zone 대응용 RxGain 전환 (rfid.ino 구현) — GainMode는 currentGain 등
-// 내부 상태 변수 타입으로만 쓰이고 함수 매개변수 타입으로는 쓰이지 않는다(ApplyGain은 int를 받음).
-// Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다도 앞에
-// 삽입돼서, 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
+// PN532 RxGain 모드. v53부터 GAIN_NEAR(0x19, 23dB)로 고정하며(sensor.ino 주석 참고) GAIN_FAR은
+// 재도입 대비로만 남겨둔다. 함수 매개변수 타입으로는 쓰지 않는다(ApplyGain은 int를 받음) —
+// Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다 앞에 삽입돼서,
+// 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 
 void RfidInit(void);

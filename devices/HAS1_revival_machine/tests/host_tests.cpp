@@ -126,7 +126,7 @@ bool fake_read(uint8_t data[32]) {
   std::memcpy(data, reader_tag.c_str(), 4);
   return true;
 }
-bool DetectWithGainSwitch(uint8_t data[32]) { ++normal_reader_calls; return fake_read(data); }
+bool DetectTag(uint8_t data[32]) { ++normal_reader_calls; return fake_read(data); }
 bool DetectAndRead(uint8_t data[32]) { ++admin_reader_calls; return fake_read(data); }
 void BleAdvertiserUpdateFromDeviceName(const char*) {}
 void SetBrightness(int) {}
