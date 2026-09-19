@@ -28,10 +28,11 @@ on:
 permissions:
   contents: write
 
-# All targets bump and push source versions on the selected branch. Serialize
-# manual deployments across targets/branches, including their fixed release tags.
+# Serialize the same device across branches because its release tag is fixed.
+# Different devices deploy in parallel. SecureOTA's _push_with_retry integrates
+# their version commits with fetch/rebase, attempting push up to 5 times.
 concurrency:
-  group: deploy-firmware
+  group: deploy-firmware-${{ inputs.device }}
   cancel-in-progress: false
 
 env:

@@ -27,6 +27,8 @@ void setup() {
     toSubSerial.begin(115200, SERIAL_8N1, HWSERIAL_RX, HWSERIAL_TX);
 //    has2wifi.Setup("city");
     has2wifi.Setup("badland");
+    // 부팅 시 현재 펌웨어 버전을 서버(esp_version)에 한 번 보고한다.
+    has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
     ota.setLogStream(DebugSerial);
     ota.setOnSuccess([]() {
         ClearGithubOtaState();
