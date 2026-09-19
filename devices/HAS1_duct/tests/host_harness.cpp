@@ -110,6 +110,12 @@ void advance(unsigned long ms) {
     }
 }
 void openNormal() { DuctTag("G1P1"); check(relay == HIGH && !duct_available, "normal open"); }
+// 내부 스위치 한 번 눌렀다 떼기 (누른 상태로 남기지 않는다).
+void pressSwitch() {
+    switchInput = HIGH; ActivateFunc();
+    switchInput = LOW;  ActivateFunc();
+    switchInput = HIGH; ActivateFunc();
+}
 void finished() { advance(7000); check(duct_available && relay == LOW, "cooldown completes"); }
 void adminRepeat() {
     MmmmOpen(); check(mmmm_open && relay == HIGH, "admin may reopen");
@@ -235,6 +241,51 @@ int main(int argc, char** argv) {
         check(blockedAnnouncements == 3 && cooldownAnnouncements == 0, "blockaded repress repeats correct feedback");
         check(audioEvents == blockadeAudioEvents(25), "blockaded repress announces updated remaining time");
         check(relay == LOW && tagger_mode, "repeated blockade announcement never opens or releases door");
+    } else if (test == "switch_counts") {
+        my["cool_time"] = "5"; my["cool_time_add"] = "5";
+        ReadyFunc(); ActivateRunOnce();
+        check(cooltime == 5 && use_duct_num == 0, "activate seeds the first cooldown before any opening");
+        pressSwitch();
+        check(relay == HIGH && use_duct_num == 1 && cooltime == 5, "inside switch counts as one use");
+        advance(4000);
+        check(relay == LOW && cooltime_timer.isEnabled(cooltime_timer_id), "switch opening arms the cooldown");
+        advance(1000); check(!duct_available && current_time == 1, "switch opening holds a real cooldown");
+        advance(5000); check(duct_available && current_time == 0, "switch cooldown releases after cool_time");
+        pressSwitch(); check(use_duct_num == 2 && cooltime == 5, "second switch use stays on the first ladder step");
+        advance(10000); check(duct_available, "second switch cooldown completes");
+        pressSwitch(); check(use_duct_num == 3 && cooltime == 10, "third use escalates the cooldown from switch openings");
+        advance(13000); check(!duct_available && current_time == 9, "escalated cooldown outlasts the base cooldown");
+        advance(2000); check(duct_available, "escalated cooldown completes");
+    } else if (test == "switch_tag_share_count") {
+        my["cool_time"] = "5"; my["cool_time_add"] = "5";
+        ReadyFunc(); ActivateRunOnce();
+        DuctTag("G1P1"); check(use_duct_num == 1 && cooltime == 5, "outside tag still counts one use");
+        advance(10000); check(duct_available, "tag cooldown completes");
+        pressSwitch(); check(use_duct_num == 2, "switch shares the counter with outside tags");
+        advance(10000); check(duct_available, "switch cooldown completes");
+        DuctTag("G1P2"); check(use_duct_num == 3 && cooltime == 10, "switch use pushes the next tag onto the next step");
+        advance(15000); check(duct_available, "escalated cooldown completes");
+        MmmmOpen(); advance(4000);
+        check(use_duct_num == 3 && duct_available && !cooltime_timer.isEnabled(cooltime_timer_id),
+              "admin opening is still not counted and creates no cooldown");
+        SettingFunc(); check(use_duct_num == 0 && cooltime == 0, "reset clears the use counter");
+    } else if (test == "blocked_open_not_counted") {
+        my["cool_time"] = "5"; my["cool_time_add"] = "5";
+        ReadyFunc(); ActivateRunOnce();
+        EnterTaggerMode(); pressSwitch();
+        check(relay == LOW && use_duct_num == 0, "blockaded switch opens nothing and counts nothing");
+        ExitTaggerMode(); pressSwitch(); check(use_duct_num == 1, "switch counts again after the blockade");
+        advance(4000); pressSwitch();
+        check(relay == LOW && use_duct_num == 1, "switch during cooldown does not count a use");
+        advance(6000); check(duct_available && use_duct_num == 1, "cooldown completes without extra counting");
+    } else if (test == "server_cooltime_fallback") {
+        my["cool_time"] = "0"; my["cool_time_add"] = "0";
+        cooltime_set = 30; cooltime_add = 30;
+        ReadyFunc(); ActivateRunOnce();
+        check(cooltime_set == 30 && cooltime == 30, "missing or zero cool_time keeps the firmware default");
+        check(cooltime_add == 0, "cool_time_add of zero is honoured as no escalation");
+        my["cool_time"] = "7"; ReadyFunc(); ActivateRunOnce();
+        check(cooltime_set == 7 && cooltime == 7, "server cool_time is adopted when set");
     } else if (test.rfind("audio_", 0) == 0) {
         const int seconds = std::stoi(test.substr(6));
         const bool minutes = seconds >= 60;

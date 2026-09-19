@@ -10,8 +10,8 @@ void DuctTag(String tag_player)
         // [진단 로그] tag_player가 정상적으로 서버에 전송되는 경로인지 확인용.
         Serial.print("[DuctTag] duct_available - recording tag_player="); Serial.println(tag_player);
         tag_player_name = tag_player;
-        use_duct_num++;
-        CooltimeCalculation();
+        // 사용횟수 증가와 쿨타임 재계산은 실제로 문을 여는 DuctOpen()이 맡는다.
+        // (내부 스위치 개방도 똑같이 1회로 세기 위함)
         DuctOpen();
         TagPlayerSend();
     }
@@ -41,6 +41,13 @@ void DuctOpen(bool switch_push)
     // 쿨타임 중 스위치 네오픽셀은 이미 빨간색으로 사용 불가를 표시한다(커밋 ff0dbfc).
     if (duct_available)
     {
+        // 외부 태그든 내부 스위치든 실제로 열린 개방만 1회 사용으로 세고, 그 횟수로 이번
+        // 쿨타임을 다시 계산한다. 예전에는 DuctTag()에만 있어서 내부 스위치로 열면 쿨타임
+        // 증가 사다리가 전혀 오르지 않았고, 한 번도 태그 없이 스위치부터 누르면
+        // cooltime 이 0 인 채로 잠겨 1초 만에 풀렸다(현장 리포트).
+        // 관리자 개방(MmmmOpen)은 이 경로를 타지 않으므로 여전히 횟수에서 제외된다.
+        use_duct_num++;
+        CooltimeCalculation();
         if (cooltime_timer.isEnabled(cooltime_timer_id))
         {
             cooltime_timer.deleteTimer(cooltime_timer_id);
