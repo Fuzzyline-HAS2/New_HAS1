@@ -325,6 +325,21 @@ int main(int argc, char** argv) {
               "original four second close still fires under blockade");
         check(cooltime_timer.isEnabled(cooltime_timer_id) && current_time == 0,
               "original close still prepares frozen normal cooldown");
+    } else if (test == "open_audio_paths") {
+        // 펌웨어 하네스 main은 mp3_available을 켜지 않는다. Mp3PlayLargeFolder가 이 플래그로 조기 반환하므로 켜 준다.
+        mp3_available = true;
+        openNormal();
+        check(audioEvents == std::vector<String>{"play:9:712"}, "outside tag plays the outside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); pressSwitch();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:719"}, "inside switch plays the inside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); DuctOpen();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "server manage open plays the outside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); MmmmOpen();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "admin card plays the outside opening line");
+        advance(4000); check(relay == LOW && !mmmm_open, "admin opening closes");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }

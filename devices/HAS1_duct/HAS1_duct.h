@@ -63,6 +63,7 @@ int cooltime_add = 30;
 void DuctTag(String tag_player);
 void DuctOpen(bool switch_push = false);
 void DuctClose();
+void OpenMp3(bool inside);
 void CooltimeCalculation();
 int  CooltimeBarPixels();
 void CooltimeMp3();

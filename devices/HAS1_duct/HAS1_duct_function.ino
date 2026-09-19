@@ -24,6 +24,15 @@ void DuctTag(String tag_player)
     }
 }
 
+/**
+ * @brief 개방 안내. 밖에서 열면(태그·서버 관리 개방·MMMM) "당겨주십시오"(09/0712),
+ *        안에서 스위치로 열면 "밀어주십시오" 계열(09/0719). 영어는 Mp3MakePhrase가 폴더 10으로 바꾼다.
+ */
+void OpenMp3(bool inside)
+{
+    Mp3PlayLargeFolder(9, inside ? 719 : 712);
+}
+
 void DuctOpen(bool switch_push)
 {
     if (mmmm_open) return;
@@ -52,7 +61,7 @@ void DuctOpen(bool switch_push)
         {
             cooltime_timer.deleteTimer(cooltime_timer_id);
         }
-        Mp3PlayLargeFolder(1, 2);
+        OpenMp3(switch_push);
         switch_available = false;
         duct_available = false;
         // 문이 닫힌 뒤 시작할 쿨타임을 준비한다.
@@ -232,7 +241,7 @@ void MmmmOpen()
 
     switch_available = false;
     duct_available   = false;
-    Mp3PlayLargeFolder(1, 2);
+    OpenMp3(false);
     if (!tagger_mode)
     {
         pixels_line.lightColor(line_red);

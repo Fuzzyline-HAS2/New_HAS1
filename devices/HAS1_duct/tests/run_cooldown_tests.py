@@ -51,7 +51,8 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "switch_counts", "switch_tag_share_count", "blocked_open_not_counted",
          "server_cooltime_fallback",
          "audio_0", "audio_28", "audio_60", "audio_90",
-         "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close"]
+         "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close",
+         "open_audio_paths"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     src, exe = Path(tmp) / "test.cpp", Path(tmp) / "test"
     src.write_text(source)
