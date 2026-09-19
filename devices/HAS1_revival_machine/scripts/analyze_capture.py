@@ -511,10 +511,14 @@ def report(trials, gap_ms, show_timeline):
                 continue
             print(f"   [{index}] glove={info['user']}  결과: {info['outcome']}  (line {info['lineno']})")
             if info["auto_hold"] is not None:
-                if info["auto_hold"]:
+                if info["auto_hold"] and info["held_read_count"]:
                     print(f"       태그 유지 판별              : 유지(HELD) - 통전 종료 뒤에도 같은 태그가"
                           f" {info['held_read_count']}회 읽힘 (마지막 +{info['held_until_ms']/1000:.1f}s),"
                           f" 재개방 없음 = v49 래치 정상")
+                elif info["auto_hold"]:
+                    # 래치 없는 펌웨어(v48)에서는 붙여둔 태그가 곧바로 재개방 펄스로 나타난다.
+                    print("       태그 유지 판별              : 유지(HELD) - 통전 종료 직후 같은 태그가 재개방"
+                          " 펄스를 냈다 (래치 없음 = v48 동작)")
                 else:
                     print(f"       태그 유지 판별              : 제거(RELEASED) - 통전 종료 후"
                           f" {HELD_WINDOW_MS/1000:.0f}s 안에 같은 태그 재판독 없음")
