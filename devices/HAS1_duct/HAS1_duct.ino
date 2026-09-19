@@ -36,6 +36,8 @@ void DuctInit() {
     "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_duct/partition_version.txt",
     PARTITION_VER);
   SensorInit();
+  // 서버 명령이 개방/닫기 타이머를 시작하기 전에 BLE 부팅 초기화를 끝낸다.
+  Has1BleBeacon::begin();
   DataChange();
   TimerInit();
 }
@@ -69,4 +71,6 @@ void loop() {
       digitalWrite(RELAY_PIN, LOW);
     }
   }
+  // 닫기 타이머/비상 입력을 먼저 처리하고, 개방 중에는 BLE 설정 재시도를 미룬다.
+  Has1BleBeacon::poll(digitalRead(RELAY_PIN) == LOW);
 }

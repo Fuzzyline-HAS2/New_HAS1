@@ -1,5 +1,10 @@
 void DataChanged()
 {
+  // 서버 이름만 복사한다. BLE 명령/응답 처리는 loop() 끝에서 진행한다.
+  if (my["device_name"].is<const char *>()) {
+    Has1BleBeacon::setDeviceName(my["device_name"].as<const char *>());
+  }
+
   String myJson;
   serializeJson(my, myJson);
   Serial.println(myJson);

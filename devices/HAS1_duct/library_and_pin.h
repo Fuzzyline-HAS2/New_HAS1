@@ -8,6 +8,7 @@
 #include <Arduino.h>
 
 #include <HAS2_Wifi.h>
+#include <HAS1BleBeacon.h>
 
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_PN532.h>

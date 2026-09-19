@@ -124,6 +124,11 @@ jobs:
             git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
             cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
           fi
+          if [[ "$TARGET_DEVICE" != "iotglove" && "$TARGET_DEVICE" != "iotglove_beetle" ]]; then
+            git -C "$LIB_DIR/SecureOTA" log -1 --format='SecureOTA dependency: %H'
+            git -C "$RUNNER_TEMP/has-libraries" log -1 --format='HAS2_Wifi dependency: %H'
+            git -C "$RUNNER_TEMP/simpletimer-src" log -1 --format='SimpleTimer dependency: %H'
+          fi
           echo "SECUREOTA_SCRIPTS=$LIB_DIR/SecureOTA/scripts" >> "$GITHUB_ENV"
 
       - name: 버전 증가
@@ -154,6 +159,11 @@ jobs:
           if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" ]]; then
             EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/IoTGloveProtocol")
           fi
+          case "$TARGET_DEVICE" in
+            HAS1_duct|HAS1_generator|HAS1_escape_main|HAS1_tagmachine_main)
+              EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/HAS1BleBeacon")
+              ;;
+          esac
           arduino-cli compile --fqbn "$FQBN" "${EXTRA_LIBRARIES[@]}" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
 
       - name: 빌드 산출물 배치

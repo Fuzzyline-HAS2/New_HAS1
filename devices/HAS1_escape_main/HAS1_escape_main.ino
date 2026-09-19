@@ -53,6 +53,8 @@ void setup() {
     toSubSerial.println("R");
     toSubSerial.println("R");
     toSubSerial.println("R");
+    // WiFi와 모터/Beetle 초기화가 끝난 뒤에만 BLE 컨트롤러를 준비한다.
+    Has1BleBeacon::begin();
 }
 void loop() {
     TelnetRun();
@@ -67,4 +69,6 @@ void loop() {
         lastSwDebugMs = millis();
         Serial.println("[SWDEBUG] SW_PIN=" + String(digitalRead(SW_PIN)));
     }
+    // 모터 펄스 루프 안에서는 호출하지 않는다. 모든 장치 처리 뒤 한 단계만 진행한다.
+    Has1BleBeacon::poll();
 }

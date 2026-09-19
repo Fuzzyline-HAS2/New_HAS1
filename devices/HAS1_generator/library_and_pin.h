@@ -16,6 +16,7 @@
 #include <SoftwareSerial.h>       // DFPlayer와 통신하기 위한 소프트웨어 UART
 #include "DFRobotDFPlayerMini.h"  // MP3 음원 재생 모듈(DFPlayer Mini) 제어 라이브러리
 #include <HAS2_Wifi.h>            // 서버와 통신(상태 송수신)하는 사내 공용 WiFi 라이브러리
+#include <HAS1BleBeacon.h>
 #include <SimpleTimer.h>          // millis() 기반 소프트웨어 인터벌 타이머 라이브러리
 #include <SecureOTA.h>            // 서명 검증 기반 OTA(원격 펌웨어 업데이트) 라이브러리
 #include "secrets.h"              // OTA 서명 검증용 HMAC 비밀키 (별도 관리, git에 커밋되는 값은 아님)

@@ -70,10 +70,14 @@ void setup() {
     // }
     // esp_task_wdt_add(NULL);
     // Serial.println("[WDT] 12s watchdog started");
+    // WiFi와 Beetle 핸드셰이크가 끝난 뒤에만 BLE 컨트롤러를 준비한다.
+    Has1BleBeacon::begin();
 }
 void loop() {
     // esp_task_wdt_reset();  // [WDT 비활성화]
     if (ptrCurrentMode != nullptr) ptrCurrentMode();
     TimerRun();
     TelnetRun();
+    // 태그/게이지 진행 중에는 BLE 설정 재시도를 미루고 기존 광고는 유지한다.
+    Has1BleBeacon::poll(!loginDone);
 }
