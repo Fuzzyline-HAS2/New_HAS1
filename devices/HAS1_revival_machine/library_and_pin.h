@@ -34,23 +34,19 @@
 
 // wifi_timer(서버 폴링) 주기.
 #define WIFI_POLL_INTERVAL_DEFAULT_MS 2000
-// activate 구간 폴링 주기. 원래 300ms였고 목적은 device_state="open" 반영 지연 단축이었다.
-// v49부터는 승인 대기 중 PollRevivalApproval()이 300ms 간격으로 ReceiveMine()을 직접 조회해
-// 개방을 잡으므로(approval.ino), 유휴 activate 구간의 이 폴링은 개방 지연에 더 이상 관여하지
-// 않는다. 남은 역할은 서버가 보내는 상태 변경(tagger 봉쇄, 재무장 등)을 인지하는 것뿐이다.
+// activate 구간 폴링 주기. 서버가 보내는 상태 변경(tagger 봉쇄, 재무장 등)을 인지하는 용도.
+// 개방 승인 자체는 v49부터 승인 대기 중 PollRevivalApproval()이 300ms로 ReceiveMine()을 직접
+// 조회해 잡으므로(approval.ino) 이 값은 개방 지연에는 관여하지 않는다.
 //
-// 2000ms로 올린 이유(v51 실험): 현장에서 PN532에 글러브를 밀착 유지하면 activate에서만 판독이
-// 늦거나 뗄 때 되고, open 상태에서는 거리와 무관하게 바로 읽힌다. 두 상태의 코드 차이는 이
-// 폴링 주기 하나다. 300ms 주기는 HTTP 왕복(~280ms)과 거의 같아 activate 루프의 절반 이상이
-// 블로킹 HTTP였고, PN532 판독 시도가 매번 Wi-Fi 송신 직후에 걸렸다(전원 스파이크/루프 점유).
-// 밀착(<2cm)은 이 로트에서 마진이 없는 구간이라(sensor.ino RxGain 주석) 그 영향을 먼저 받는다.
-//
-// 비용: 서버가 device_state를 바꿔도(예: tagger 봉쇄) 기기가 최대 2초 늦게 인지한다.
-// 실험 결과 밀착 판독이 개선되면 유지하고, 그대로면 gain 고정 실험으로 넘어간다.
-//
-// (참고) 300 -> 700 실험(v39)은 잘못된 측정으로 되돌렸었다: 마커로 쓴 "[GameState]
-// device_state=open confirmed" 로그가 SolenoidPulse(5000) 뒤에 찍혀 5초 늦게 관측됐다.
-#define WIFI_POLL_INTERVAL_ACTIVATE_MS 2000
+// 실험 이력:
+//  - 300 -> 700 (v39): 잘못된 측정으로 되돌림. 마커로 쓴 "[GameState] device_state=open
+//    confirmed" 로그가 SolenoidPulse(5000) 뒤에 찍혀 5초 늦게 관측된 것이었다.
+//  - 300 -> 2000 (v51): "글러브를 PN532에 밀착 유지하면 activate에서만 판독이 늦고 open에서는
+//    거리와 무관하다"의 원인이 activate/open 간 유일한 코드 차이인 이 폴링 주기인지 실험.
+//    현장 결과 밀착 판독은 그대로였다 -> 기각. tagger 봉쇄 인지가 최대 2초 늦어지는 비용만
+//    남으므로 300으로 되돌린다. 실제 원인은 PN532 판독 시퀀스의 프로토콜 위상 어긋남이었다
+//    (sensor.ino DetectAndRead 주석).
+#define WIFI_POLL_INTERVAL_ACTIVATE_MS 300
 
 #define PN532_SCK                       (18)
 #define PN532_MISO                      (19)

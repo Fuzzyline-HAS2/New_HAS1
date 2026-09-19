@@ -53,12 +53,30 @@ static bool ApplyGain(int mode)
 }
 
 // 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
+//
+// 예전 시퀀스(0x00 명령 -> startPassiveTargetIDDetection -> ntag2xx_ReadPage)는 PN532 호스트
+// 프로토콜에 맞지 않았다(Adafruit PN532 1.3.4 소스로 확인):
+//  - sendCommandCheckAck()는 응답이 "준비될 때까지" 기다리기만 하고 읽지 않는다. 그래서
+//    InListPassiveTarget 응답을 읽지 않은 채 InDataExchange를 보내면 프레임 위상이 어긋나
+//    (다음 명령의 ACK 자리에서 이전 응답을 읽음) 읽기가 실패하거나 이전 데이터가 재사용된다.
+//    HAS1_escape_sub d3f0495가 같은 문제를 "응답 drain"으로 고쳤다.
+//  - 정의되지 않은 0x00 명령은 에러 프레임(0x7F)만 남긴다. 통신 확인 용도였지만
+//    readPassiveTargetID()가 실패로 알려주므로 필요 없다.
+//  - 카드가 없을 때 InListPassiveTarget은 기본 재시도(0xFF = 무한)로 끝나지 않는다. 그 상태로
+//    다음 명령(ApplyGain)을 보내면 응답을 못 받아 1000ms 타임아웃을 친다(PR #28 실측
+//    lastApplyGain=1002ms). RfidInit()의 setPassiveActivationRetries()가 이걸 유한하게 만든다.
+// 위상이 어긋난 채 돌다가 우연히 맞을 때만 읽히는 구조라, 카드가 응답하는 타이밍(=거리, 커플링)에
+// 따라 성패가 갈렸다 - "밀착하면 안 읽히고 2~3cm 띄우면 읽힌다"가 그 증상이다.
 static bool DetectAndRead(uint8_t outData[32])
 {
-  byte buf[64] = {0};
-  if (!nfc.sendCommandCheckAck(buf, 1)) return false;
-  if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
-  return nfc.ntag2xx_ReadPage(7, outData);
+  uint8_t uid[7];
+  uint8_t uidLength = 0;
+  // InListPassiveTarget을 보내고 응답을 끝까지 읽는다(drain). 카드가 없으면 PN532가
+  // RFID_ACTIVATION_RETRIES 회 시도 후 "0 targets"로 스스로 끝내므로 false가 깨끗하게 돌아오고,
+  // PN532는 다음 명령을 받을 수 있는 상태로 남는다. timeout은 그 자체 종료가 늦어질 때의 상한이다.
+  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, RFID_DETECT_TIMEOUT_MS))
+    return false;
+  return nfc.ntag2xx_ReadPage(7, outData) != 0;
 }
 
 // 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도. 성공한 Gain은 currentGain에 남아 다음 호출에도 유지된다.
@@ -83,6 +101,9 @@ void RfidInit(void)
     return;
   }
   nfc.SAMConfig(); // configure board to read RFID tags
+  // 카드가 없을 때 InListPassiveTarget이 스스로 끝나게 한다(기본 0xFF는 카드가 올 때까지 무한 대기).
+  // 이게 없으면 DetectAndRead()가 실패한 뒤의 다음 명령이 바쁜 PN532에 막혀 타임아웃을 친다.
+  nfc.setPassiveActivationRetries(RFID_ACTIVATION_RETRIES);
   currentGain = GAIN_NEAR;
   ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
   Serial.println("RFID 연결성공");
