@@ -17,7 +17,7 @@ struct Mp3Phrase {
 };
 
 const uint8_t MP3_QUEUE_CAPACITY = 4;
-const unsigned long MP3_TRACK_MARGIN_MS = 200;
+const unsigned long MP3_TRACK_MARGIN_MS = 100;
 Mp3Phrase mp3_pending[MP3_QUEUE_CAPACITY];
 Mp3Phrase mp3_active_phrase;
 uint8_t mp3_pending_count = 0;

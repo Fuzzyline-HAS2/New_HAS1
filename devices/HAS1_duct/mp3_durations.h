@@ -6,7 +6,7 @@
 // Commit: e49fa96d26ceb0c5fdc3c379c7e5a619c944ce32
 // Path: audios/V2/duct_MP3_22k/01~08 (154 WAV files).
 // Python wave: ceil(nframes * 1000 / framerate), using integer arithmetic.
-// 재생 여유 200ms는 시퀀서에서 더한다. 음원 교체 시 길이표도 다시 측정한다.
+// 재생 여유(MP3_TRACK_MARGIN_MS)는 시퀀서에서 더한다. 음원 교체 시 길이표도 다시 측정한다.
 inline unsigned long Mp3TrackDurationMs(uint8_t folder, uint16_t track)
 {
     switch (folder) {
