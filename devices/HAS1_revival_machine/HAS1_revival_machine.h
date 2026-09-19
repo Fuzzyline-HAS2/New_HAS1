@@ -110,7 +110,7 @@ int arrow_neo_line_3;
 // Adafruit_NeoPixel::setBrightness()로 전역 스케일한다.
 //   - DEFAULT_BRIGHTNESS : 서버 brightness(%) 미지정 시 기본 밝기 (0~255)
 //   - 서버에서 brightness(1~100%)를 받으면 SetBrightness()가 1~255로 환산해 적용
-#define DEFAULT_BRIGHTNESS 20   // 0~255. 이 값만 올리면 전체가 밝아진다.
+#define DEFAULT_BRIGHTNESS 50   // 0~255. 이 값만 올리면 전체가 밝아진다.
 int color_brightness = DEFAULT_BRIGHTNESS;
 
 // breathe(숨쉬기) 애니메이션: 색 값을 0~BREATHE_MAX 로 왕복시켜 밝기 펄스를 만든다.

@@ -99,6 +99,10 @@ Adafruit_NeoPixel pixels_side(NUMPIXELS_SIDE, NEOPIXEL_PIN_SIDE, NEO_GRB + NEO_K
 Adafruit_NeoPixel pixels_square2(NUMPIXELS_SQUARE2, NEOPIXEL_PIN_SQUARE2, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel pixels_pn532(NUMPIXELS_PN532, NEOPIXEL_PIN_PN532, NEO_GRB + NEO_KHZ800);
 
+// DEFAULT_BRIGHTNESS: 부팅 직후 및 서버 brightness 값이 유효 범위(1~100)를 벗어날 때
+// 적용하는 기준 밝기 (raw 0~255). 다른 HAS1 device와 동일한 값으로 맞춘다.
+#define DEFAULT_BRIGHTNESS 50
+
 // Neopixel 색상정보 (다른 장치들과 동일하게 풀스케일 255 기준 — 실제 밝기는 setBrightness()가 담당)
 int black[3] = {0, 0, 0};
 int white[3] = {255, 255, 255};

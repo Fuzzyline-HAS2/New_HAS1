@@ -1,6 +1,10 @@
 #pragma once
 
 // ── Neopixel ─────────────────────────────────────────────────────────────
+// DEFAULT_BRIGHTNESS: 부팅 직후 및 서버 brightness 값이 유효 범위(1~100)를 벗어날 때
+// 적용하는 기준 밝기 (raw 0~255). 다른 HAS1 device와 동일한 값으로 맞춘다.
+#define DEFAULT_BRIGHTNESS 50
+
 enum NeoColor { BLACK = 0, WHITE, RED, YELLOW, GREEN, BLUE, PURPLE };
 enum NeoStrip  { NEO_PN532 = 0, NEO_ENCODER, NEO_INNER };
 

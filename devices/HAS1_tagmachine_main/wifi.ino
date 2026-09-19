@@ -10,9 +10,7 @@ void DataChanged()
   // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다. JsonDocument는 크기에 상관없이
   // 대입/set()이 되므로 어떤 환경에서도 안전하다.
   static JsonDocument cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
-  if (my["brightness"].as<int>() != cur["brightness"].as<int>()) {
-    UpdateBrightness();
-  }
+  UpdateBrightness();  // 변경 감지는 함수 내부에서 한다
   if((String)(const char*)my["game_state"] != (String)(const char*)cur["game_state"]){
     if((String)(const char*)my["game_state"] == "setting"){
         strCurState = "setting";

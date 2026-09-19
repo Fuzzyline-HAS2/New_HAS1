@@ -1,7 +1,6 @@
 #include "hal.h"
 #include "library_and_pin.h"
 
-#define LED_BRIGHTNESS 127
 static const int NeopixelNum  = 2;
 static const int NumPixels[2] = {28, 24};
 
@@ -32,7 +31,7 @@ static void setColor(int stripIdx, int c[3]) {
 void NeopixelInit() {
     for (int i = 0; i < NeopixelNum; ++i) {
         pixels[i].begin();
-        pixels[i].setBrightness(LED_BRIGHTNESS);
+        pixels[i].setBrightness(DEFAULT_BRIGHTNESS);
     }
     NeoSetAll(WHITE);
 }

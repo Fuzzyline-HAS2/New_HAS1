@@ -73,29 +73,23 @@ void DataChange()
     // JsonDocument는 크기에 상관없이 대입/set()이 되므로 어떤 환경에서도 안전하다.
     static JsonDocument cur;
 
-    bool brightness_changed = ((int)my["brightness"] != (int)cur["brightness"]);
+    // 밝기 먼저 반영 — 이어지는 상태 전환이 새 밝기로 칠해지도록. 변경 감지는 SetBrightness() 내부.
+    SetBrightness((int)my["brightness"]);
 
     if ((String)(const char *)my["game_state"] != (String)(const char *)cur["game_state"])
     {
         if ((String)(const char *)my["game_state"] == "setting")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             SettingFunc();
         }
         else if ((String)(const char *)my["game_state"] == "ready")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             ReadyFunc();
         }
         else if ((String)(const char *)my["game_state"] == "activate")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             ActivateRunOnce();
         }
-    }
-    else if (brightness_changed)
-    {
-        SetBrightness((int)my["brightness"]);
     }
 
     if ((String)(const char *)my["device_state"] != (String)(const char *)cur["device_state"])
