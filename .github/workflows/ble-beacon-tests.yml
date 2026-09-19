@@ -1,0 +1,31 @@
+name: BLE beacon tests
+
+on:
+  pull_request:
+    paths:
+      - libraries/HAS1BleBeacon/**
+      - devices/HAS1_duct/**
+      - devices/HAS1_escape_main/**
+      - devices/HAS1_generator/**
+      - devices/HAS1_tagmachine_main/**
+      - .github/workflows/ble-beacon-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest==9.1.1
+      - name: BLE state machine and adapter with sanitizers
+        run: python libraries/HAS1BleBeacon/tests/run_tests.py
+      - name: Duct cooldown and audio regression
+        run: python devices/HAS1_duct/tests/run_cooldown_tests.py
+      - name: Escape state-model regression
+        run: python -m pytest -q devices/HAS1_escape_main/tests

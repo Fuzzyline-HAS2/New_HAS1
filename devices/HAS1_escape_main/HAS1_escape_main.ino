@@ -9,7 +9,7 @@
  *
  */
 
-#define FIRMWARE_VER 35
+#define FIRMWARE_VER 36
 #define PARTITION_VER 1
 #include "HAS1_escape_main.h"
 
@@ -27,6 +27,8 @@ void setup() {
     toSubSerial.begin(115200, SERIAL_8N1, HWSERIAL_RX, HWSERIAL_TX);
 //    has2wifi.Setup("city");
     has2wifi.Setup("badland");
+    // 부팅 시 현재 펌웨어 버전을 서버(esp_version)에 한 번 보고한다.
+    has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
     ota.setLogStream(DebugSerial);
     ota.setOnSuccess([]() {
         ClearGithubOtaState();
@@ -53,6 +55,8 @@ void setup() {
     toSubSerial.println("R");
     toSubSerial.println("R");
     toSubSerial.println("R");
+    // WiFi와 모터/Beetle 초기화가 끝난 뒤에만 BLE 컨트롤러를 준비한다.
+    Has1BleBeacon::begin();
 }
 void loop() {
     TelnetRun();
@@ -67,4 +71,6 @@ void loop() {
         lastSwDebugMs = millis();
         Serial.println("[SWDEBUG] SW_PIN=" + String(digitalRead(SW_PIN)));
     }
+    // 모터 펄스 루프 안에서는 호출하지 않는다. 모든 장치 처리 뒤 한 단계만 진행한다.
+    Has1BleBeacon::poll();
 }

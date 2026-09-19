@@ -54,6 +54,11 @@ void SettingFunc()
     current_time = 0;
     cooltime = 0;
     cooltime_timer.deleteTimer(cooltime_timer_id);
+    // 이전 게임의 닫기 콜백이 쿨타임이나 관리자 스냅샷을 되살리지 않게 한다.
+    duct_close_timer.deleteTimer(duct_close_timer_id);
+    digitalWrite(RELAY_PIN, LOW);
+    mmmm_open = false;
+    switch_available = true;
 
     pixels_line.lightColor(line_white);
     pixels_round.lightColor(white);
@@ -73,6 +78,11 @@ void ReadyFunc()
     current_time = 0;
     cooltime = 0;
     cooltime_timer.deleteTimer(cooltime_timer_id);
+    // 이전 게임의 닫기 콜백이 쿨타임이나 관리자 스냅샷을 되살리지 않게 한다.
+    duct_close_timer.deleteTimer(duct_close_timer_id);
+    digitalWrite(RELAY_PIN, LOW);
+    mmmm_open = false;
+    switch_available = true;
 
     pixels_line.lightColor(line_red);
     pixels_round.lightColor(red);
@@ -84,8 +94,13 @@ void ReadyFunc()
  */
 void ActivateFunc()
 {
+    static bool switch_was_pressed = false;
     RfidLoop();
-    if(!digitalRead(SW_PIN) && switch_available) { DuctOpen(true); }
+    bool switch_pressed = !digitalRead(SW_PIN);
+    bool switch_just_pressed = switch_pressed && !switch_was_pressed;
+    switch_was_pressed = switch_pressed;
+    // 길게 눌러도 안내와 개방은 한 번만 처리한다. 다시 누르려면 버튼을 놓아야 한다.
+    if (switch_just_pressed && switch_available) { DuctOpen(true); }
 }
 
 /**
@@ -99,7 +114,6 @@ void ActivateRunOnce()
     // 쿨타임과 쿨타임 증가량을 DB에서 읽어 사용할 수 있음
     cooltime_set = (int)my["cool_time"];
     cooltime_add = (int)my["cool_time_add"];
-    can_exit_on_tagger = my["can_exit_on_tagger"].as<bool>();
 
     pixels_line.lightColor(line_yellow);
     pixels_round.lightColor(yellow);
@@ -111,6 +125,11 @@ void ActivateRunOnce()
  */
 void DataChange()
 {
+    // 서버 이름만 복사한다. BLE 명령/응답 처리는 loop() 끝에서 진행한다.
+    if (my["device_name"].is<const char *>()) {
+        Has1BleBeacon::setDeviceName(my["device_name"].as<const char *>());
+    }
+
     // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
     // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
     // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다(다른 device들과 동일 이슈).
@@ -184,21 +203,10 @@ void EnterTaggerMode()
 {
     if (tagger_mode) return;   // 재진입 방지 (tagger -> activate -> tagger 등)
     tagger_mode = true;        // RfidLoop / CooltimeTimerFunc 자동 정지
+    tagger_started_ms = millis();
 
-    // 덕트킬은 문이 열려있는 도중(=DuctOpen이 예약해둔 DuctClose/MmmmClose 타이머가 아직
-    // 대기 중)에도 발생할 수 있다. 그 타이머를 그대로 두면 몇 초 뒤 DuctClose/MmmmClose가
-    // 실행되어 duct_available/색상을 되돌리고 device_state를 "lock"으로 재전송해, 방금 보낸
-    // "tagger" 봉쇄 상태를 곧바로 덮어써버린다. 예약된 타이머를 취소하고, 문이 아직 열려
-    // 있는 상태(switch_available == false)라면 상태/색상/서버 보고를 건드리지 않는
-    // TaggerSwitchClose로 도어 닫기만 넘겨준다.
-    if (duct_close_timer.isEnabled(duct_close_timer_id))
-    {
-        duct_close_timer.deleteTimer(duct_close_timer_id);
-        if (!switch_available)
-        {
-            duct_close_timer_id = duct_close_timer.setTimeout(4000, TaggerSwitchClose);
-        }
-    }
+    // 닫기 예약을 유지해야 일반 쿨타임 시작과 관리자 상태 복원이 빠지지 않는다.
+    // 각 닫기 함수가 봉쇄 중 색상과 서버 상태를 보존한다.
 
     pixels_line.lightColor(line_purple);
     pixels_round.lightColor(purple);

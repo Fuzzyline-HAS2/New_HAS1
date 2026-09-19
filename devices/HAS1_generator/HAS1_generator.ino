@@ -17,7 +17,7 @@
 // FIRMWARE_VER / PARTITION_VER: OTA가 "새 버전이 있는지" 판단하는 기준값.
 // GitHub Releases에 올라간 version.txt / partition_version.txt와 비교되며,
 // 배포할 때마다 이 숫자를 올려야 기기가 업데이트를 인식한다.
-#define FIRMWARE_VER 16
+#define FIRMWARE_VER 17
 #define PARTITION_VER 1
 #include "HAS1_generator.h"
 
@@ -92,6 +92,8 @@ void setup() {
     // 서버로부터 받아온 초기 데이터(my)를 한 번 처리해서 현재 game_state/device_state에 맞는
     // 모드로 즉시 전환되도록 함 (예: 이미 game_state가 "activate"라면 ActivateFunc가 바로 호출됨)
     DataChanged();
+    // WiFi와 장치 초기화가 끝난 뒤에만 BLE 컨트롤러를 준비한다.
+    Has1BleBeacon::begin();
 }
 
 // ---------------------------------------------------------------------------------
@@ -110,4 +112,6 @@ void loop() {
     // 잡기 위해 ptrCurrentMode와 무관하게 매 프레임 별도로 감시한다.
     WireTheftMonitorLoop();
     TimerRun();         // WifiTimer / GameTimer / BlinkTimer 갱신 — 인터벌이 도래하면 콜백 실행
+    // 엔코더/배선/서버 처리가 끝난 뒤 BLE 설정을 대기 없이 한 단계만 진행한다.
+    Has1BleBeacon::poll();
 }
