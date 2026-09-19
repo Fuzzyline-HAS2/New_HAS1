@@ -93,6 +93,12 @@ void RfidInit(void)
  */
 void RfidLoop()
 {
+  if (revival_approval_pending)
+  {
+    AdminCardPollPending();
+    return;
+  }
+
   if (!rfid_tag)
   {
     rfid_tag = true;
@@ -104,8 +110,25 @@ void RfidLoop()
   }
 
   uint8_t data[32];
-  if (DetectWithGainSwitch(data)) // 근접 Dead Zone 대응 위해 근/원거리 Gain을 자동 전환하며 시도
-    CardChecking(data);
+  bool detected = DetectWithGainSwitch(data);
+  ObserveGameplayTag(detected);
+  if (detected) CardChecking(data);
+}
+
+// 승인 조회를 먼저 처리하고, 조회하지 않는 루프에서만 1초 간격으로 관리자 카드를 확인한다.
+// 느린 Gain 재설정/반대 Gain 재시도와 일반 게임 태그 처리는 승인 대기 경로에서 제외한다.
+void AdminCardPollPending()
+{
+  if (revival_approval_polled_this_loop ||
+      millis() - revival_approval_last_admin_poll_ms < REVIVAL_ADMIN_POLL_MS) return;
+
+  uint8_t data[32];
+  bool detected = DetectAndRead(data);
+  revival_approval_last_admin_poll_ms = millis();
+  if (!detected) return;
+  String tagUser = "";
+  for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+  if (tagUser == "MMMM") CardChecking(data);
 }
 
 /**
@@ -172,6 +195,19 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // 역할 조회와 승인 왕복까지 포함해 실제 릴레이 반응시간을 잰다.
   const unsigned long tagDetectedMs = millis();
 
+  String game_state_now = (String)(const char *)my["game_state"];
+
+  if (game_state_now == "activate")
+  {
+    // 첫 요청의 사용자/계측값을 보존한다. 다른 태그도 승인 대기 중에는 끼어들지 않는다.
+    if (revival_approval_pending) return;
+    if (gameplay_tag_latched && gameplay_tag_user == tagUser) return;
+    gameplay_tag_latched = true;
+    gameplay_tag_user = tagUser;
+    gameplay_tag_missing = false;
+    gameplay_tag_miss_count = 0;
+  }
+
   // tagger(사용 불가) 상태: 생존자든 유령이든 태그하면 역할 상관없이 보라색으로
   // 3번 점멸만 하고(사용 불가 알림) 열리거나 서버로 아무것도 보내지 않는다.
   if ((String)(const char *)my["device_state"] == "tagger")
@@ -180,8 +216,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     NeoBlinkPurple(3);
     return;
   }
-
-  String game_state_now = (String)(const char *)my["game_state"];
 
   // setting 상태: 역할 조회 없이, 유효한 형식(G#P#)의 태그면 누구든 태그할 때마다 연다.
   // 색상은 흰색 그대로 유지하고, device_state/game_state 모두 setting 그대로 둔다(서버 전송 없음).
@@ -260,29 +294,25 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     Serial.println("[GhostTiming] skip - role=" + tag_role + " (not ghost, open not expected)");
   }
 
+  BeginRevivalApproval(tagDetectedMs);
   unsigned long situationStartMs = millis();
   bool situation_sent = has2wifi.Situation(tagUser, "revival_machine");
   ghost_situation_ms = millis() - situationStartMs;
   Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL") +
                  " took=" + String(ghost_situation_ms) + "ms");
 
-  // Situation이 전송됐으면 서버가 곧 device_state="open"을 쓴다. 일반 폴링 경로
-  // (has2wifi.Loop)는 request=Loop로 shift_machine 플래그를 먼저 확인하고, 플래그가 선
-  // 사이클에서만 ReceiveMine()으로 행을 읽으므로 HTTP 왕복이 한 번 더 붙는다.
-  // 승인을 기다리는 게 확실한 이 시점에는 그 게이트를 건너뛰고 직접 읽어 개방을 앞당긴다.
-  //
-  // 실측(2026-09-10, 첫 태그 1회분):
-  //   Situation 반환 -> 서버가 open 기록      225 ms
-  //   Situation 반환 -> 기존 경로로 기기 인지  608 ms
-  //   ReceiveMine 왕복                        약 282 ms
-  // 왕복(282ms)이 서버 판단(225ms)보다 길어 이 한 번으로 대부분 잡히고, 약 326ms 단축된다.
-  // 서버가 아직 판단을 못 했거나 승인하지 않았으면 device_state가 그대로여서 DataChange()의
-  // 변경 감지에 걸리지 않고 아무 일도 일어나지 않는다 — 그 경우는 평소 폴링이 처리한다.
+  // HTTP 200은 승인 자체가 아니다. 즉시 상태를 읽고, 미확정이면 전용 폴링으로 계속 확인한다.
+  // API가 거부 사유를 노출하지 않으므로 상태가 그대로인 거부도 15초 상한으로 끝낸다.
   if (situation_sent)
   {
-    has2wifi.ReceiveMine();
-    DataChange();
+    PollRevivalApproval();
+    // 서버 계약상 유령 외 역할은 개방 대상이 아니다. 이벤트/즉시 조회는 유지하되
+    // 거부된 생존자 태그가 다음 유령의 사용을 15초 동안 막지 않도록 대기를 끝낸다.
+    if (tag_role != "ghost")
+      EndRevivalApproval("role not eligible");
   }
+  else
+    EndRevivalApproval("Situation failed", tag_role == "ghost");
 }
 
 bool RfidNsecTag(int sec)
