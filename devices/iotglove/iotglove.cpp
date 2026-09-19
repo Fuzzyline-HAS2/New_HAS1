@@ -454,8 +454,8 @@ void render(uint32_t now) {
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
-  const uint8_t percent = kTraining ? 100 : game.server().brightness;
-  const uint8_t brightness = static_cast<uint8_t>((uint16_t(percent) * 255U) / 100U);
+  // Already raw 0..255 — the network task converted it when the snapshot was parsed.
+  const uint8_t brightness = kTraining ? 255 : game.server().brightness;
   if (!haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
       out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness) {
     pixels.setBrightness(brightness);

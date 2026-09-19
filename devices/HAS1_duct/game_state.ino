@@ -2,7 +2,13 @@
 
 void UpdateBrightness()
 {
+    // 값이 그대로면 건너뛴다 — 변경 감지를 호출부가 아니라 여기서 한다 (전 device 공통 방식).
+    // 동결(tagger_mode) 중 바뀐 값도 호출부가 다시 부르는 순간 그대로 반영된다.
+    static int prevServerBrightness = -1;  // -1: 첫 호출은 반드시 적용
     int serverBrightness = my["brightness"].as<int>();
+    if (serverBrightness == prevServerBrightness) return;
+    prevServerBrightness = serverBrightness;
+
     if (serverBrightness <= 0 || serverBrightness > 100) {
         colorBrightness = DEFAULT_COLOR_BRIGHTNESS;
         lineBrightness  = DEFAULT_LINE_BRIGHTNESS;
@@ -13,6 +19,8 @@ void UpdateBrightness()
     pixels_line.setBrightness(lineBrightness);
     pixels_round.setBrightness(colorBrightness);
     pixels_switch.setBrightness(colorBrightness);
+    // setBrightness()만으론 표시가 안 바뀌므로 현재 상태 색을 새 밝기로 다시 칠한다
+    ApplyCurrentNeopixel();
 }
 
 /**
@@ -46,7 +54,6 @@ void ApplyCurrentNeopixel()
  */
 void SettingFunc()
 {
-    UpdateBrightness();
     game_state = setting;
 
     use_duct_num = 0;
@@ -70,7 +77,6 @@ void SettingFunc()
  */
 void ReadyFunc()
 {
-    UpdateBrightness();
     game_state = ready;
 
     use_duct_num = 0;
@@ -108,12 +114,18 @@ void ActivateFunc()
  */
 void ActivateRunOnce()
 {
-    UpdateBrightness();
     game_state = activate;
 
-    // 쿨타임과 쿨타임 증가량을 DB에서 읽어 사용할 수 있음
-    cooltime_set = (int)my["cool_time"];
+    // 쿨타임과 쿨타임 증가량을 DB에서 읽어 사용할 수 있음.
+    // cool_time 이 0이거나 아직 안 내려왔으면 쿨타임이 통째로 사라지므로 기본값을 유지한다.
+    // cool_time_add 는 0("증가 없음")도 유효한 설정이라 받은 값을 그대로 쓴다.
+    int server_cooltime = (int)my["cool_time"];
+    if (server_cooltime > 0) cooltime_set = server_cooltime;
     cooltime_add = (int)my["cool_time_add"];
+
+    // 첫 개방이 내부 스위치여도 쿨타임이 0으로 남지 않게 1회차 값을 미리 채운다.
+    // (CooltimeTimerFunc 은 current_time >= cooltime 이면 즉시 해제한다)
+    cooltime = cooltime_set;
 
     pixels_line.lightColor(line_yellow);
     pixels_round.lightColor(yellow);
@@ -185,10 +197,8 @@ void DataChange()
             }
         }
 
-        if((String)(const char *)my["brightness"] != (String)(const char *)cur["brightness"]){
-            UpdateBrightness();
-            ApplyCurrentNeopixel();
-        }
+        // 밝기 반영 — 변경 감지·재도색은 UpdateBrightness() 내부에서 한다
+        UpdateBrightness();
     }
 
     Serial.println("Data Change");

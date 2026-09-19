@@ -54,18 +54,17 @@ void DataChange()
         return;
     }
 
-    // 유령 태그 -> open 대기 중이면 이번 호출도 폴링 1회로 카운트한다(빠른경로 호출 포함).
-    // GHOST_OPEN_TIMEOUT_MS 안에도 open이 안 오면 타임아웃으로 기록하고 포기 - 6~7초보다
-    // 훨씬 오래 걸리거나 아예 안 열리는 최악의 경우도 놓치지 않기 위함.
-    if (ghost_open_pending)
+    UpdateRevivalApprovalState();
+    // 시간초과/HTTP 실패 뒤 보존한 사용자도 게임 종료나 기기 취소 상태에서 정리한다.
+    // open은 늦은 승인일 수 있으므로 아래의 기존 is_open 기록까지 보존한다.
+    if (last_open_tag_user.length() &&
+        ((String)(const char *)my["game_state"] != "activate" ||
+         ((String)(const char *)my["device_state"] != "open" &&
+          (String)(const char *)my["device_state"] != revival_request_device_state)))
     {
-        ghost_poll_count++;
-        if (millis() - ghost_tag_start_ms > GHOST_OPEN_TIMEOUT_MS)
-        {
-            Serial.println("[GhostTiming] TIMEOUT waiting for open (" + String(GHOST_OPEN_TIMEOUT_MS) + "ms)");
-            ghost_open_pending = false;
-        }
+        last_open_tag_user = "";
     }
+    if (ghost_open_pending) ++ghost_poll_count;
 
     // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
     // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
@@ -73,29 +72,30 @@ void DataChange()
     // JsonDocument는 크기에 상관없이 대입/set()이 되므로 어떤 환경에서도 안전하다.
     static JsonDocument cur;
 
-    bool brightness_changed = ((int)my["brightness"] != (int)cur["brightness"]);
+    // 밝기 먼저 반영 — 이어지는 상태 전환이 새 밝기로 칠해지도록. 변경 감지는 SetBrightness() 내부.
+    SetBrightness((int)my["brightness"]);
 
     if ((String)(const char *)my["game_state"] != (String)(const char *)cur["game_state"])
     {
+        if ((String)(const char *)my["game_state"] != "activate")
+        {
+            gameplay_tag_latched = false;
+            gameplay_tag_user = "";
+            gameplay_tag_missing = false;
+            gameplay_tag_miss_count = 0;
+        }
         if ((String)(const char *)my["game_state"] == "setting")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             SettingFunc();
         }
         else if ((String)(const char *)my["game_state"] == "ready")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             ReadyFunc();
         }
         else if ((String)(const char *)my["game_state"] == "activate")
         {
-            if (brightness_changed) SetBrightness((int)my["brightness"]);
             ActivateRunOnce();
         }
-    }
-    else if (brightness_changed)
-    {
-        SetBrightness((int)my["brightness"]);
     }
 
     if ((String)(const char *)my["device_state"] != (String)(const char *)cur["device_state"])

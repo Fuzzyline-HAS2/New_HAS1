@@ -44,10 +44,8 @@ void DataChanged()
   if((int)my["starter_encoder_unit"] > 0)  starterEncoderUnit  = (int)my["starter_encoder_unit"];
   if((int)my["starter_decrease_amount"] > 0) starterDecreaseAmount = (int)my["starter_decrease_amount"];
 
-  // 밝기 값이 바뀌었으면 즉시 LED에 반영
-  if(my["brightness"].as<int>() != cur["brightness"].as<int>()) {
-    UpdateBrightness();
-  }
+  // 밝기 반영 — 변경 감지는 UpdateBrightness() 내부에서 한다
+  UpdateBrightness();
 
   // ---- game_state(방 전체 진행 단계) 변화 처리 ----
   bool gameStateChanged = (String)(const char*)my["game_state"] != (String)(const char*)cur["game_state"];

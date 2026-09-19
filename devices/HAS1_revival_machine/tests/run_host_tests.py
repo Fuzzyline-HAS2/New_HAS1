@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile real relay/tag/local-timing logic against deterministic host fakes.
+"""Compile real scheduler/RFID/relay/local-timing logic against deterministic host fakes.
 
 No Arduino SDK or hardware is required. Generated includes and binaries live in
 TemporaryDirectory; production .ino files are never copied into the repository.
@@ -25,7 +25,7 @@ def extract_functions(source: Path, names: set[str]) -> str:
     )
     definitions = []
     found = set()
-    for match in re.finditer(r"^(?:void|unsigned long)\s+(\w+)\([^;\n]*\)[^\n]*\n\{", masked, re.M):
+    for match in re.finditer(r"^(?:(?:static|inline)\s+)?(?:void|bool|unsigned long)\s+(\w+)\([^;\n]*\)[^\n]*\n\{", masked, re.M):
         if match[1] not in names:
             continue
         found.add(match[1])
@@ -47,15 +47,25 @@ def main() -> None:
         "approved", "http200_without_open", "situation_failure", "deferred_approval",
         "reopen_ghost", "reopen_survivor", "is_open_blocked", "tagger",
         "admin_tagger", "admin_ready", "setting", "invalid_tag", "timeout",
+        "held_pending", "priority_scheduler", "pending_admin", "pending_admin_rate",
+        "failure_held", "timeout_held", "removal_rearms", "miss_does_not_rearm",
+        "different_tag", "reset_ready", "reset_setting", "reset_tagger",
+        "non_ghost_then_ghost", "reopen_after_removal", "timeout_clock_wrap",
+        "normal_poll_resume", "late_approval_identity", "late_failure_identity", "cancelled_late_approval",
     ]
     with tempfile.TemporaryDirectory(prefix="revival-host-tests-") as directory:
         build = Path(directory)
-        names = {"CardChecking", "SolenoidInit", "SolenoidOn", "SolenoidOff", "SolenoidPulse", "NeoBlinkPurple"}
+        names = {"CardChecking", "SolenoidInit", "SolenoidOn", "SolenoidOff", "SolenoidPulse", "NeoBlinkPurple",
+                 "RfidLoop", "AdminCardPollReady", "AdminCardPollPending"}
         (build / "sensor_under_test.inc").write_text(extract_functions(DEVICE / "sensor.ino", names))
+        (build / "loop_under_test.inc").write_text(extract_functions(DEVICE / "HAS1_revival_machine.ino", {"loop"}))
         constants = {"SOLENOID_PIN", "SOLENOID_PULSE_MS", "SOLENOID_REVIVAL_PULSE_MS",
-                     "WIFI_POLL_INTERVAL_DEFAULT_MS", "WIFI_POLL_INTERVAL_ACTIVATE_MS"}
+                     "WIFI_POLL_INTERVAL_DEFAULT_MS", "WIFI_POLL_INTERVAL_ACTIVATE_MS", "RFID_DEBOUNCE_MS",
+                     "GHOST_OPEN_TIMEOUT_MS", "REVIVAL_APPROVAL_TIMEOUT_MS", "REVIVAL_APPROVAL_POLL_MS",
+                     "REVIVAL_ADMIN_POLL_MS", "RFID_REARM_ABSENT_MS"}
         defines = []
-        for line in (DEVICE / "library_and_pin.h").read_text().splitlines():
+        for line in ((DEVICE / "library_and_pin.h").read_text() + "\n" +
+                     (DEVICE / "HAS1_revival_machine.h").read_text()).splitlines():
             match = re.match(r"#define\s+(\w+)\b", line)
             if match and match[1] in constants:
                 defines.append(line)

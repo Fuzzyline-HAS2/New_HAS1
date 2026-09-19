@@ -5,6 +5,11 @@
 
 namespace iotglove {
 
+// Raw 0..255 NeoPixel brightness applied before the server is heard from, and
+// whenever its brightness field is missing or out of range. Same value as the
+// other HAS1 devices' DEFAULT_BRIGHTNESS.
+constexpr uint8_t kDefaultBrightness = 50;
+
 enum class Profile : uint8_t { Origin, Training };
 enum class Phase : uint8_t { Unknown, Setting, Ready, Exploration, Active, Ended };
 enum class Role : uint8_t { Neutral, Player, Tagger, Ghost };
@@ -30,7 +35,8 @@ struct ServerSnapshot {
   bool capturesAllowed = false;
   uint8_t vibe = 0;
   int32_t lifeChip = 0;
-  uint8_t brightness = 100;
+  // Raw 0..255, already converted by the network task at parse time.
+  uint8_t brightness = kDefaultBrightness;
   bool updateRequested = false;
   // Complete command identity is retained so github@12:7 -> github@13:7 is a
   // new request even when updateRequested remains true. Zero targets = latest.

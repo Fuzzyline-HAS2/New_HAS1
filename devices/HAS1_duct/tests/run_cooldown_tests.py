@@ -29,7 +29,8 @@ timer = (ROOT / "timer.ino").read_text()
 sensor = (ROOT / "sensor.ino").read_text()
 audio = (ROOT / "audio_queue.ino").read_text().replace('#include "HAS1_duct.h"', '')
 body = core + "\n" + "\n".join(function(game, n) for n in
-    ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc"])
+    ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc",
+     "ActivateRunOnce"])
 body += "\n" + function(timer, "CooltimeTimerFunc")
 body += "\n" + "\n".join(function(sensor, name) for name in
                            ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder"])
@@ -46,6 +47,8 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "admin_block_after_close", "admin_inside_block", "normal_admin_override",
          "blocked_button", "tagger_gate", "admin_early_back", "reset_pending_close",
          "cooldown_button_feedback", "blockade_button_feedback",
+         "switch_counts", "switch_tag_share_count", "blocked_open_not_counted",
+         "server_cooltime_fallback",
          "audio_0", "audio_28", "audio_60", "audio_90",
          "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
