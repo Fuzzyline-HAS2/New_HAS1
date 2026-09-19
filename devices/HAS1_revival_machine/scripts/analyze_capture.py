@@ -188,8 +188,20 @@ def split_trials(entries):
     return trials
 
 
-def find_cycles(entries):
-    """tag_read 부터 그 태그가 낳은 결말까지를 한 사이클로 묶는다."""
+# CardChecking 본문이 실제로 진행됐음을 뜻하는 줄들. tag_read 뒤에 이 중 하나도 없이
+# 다음 판독으로 넘어갔다면 그 판독은 v49 래치(또는 승인 대기)에서 조용히 return된 것이다.
+BODY_KINDS = {
+    "role_known", "situation_intent", "situation_done", "relay_on", "ghost_timeout", "ghost_skip",
+    "approval_end", "is_open_blocked", "admin_open", "reopen_ghost", "reopen_blocked",
+    "tagger_blocked", "invalid_tag", "setting_open", "outside_open", "open_confirmed", "is_open_sent",
+}
+# 개방 뒤 이 시간 안에 같은 태그가 다시 읽히면 "붙여두고 있었다"고 본다.
+# RELAY ON 줄은 통전 5초가 끝난 뒤 찍히므로, 뗐다면 그 뒤 재판독이 있을 수 없다.
+HELD_WINDOW_MS = 2000
+
+
+def _raw_cycles(entries):
+    """tag_read 부터 그 태그가 낳은 결말까지를 한 사이클로 묶는다 (접기 전)."""
     cycles = []
     open_cycle = None
     for entry in entries:
@@ -239,6 +251,63 @@ def find_cycles(entries):
     return cycles
 
 
+def _is_suppressed(cycle):
+    return not any(e.kind in BODY_KINDS for e in cycle["entries"][1:])
+
+
+def find_cycles(entries):
+    """사이클을 묶되, v49 래치에 막힌 재판독(tag_user_data만 찍히고 끝)은 별도 사이클로
+    흩뿌리지 않고 직전 같은 태그의 개방/통전 사이클에 "붙여둔 판독"으로 접어 넣는다.
+    이 재판독의 존재 여부와 시각이 유지/제거를 마커 없이도 가른다."""
+    folded = []
+    last_real = None
+    for cycle in _raw_cycles(entries):
+        cycle.setdefault("held_reads", [])
+        cycle.setdefault("suppressed_count", 0)
+        if not _is_suppressed(cycle):
+            cycle["auto_hold"] = None
+            folded.append(cycle)
+            last_real = cycle
+            continue
+        # 래치/대기에 막힌 판독. 직전 같은 사용자의 실제 사이클에 붙인다.
+        if last_real is not None and last_real["user"] == cycle["user"]:
+            last_real["held_reads"].append(cycle["start"])
+            # 그 사이에 섞인 배경 이벤트(Data Change 등)도 잃지 않고 붙여둔다.
+            last_real.setdefault("after_entries", []).extend(cycle["entries"])
+            continue
+        # 앞선 사이클이 없거나 사용자가 다르면 같은 사용자의 연속 억제 판독끼리 묶는다.
+        if folded and folded[-1].get("outcome") == "latched reads only" and folded[-1]["user"] == cycle["user"]:
+            folded[-1]["suppressed_count"] += 1
+            folded[-1]["held_reads"].append(cycle["start"])
+            folded[-1]["end"] = cycle["end"]
+            continue
+        cycle["outcome"] = "latched reads only"
+        cycle["suppressed_count"] = 1
+        cycle["held_reads"] = [cycle["start"]]
+        cycle["auto_hold"] = None
+        folded.append(cycle)
+
+    # 개방/통전 사이클마다 유지/제거를 판별한다.
+    for index, cycle in enumerate(folded):
+        if cycle["outcome"] == "latched reads only" or cycle["end"] is None:
+            continue
+        if cycle["end"].kind not in PULSE_EVENTS:
+            continue
+        anchor = cycle["end"].ts
+        held = any(0 <= ms(r.ts, anchor) <= HELD_WINDOW_MS for r in cycle["held_reads"])
+        if not held:
+            # v48처럼 래치가 없으면 붙여둔 태그가 재개방 사이클로 나타난다.
+            for later in folded[index + 1:]:
+                if later["user"] != cycle["user"]:
+                    break
+                if later["end"] is not None and later["end"].kind == "reopen_ghost" \
+                        and 0 <= ms(later["start"].ts, anchor) <= HELD_WINDOW_MS:
+                    held = True
+                break
+        cycle["auto_hold"] = held
+    return folded
+
+
 def describe_gap(prev, nxt):
     """두 줄 사이에 무엇이 일어났는지 v49의 제어흐름으로 설명한다."""
     # 이 검사가 가장 먼저여야 한다. RELAY ON 줄 직전 간격에는 5초 통전이 통째로
@@ -246,7 +315,11 @@ def describe_gap(prev, nxt):
     if nxt.kind == "relay_on":
         return f"릴레이 HIGH + {RELAY_PULSE_MS}ms 통전 (이 줄은 통전이 끝난 뒤 찍힌다)"
     if prev.kind == "tag_read":
-        return "has2wifi.Receive() 왕복 (is_open/role 조회)"
+        if nxt.kind == "role_known" or nxt.kind == "json_payload":
+            return "has2wifi.Receive() 왕복 (is_open/role 조회)"
+        # 판독은 됐지만 CardChecking 본문이 진행되지 않았다 = v49 래치 또는 승인 대기에서
+        # return. 그 뒤의 침묵은 기기가 한 일이 아니라 다음 서버 변경/태그까지의 대기다.
+        return "래치된 판독 뒤 대기 (기기 작업 없음 - 서버 재무장이나 다음 태그를 기다림)"
     if prev.kind in ("role_known", "situation_intent"):
         return "has2wifi.Situation() 왕복"
     if prev.kind == "situation_done":
@@ -279,9 +352,16 @@ def pad(text, width):
 def analyse_cycle(cycle, gap_ms):
     entries = cycle["entries"]
     start = cycle["start"]
+    held_reads = cycle.get("held_reads", [])
+    anchor = cycle["end"].ts if cycle.get("end") is not None else None
     info = {
         "user": cycle["user"],
         "outcome": cycle["outcome"],
+        "auto_hold": cycle.get("auto_hold"),
+        "held_read_count": len(held_reads),
+        "suppressed_count": cycle.get("suppressed_count", 0),
+        # RELAY ON 줄(=통전 종료) 기준으로 같은 태그가 마지막으로 읽힌 시각. 얼마나 오래 붙여뒀는지.
+        "held_until_ms": (max(ms(r.ts, anchor) for r in held_reads) if held_reads and anchor else None),
         "start_ts": start.ts,
         "lineno": start.lineno,
         "device_total_ms": None,
@@ -417,8 +497,27 @@ def report(trials, gap_ms, show_timeline):
             continue
         for index, cycle in enumerate(cycles, 1):
             info = analyse_cycle(cycle, gap_ms)
-            groups.setdefault(kind, []).append(info)
+            # 마커가 유지/제거를 말해주지 않으면 로그 자체(개방 뒤 같은 태그 재판독)로 가른다.
+            group_key = kind
+            if kind == "OTHER" and info["auto_hold"] is not None:
+                group_key = "HELD(auto)" if info["auto_hold"] else "RELEASED(auto)"
+            # A/B 비교는 서버 승인을 거친 첫 개방만으로 한다. 관리자/재개방 펄스는
+            # 왕복이 없거나 다른 경로라 섞이면 중앙값을 흐린다.
+            if cycle.get("end") is not None and cycle["end"].kind == "relay_on":
+                groups.setdefault(group_key, []).append(info)
+            if info["outcome"] == "latched reads only":
+                print(f"   [{index}] glove={info['user']}  래치/대기에 막힌 판독 {info['suppressed_count']}회"
+                      f" - 처리 없음  (line {info['lineno']}~)")
+                continue
             print(f"   [{index}] glove={info['user']}  결과: {info['outcome']}  (line {info['lineno']})")
+            if info["auto_hold"] is not None:
+                if info["auto_hold"]:
+                    print(f"       태그 유지 판별              : 유지(HELD) - 통전 종료 뒤에도 같은 태그가"
+                          f" {info['held_read_count']}회 읽힘 (마지막 +{info['held_until_ms']/1000:.1f}s),"
+                          f" 재개방 없음 = v49 래치 정상")
+                else:
+                    print(f"       태그 유지 판별              : 제거(RELEASED) - 통전 종료 후"
+                          f" {HELD_WINDOW_MS/1000:.0f}s 안에 같은 태그 재판독 없음")
             print(f"       기기 실측 태그->릴레이 HIGH : {fmt(info['device_total_ms'], 'ms')}"
                   f"   (role_receive {fmt(info['role_receive_ms'], 'ms', 6)},"
                   f" situation {fmt(info['situation_ms'], 'ms', 6)}, polls {fmt(info['device_polls'], '', 4)})")
@@ -469,8 +568,9 @@ def report(trials, gap_ms, show_timeline):
         ("Receive 호출 수", lambda c: c["receive_calls"]),
         ("Situation 호출 수", lambda c: c["situation_calls"]),
         ("사이클 내 재판독 수", lambda c: c["repeat_tag_reads"]),
+        ("개방 후 같은 태그 재판독 수", lambda c: c["held_read_count"]),
     ]
-    order = [k for k in ("HELD", "RELEASED", "OTHER") if k in groups]
+    order = [k for k in ("HELD", "HELD(auto)", "RELEASED", "RELEASED(auto)", "OTHER") if k in groups]
     width = max(display_width(r[0]) for r in rows) + 2
     print(pad("항목", width) + "".join(pad(k, 46) for k in order))
     for name, getter in rows:
@@ -482,8 +582,8 @@ def report(trials, gap_ms, show_timeline):
     print()
     print("판정 가이드")
     print("-" * 100)
-    held = groups.get("HELD", [])
-    released = groups.get("RELEASED", [])
+    held = groups.get("HELD", []) + groups.get("HELD(auto)", [])
+    released = groups.get("RELEASED", []) + groups.get("RELEASED(auto)", [])
     held_totals = [c["device_total_ms"] for c in held if c["device_total_ms"] is not None]
     rel_totals = [c["device_total_ms"] for c in released if c["device_total_ms"] is not None]
     if held_totals and rel_totals:
