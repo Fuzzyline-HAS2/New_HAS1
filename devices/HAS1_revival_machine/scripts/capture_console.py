@@ -183,7 +183,11 @@ class SerialSource:
 
     def explain(self, exc):
         message = getattr(exc, "strerror", None) or str(exc)
-        if "could not open port" in str(exc).lower() or getattr(exc, "errno", None) == errno.ENOENT:
+        text = str(exc).lower()
+        if getattr(exc, "errno", None) == errno.EBUSY or "resource busy" in text:
+            return (f"다른 프로그램이 포트를 잡고 있다 ({self.port}). 아두이노 IDE 시리얼 모니터, "
+                    f"screen, PuTTY 등을 닫으라. 확인:  lsof {self.port}")
+        if "could not open port" in text or getattr(exc, "errno", None) == errno.ENOENT:
             return (f"포트를 열 수 없다 ({self.port}). 이름이 맞는지, 다른 프로그램"
                     "(아두이노 시리얼 모니터 등)이 잡고 있지 않은지 확인하라")
         if getattr(exc, "errno", None) == errno.EACCES:

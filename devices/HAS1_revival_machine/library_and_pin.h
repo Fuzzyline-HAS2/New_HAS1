@@ -32,15 +32,20 @@
 #define SOLENOID_PULSE_MS 2000  // 잠금/해제 순간에만 통전시키는 기본 펄스 길이(ms). 래치 없는 솔레노이드라 계속 통전시키면 발열/소손 위험 — 기구가 동작하는 최소 시간으로 실측 후 조정할 것. (500ms는 딸깍 소리만 나고 실제로 안 열려서 2000ms로 연장)
 #define SOLENOID_REVIVAL_PULSE_MS 5000  // revival 태그로 열릴 때는 넉넉하게 5초 통전
 
-// wifi_timer(서버 폴링) 주기. 평소엔 2초로 서버 부하를 아끼고, activate 상태(태그로
-// 문이 열릴 수 있는 구간)에서만 300ms로 좁혀 device_state="open" 반영 지연을 줄인다.
+// wifi_timer(서버 폴링) 주기.
 #define WIFI_POLL_INTERVAL_DEFAULT_MS 2000
-// activate 구간 폴링 주기. 300 -> 700 실험(v39)은 실패했으므로 300으로 되돌림.
-// 당시 근거였던 "폴링 300ms 구간이 2000ms 구간보다 6배 느리다"는 측정이 잘못이었다 —
-// 마커로 쓴 "[GameState] device_state=open confirmed" 로그가 SolenoidPulse(5000)의
-// delay 뒤에 찍혀서, 실제 개방 시점보다 5초 늦게 관측된 것이었다(game_state.ino 참고).
-// 5000ms를 보정한 실측: 폴링 300ms -> 인지 426/587ms, 폴링 700ms -> 345~800ms.
-// 이론치(주기/2 + HTTP왕복 282ms)와 일치하며 폴링은 원래부터 정상 동작했다. 700ms는 평균 39ms 악화.
+// activate 구간 폴링 주기. 서버가 보내는 상태 변경(tagger 봉쇄, 재무장 등)을 인지하는 용도.
+// 개방 승인 자체는 v49부터 승인 대기 중 PollRevivalApproval()이 300ms로 ReceiveMine()을 직접
+// 조회해 잡으므로(approval.ino) 이 값은 개방 지연에는 관여하지 않는다.
+//
+// 실험 이력:
+//  - 300 -> 700 (v39): 잘못된 측정으로 되돌림. 마커로 쓴 "[GameState] device_state=open
+//    confirmed" 로그가 SolenoidPulse(5000) 뒤에 찍혀 5초 늦게 관측된 것이었다.
+//  - 300 -> 2000 (v51): "글러브를 PN532에 밀착 유지하면 activate에서만 판독이 늦고 open에서는
+//    거리와 무관하다"의 원인이 activate/open 간 유일한 코드 차이인 이 폴링 주기인지 실험.
+//    현장 결과 밀착 판독은 그대로였다 -> 기각. tagger 봉쇄 인지가 최대 2초 늦어지는 비용만
+//    남으므로 300으로 되돌린다. 실제 원인은 PN532 판독 시퀀스의 프로토콜 위상 어긋남이었다
+//    (sensor.ino DetectAndRead 주석).
 #define WIFI_POLL_INTERVAL_ACTIVATE_MS 300
 
 #define PN532_SCK                       (18)

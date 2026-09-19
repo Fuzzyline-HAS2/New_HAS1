@@ -25,6 +25,41 @@ The BLE local name keeps the server `device_name` unchanged after the `HAS3:`
 prefix. For example, `TS1` advertises as `HAS3:TS1`; `BI1` advertises as
 `HAS3:BI1`.
 
+## Device mode and server polling
+
+The LED colour, Wi-Fi poll interval and tag enable are a function of the
+(`game_state`, `device_state`) pair. `DataChange()` re-derives them whenever
+either field changes, not only on the transition of one field. This fixes two
+cases the field-by-field edge triggers got wrong: `ready -> activate` while
+`device_state` was already `"activate"` stayed red with the slow poll, and a
+`device_state` re-arm arriving during `ready` painted the ready red yellow.
+One-shot actions (the opening pulse, the `is_open` write, the OTA check) remain
+tied to a `device_state` transition only, so a `game_state` change after an
+opening never re-energises the relay.
+
+`WIFI_POLL_INTERVAL_ACTIVATE_MS` stays at 300ms. A 2000ms experiment (v51) did
+not change the flat-held-glove read failure and only delayed the device's view of
+server-side changes such as a tagger blockade, so it was reverted.
+
+## PN532 read sequence
+
+`DetectAndRead()` now uses the library's intended sequence:
+`setPassiveActivationRetries()` once at init, then `readPassiveTargetID()` (which
+sends InListPassiveTarget and reads its response) followed by `ntag2xx_ReadPage()`.
+
+The previous sequence sent an undefined `0x00` command, then
+`startPassiveTargetIDDetection()` without ever reading the InListPassiveTarget
+response, then InDataExchange. `sendCommandCheckAck()` in Adafruit PN532 1.3.4
+waits for a response to become ready but never reads it, so the unread frames
+shifted the host/PN532 frame phase; and with the default infinite activation
+retries an InListPassiveTarget with no card never finished, which made the next
+command (the gain switch) hit its 1000ms timeout. Reads succeeded only when the
+phase happened to line up, which depended on how quickly the card answered, i.e.
+on distance and coupling. A glove held flat in the near-field dead zone answered
+marginally and failed; one held 2-3cm away answered promptly and read. This is
+the same desync `HAS1_escape_sub` fixed on 2026-08-12 by draining the response.
+The near/far gain switch is kept as it was so this change is a single variable.
+
 ## Relay response and local timing
 
 The first opening still requires the server to confirm `device_state="open"`.

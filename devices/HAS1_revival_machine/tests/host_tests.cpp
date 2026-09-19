@@ -204,6 +204,12 @@ void remove_tag() {
   delay(RFID_REARM_ABSENT_MS);
   scan(false);
 }
+unsigned long wifi_period() {
+  for (const auto& task : wifi_timer.tasks)
+    if (task.id == wifi_timer_id && task.active) return task.period;
+  assert(false && "wifi_timer not armed");
+  return 0;
+}
 unsigned on_count() {
   unsigned count = 0;
   for (const auto& event : gpio_events) count += event.second == HIGH;
@@ -435,6 +441,36 @@ int main(int argc, char** argv) {
     delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1);
     TimerRun();
     assert(!revival_approval_pending && on_count() == 0 && last_open_tag_user == "G1P1");
+  } else if (scenario == "mode_ready_to_activate_device_static") {
+    // 서버가 game_state만 ready -> activate 로 바꾸고 device_state는 내내 "activate"인 경우.
+    // 예전 코드는 device_state 전이에만 노란색/activate 폴링을 걸어 ready의 빨간색에 머물렀다.
+    prepare("ready", "activate");
+    assert(displayed_color == red && !activate_bool);
+    my["game_state"] = "activate"; DataChange();
+    assert(displayed_color == yellow && activate_bool);
+    assert(wifi_period() == WIFI_POLL_INTERVAL_ACTIVATE_MS);
+    assert(on_count() == 0 && has2wifi.send_calls == 0);
+  } else if (scenario == "mode_game_change_keeps_relay_quiet") {
+    // 열린 뒤 game_state가 바뀌어도(라운드 종료) 솔레노이드와 is_open 기록은 다시 일어나지 않는다.
+    prepare(); card(); assert_pulse();
+    assert(has2wifi.send_calls == 1);
+    my["game_state"] = "ready"; DataChange();
+    assert(on_count() == 1 && has2wifi.send_calls == 1);
+    assert(displayed_color == red && !activate_bool);
+    my["game_state"] = "setting"; DataChange();
+    assert(on_count() == 1 && has2wifi.send_calls == 1 && displayed_color == white);
+  } else if (scenario == "mode_ready_ignores_device_rearm") {
+    // ready 중에 서버가 device_state를 open -> activate 로 되돌려도 ready의 빨간색을 덧칠하지 않는다.
+    prepare("ready", "activate");
+    my["device_state"] = "open"; DataChange();
+    gpio_events.clear();
+    my["device_state"] = "activate"; DataChange();
+    assert(displayed_color == red && !activate_bool && on_count() == 0);
+    assert(wifi_period() == WIFI_POLL_INTERVAL_DEFAULT_MS);
+    // 이후 game_state가 activate로 바뀌면 그때 조합이 (activate, activate)가 되어 노란색이 된다.
+    my["game_state"] = "activate"; DataChange();
+    assert(displayed_color == yellow && activate_bool);
+    assert(wifi_period() == WIFI_POLL_INTERVAL_ACTIVATE_MS);
   } else assert(false && "Unknown test case");
   std::cout << "PASS " << scenario << '\n';
 }

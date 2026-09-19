@@ -13,7 +13,14 @@ files. Relay, polling, timeout, and RFID constants also come from production.
 Generated includes and the binary live in a temporary directory and are removed
 after the run.
 
-The 32 cases verify:
+The 35 cases verify:
+
+- The device mode (LED colour, poll interval, tag enable) is re-derived from the
+  (`game_state`, `device_state`) pair whenever either field changes. `ready ->
+  activate` with `device_state` already `"activate"` turns yellow and arms the
+  activate poll; a `device_state` re-arm during `ready` leaves the ready red in
+  place; a `game_state` change after an opening never re-pulses the relay or
+  rewrites `is_open`.
 
 - An approved first opening reaches GPIO HIGH after the simulated 300 ms user
   lookup, 200 ms Situation request, 400 ms approval read, and 10 ms LED update.

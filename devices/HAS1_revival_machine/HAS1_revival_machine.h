@@ -62,6 +62,13 @@ Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 // RFID 재판독 디바운스. 1000ms에서는 초당 1회만 폴링해 1초보다 짧은 태그를 놓쳤다
 // (현장: "태그 인식 느림"). itembox와 동일한 300ms로 맞춤 (커밋 8dc9450 참고).
 #define RFID_DEBOUNCE_MS 300
+// 카드가 없을 때 InListPassiveTarget이 스스로 끝나기까지의 활성화 재시도 횟수(RFConfiguration
+// item 5, MxRtyPassiveActivation). 기본 0xFF는 카드가 올 때까지 무한 대기라 다음 명령을 막는다.
+// 한 번에 수 ms라 10회면 카드 없는 폴링 1회가 수십 ms 안에 끝난다.
+#define RFID_ACTIVATION_RETRIES 10
+// readPassiveTargetID()가 응답을 기다리는 상한(ms). 위 재시도가 끝나는 시간보다 넉넉하면 되고,
+// PN532가 멈췄을 때 루프가 1000ms(라이브러리 기본)씩 묶이지 않게 하는 안전장치다.
+#define RFID_DETECT_TIMEOUT_MS 250
 bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
 
