@@ -111,9 +111,16 @@ void ActivateRunOnce()
     UpdateBrightness();
     game_state = activate;
 
-    // 쿨타임과 쿨타임 증가량을 DB에서 읽어 사용할 수 있음
-    cooltime_set = (int)my["cool_time"];
+    // 쿨타임과 쿨타임 증가량을 DB에서 읽어 사용할 수 있음.
+    // cool_time 이 0이거나 아직 안 내려왔으면 쿨타임이 통째로 사라지므로 기본값을 유지한다.
+    // cool_time_add 는 0("증가 없음")도 유효한 설정이라 받은 값을 그대로 쓴다.
+    int server_cooltime = (int)my["cool_time"];
+    if (server_cooltime > 0) cooltime_set = server_cooltime;
     cooltime_add = (int)my["cool_time_add"];
+
+    // 첫 개방이 내부 스위치여도 쿨타임이 0으로 남지 않게 1회차 값을 미리 채운다.
+    // (CooltimeTimerFunc 은 current_time >= cooltime 이면 즉시 해제한다)
+    cooltime = cooltime_set;
 
     pixels_line.lightColor(line_yellow);
     pixels_round.lightColor(yellow);
