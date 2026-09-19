@@ -25,7 +25,12 @@ void TimerRun()
   BleAdvertiserMaintain();
   rfid_timer.run();
   nsec_tag_timer.run();
-  wifi_timer.run();
+  revival_approval_polled_this_loop = false;
+  UpdateRevivalApprovalState();
+  if (revival_approval_pending)
+    PollRevivalApproval();
+  else
+    wifi_timer.run();
 }
 
 /**

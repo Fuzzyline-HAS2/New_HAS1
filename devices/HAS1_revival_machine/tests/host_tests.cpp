@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -53,15 +54,80 @@ bool activate_bool = false, ghost_open_pending = false;
 unsigned long ghost_tag_start_ms = 0, ghost_situation_ms = 0, ghost_role_receive_ms = 0;
 int ghost_poll_count = 0, ghost_rssi_at_tag = 0;
 String last_open_tag_user;
-constexpr unsigned long GHOST_OPEN_TIMEOUT_MS = 15000;
+bool revival_approval_pending = false;
+bool revival_approval_poll_due = false, revival_approval_polled_this_loop = false;
+unsigned long revival_approval_started_ms = 0, revival_approval_last_poll_ms = 0;
+unsigned long revival_approval_last_admin_poll_ms = 0;
+String revival_request_device_state;
+bool gameplay_tag_latched = false, gameplay_tag_missing = false;
+String gameplay_tag_user;
+unsigned long gameplay_tag_missing_since_ms = 0;
+unsigned gameplay_tag_miss_count = 0;
+bool rfid_tag = false;
+int rfid_timer_id = 0, nsec_tag_timer_id = 0, wifi_timer_id = 0;
+int nsec_tag_num = 0;
+bool nsec_tag_bool = false;
+struct FakeTimer {
+  struct Task { int id; unsigned long last, period; void (*callback)(); bool repeat, active; };
+  std::vector<Task> tasks;
+  int next_id = 0;
+  unsigned runs = 0;
+  int setInterval(unsigned long ms, void (*callback)()) { return add(ms, callback, true); }
+  int setTimeout(unsigned long ms, void (*callback)()) { return add(ms, callback, false); }
+  int add(unsigned long ms, void (*callback)(), bool repeat) {
+    tasks.push_back({++next_id, millis(), ms, callback, repeat, true});
+    return next_id;
+  }
+  void deleteTimer(int id) { for (auto& task : tasks) if (task.id == id) task.active = false; }
+  void restartTimer(int id) { for (auto& task : tasks) if (task.id == id) task.last = millis(); }
+  void run() {
+    ++runs;
+    std::vector<int> due;
+    for (const auto& task : tasks)
+      if (task.active && millis() - task.last >= task.period) due.push_back(task.id);
+    for (const auto id : due) {
+      void (*callback)() = nullptr;
+      for (auto& task : tasks) if (task.id == id && task.active) {
+        callback = task.callback; task.last += task.period;
+        if (!task.repeat) task.active = false;
+        break;
+      }
+      if (callback) callback();
+    }
+  }
+} rfid_timer, nsec_tag_timer, wifi_timer;
 int white[3], red[3], yellow[3], blue[3], purple[3];
-unsigned long poll_interval = 0;
 int* displayed_color = nullptr;
 void NeoNo() {}
 void (*NeoFunc)() = NeoNo;
 void NeopixelSet(int* color) { displayed_color = color; delay(10); }
-void SetWifiPollInterval(unsigned long value) { poll_interval = value; }
-void RfidLoop() {}
+void SetWifiPollInterval(unsigned long);
+void RfidLoop();
+void CardChecking(uint8_t data[32]);
+void AdminCardPollReady();
+void AdminCardPollPending();
+void RfidTagTimerFunc();
+void WifiTimerFunc();
+void NsecTagTimerFailFunc();
+void NsecTagTimerSuccessFunc();
+void BeginRevivalApproval(unsigned long);
+void EndRevivalApproval(const char*, bool preserveUser = false);
+void UpdateRevivalApprovalState();
+void PollRevivalApproval();
+void ObserveGameplayTag(bool);
+void BleAdvertiserMaintain() {}
+void TelnetRun() {}
+unsigned normal_reader_calls = 0, admin_reader_calls = 0;
+bool reader_present = true;
+std::string reader_tag = "G1P1";
+bool fake_read(uint8_t data[32]) {
+  if (!reader_present) return false;
+  std::memset(data, 0, 32);
+  std::memcpy(data, reader_tag.c_str(), 4);
+  return true;
+}
+bool DetectWithGainSwitch(uint8_t data[32]) { ++normal_reader_calls; return fake_read(data); }
+bool DetectAndRead(uint8_t data[32]) { ++admin_reader_calls; return fake_read(data); }
 void BleAdvertiserUpdateFromDeviceName(const char*) {}
 void SetBrightness(int) {}
 void SolenoidInit();
@@ -73,19 +139,20 @@ void NeoBlinkPurple(int);
 void DataChange();
 
 struct Has2WifiStub {
-  unsigned receive_calls = 0, situation_calls = 0, mine_calls = 0, send_calls = 0;
+  unsigned receive_calls = 0, situation_calls = 0, mine_calls = 0, send_calls = 0, loop_calls = 0;
+  std::vector<std::string> received_tags, situation_tags, marked_tags;
   unsigned long role_delay_ms = 300, situation_delay_ms = 200, approval_delay_ms = 400;
   bool situation_ok = true, approve = true;
   std::string role = "ghost";
   int already_open = 0;
-  void Receive(const String&) {
-    ++receive_calls;
+  void Receive(const String& user) {
+    ++receive_calls; received_tags.push_back(user);
     fake_ms += role_delay_ms;
     tag["role"] = role.c_str();
     tag["is_open"] = already_open;
   }
-  bool Situation(const String&, const String&) {
-    ++situation_calls;
+  bool Situation(const String& user, const String&) {
+    ++situation_calls; situation_tags.push_back(user);
     fake_ms += situation_delay_ms;
     return situation_ok;
   }
@@ -94,17 +161,22 @@ struct Has2WifiStub {
     fake_ms += approval_delay_ms;
     if (approve) my["device_state"] = "open";
   }
-  void Send(const String&, const String& field, const String& value) {
+  void Send(const String& user, const String& field, const String& value) {
     assert(field == "is_open" && value == "1");
-    ++send_calls;
+    ++send_calls; marked_tags.push_back(user);
   }
+  void Loop(void (*)()) { ++loop_calls; }
 } has2wifi;
 
 #define _HAS1_REVIVAL_MACHINE_H_
+#include "approval.ino"
 #include "game_state.ino"
+#include "timer.ino"
 #include "sensor_under_test.inc"
+#include "loop_under_test.inc"
 
 void prepare(const char* game_state = "activate", const char* device_state = "activate") {
+  TimerInit();
   my["device_name"] = "revival_machine_original";
   my["game_state"] = game_state;
   my["device_state"] = "activate";
@@ -114,11 +186,23 @@ void prepare(const char* game_state = "activate", const char* device_state = "ac
   gpio_events.clear();
   Serial.lines.clear();
   fake_ms = 1000;
+  for (auto& task : wifi_timer.tasks) task.last = fake_ms;
 }
 void card(const char* name = "G1P1") {
   uint8_t data[32] = {};
   std::memcpy(data, name, 4);
   CardChecking(data);
+}
+void scan(bool present = true, const char* name = "G1P1") {
+  reader_present = present;
+  reader_tag = name;
+  RfidTagTimerFunc();
+  RfidLoop();
+}
+void remove_tag() {
+  scan(false);
+  delay(RFID_REARM_ABSENT_MS);
+  scan(false);
 }
 unsigned on_count() {
   unsigned count = 0;
@@ -179,8 +263,8 @@ int main(int argc, char** argv) {
     assert(has2wifi.mine_calls == (has2wifi.situation_ok ? 1U : 0U));
     if (scenario == "deferred_approval") {
       delay(300);
-      my["device_state"] = "open";
-      DataChange();
+      has2wifi.approve = true;
+      TimerRun();
       const auto opened = assert_pulse();
       assert_timing_log(1000, opened);
     }
@@ -200,13 +284,14 @@ int main(int argc, char** argv) {
   } else if (scenario == "tagger" || scenario == "admin_tagger" || scenario == "admin_ready" || scenario == "setting" || scenario == "invalid_tag") {
     prepare(scenario == "admin_ready" ? "ready" : scenario == "setting" ? "setting" : "activate",
             scenario.find("tagger") != std::string::npos ? "tagger" : "activate");
-    card(scenario.find("admin_") == 0 ? "MMMM" : scenario == "invalid_tag" ? "BAD!" : "G1P1");
+    if (scenario == "admin_ready") { reader_tag = "MMMM"; AdminCardPollReady(); }
+    else card(scenario.find("admin_") == 0 ? "MMMM" : scenario == "invalid_tag" ? "BAD!" : "G1P1");
     assert_no_game_request();
     if (scenario.find("admin_") == 0) assert(assert_pulse() == 1000);
     else if (scenario == "setting") {
       assert(assert_pulse(SOLENOID_PULSE_MS) == 1000);
       gpio_events.clear();
-      card();
+      scan();
       assert_pulse(SOLENOID_PULSE_MS);
       assert_no_game_request();
       assert(std::string((const char*)my["game_state"]) == "setting");
@@ -217,9 +302,139 @@ int main(int argc, char** argv) {
     card();
     delay(GHOST_OPEN_TIMEOUT_MS + 1);
     const auto before = millis();
-    DataChange();
-    assert(!ghost_open_pending && on_count() == 0 && millis() == before);
+    TimerRun();
+    assert(!ghost_open_pending && !revival_approval_pending && on_count() == 0 && millis() == before);
     unique_log("[GhostTiming] TIMEOUT waiting for open");
+  } else if (scenario == "held_pending") {
+    prepare();
+    has2wifi.approve = false;
+    card();
+    assert(revival_approval_pending);
+    const auto started = revival_approval_started_ms;
+    const auto ghost_started = ghost_tag_start_ms;
+    const auto polls = ghost_poll_count;
+    const String user = last_open_tag_user;
+    card(); card("G2P2"); card();
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+    assert(revival_approval_started_ms == started && ghost_tag_start_ms == ghost_started);
+    assert(ghost_poll_count == polls && last_open_tag_user == user && user == "G1P1");
+    assert(on_count() == 0);
+  } else if (scenario == "non_ghost_then_ghost") {
+    prepare(); has2wifi.approve = false; has2wifi.role = "revival";
+    card();
+    assert(!revival_approval_pending && !ghost_open_pending && last_open_tag_user.empty());
+    card();
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+    has2wifi.role = "ghost";
+    card("G2P2");
+    assert(revival_approval_pending && ghost_open_pending && last_open_tag_user == "G2P2");
+    assert(has2wifi.receive_calls == 2 && has2wifi.situation_calls == 2 && on_count() == 0);
+  } else if (scenario == "priority_scheduler") {
+    prepare(); has2wifi.approve = false; card();
+    const auto polls = has2wifi.mine_calls;
+    const auto ordinary_runs = wifi_timer.runs;
+    for (unsigned i = 1; i <= 8; ++i) {
+      delay(REVIVAL_APPROVAL_POLL_MS);
+      loop();
+      assert(has2wifi.mine_calls == polls + i);
+      assert(normal_reader_calls == 0 && admin_reader_calls == 0);
+      assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+      assert(has2wifi.loop_calls == 0 && wifi_timer.runs == ordinary_runs);
+    }
+  } else if (scenario == "pending_admin" || scenario == "pending_admin_rate") {
+    prepare(); has2wifi.approve = false; card();
+    const auto user = last_open_tag_user;
+    delay(REVIVAL_ADMIN_POLL_MS + 1);
+    reader_tag = scenario == "pending_admin" ? "MMMM" : "G2P2";
+    TimerRun();  // Approval is due and must be processed before the admin probe.
+    assert(admin_reader_calls == 0);
+    loop();      // The next iteration has no due approval and permits the sparse probe.
+    assert(admin_reader_calls == 1 && normal_reader_calls == 0);
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+    assert(revival_approval_pending && last_open_tag_user == user);
+    if (scenario == "pending_admin") assert_pulse();
+    else {
+      RfidLoop(); delay(REVIVAL_ADMIN_POLL_MS - 1); RfidLoop();
+      assert(admin_reader_calls == 1 && on_count() == 0);
+    }
+  } else if (scenario == "failure_held" || scenario == "timeout_held") {
+    prepare(); has2wifi.approve = false;
+    has2wifi.situation_ok = scenario != "failure_held";
+    card();
+    if (scenario == "timeout_held") { delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1); TimerRun(); }
+    assert(!revival_approval_pending && !ghost_open_pending && last_open_tag_user == "G1P1");
+    card(); card();
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+    assert(on_count() == 0);
+  } else if (scenario == "removal_rearms" || scenario == "miss_does_not_rearm" || scenario == "different_tag") {
+    prepare(); has2wifi.situation_ok = false; card();
+    assert(gameplay_tag_latched);
+    if (scenario == "different_tag") card("G2P2");
+    else {
+      scan(false);
+      delay(RFID_REARM_ABSENT_MS - 1);
+      if (scenario == "removal_rearms") {
+        scan(false); assert(gameplay_tag_latched);
+        delay(1); scan(false);
+        assert(!gameplay_tag_latched);
+      } else {
+        delay(1); assert(gameplay_tag_latched);
+      }
+      scan(true);
+    }
+    const unsigned expected = scenario == "miss_does_not_rearm" ? 1 : 2;
+    assert(has2wifi.receive_calls == expected && has2wifi.situation_calls == expected);
+    assert(!revival_approval_pending && on_count() == 0);
+  } else if (scenario == "reset_ready" || scenario == "reset_setting" || scenario == "reset_tagger") {
+    prepare(); has2wifi.approve = false; card();
+    assert(revival_approval_pending);
+    if (scenario == "reset_tagger") my["device_state"] = "tagger";
+    else my["game_state"] = scenario == "reset_ready" ? "ready" : "setting";
+    DataChange();
+    assert(!revival_approval_pending && !ghost_open_pending && last_open_tag_user.empty());
+    assert(on_count() == 0 && has2wifi.send_calls == 0);
+  } else if (scenario == "reopen_after_removal") {
+    prepare(); card(); assert_pulse();
+    const auto received = has2wifi.receive_calls;
+    card();
+    assert(on_count() == 1 && has2wifi.receive_calls == received);
+    remove_tag(); gpio_events.clear(); scan(true);
+    assert_pulse();
+    assert(has2wifi.receive_calls == received + 1 && has2wifi.situation_calls == 1);
+    assert(has2wifi.marked_tags.size() == 1 && has2wifi.marked_tags.front() == "G1P1");
+  } else if (scenario == "normal_poll_resume") {
+    prepare(); has2wifi.approve = false; card();
+    delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1);
+    TimerRun();
+    assert(!revival_approval_pending && has2wifi.loop_calls == 0);
+    for (unsigned i = 0; i < 20; ++i) TimerRun();
+    assert(has2wifi.loop_calls == 0);
+    delay(WIFI_POLL_INTERVAL_ACTIVATE_MS);
+    TimerRun();
+    assert(has2wifi.loop_calls == 1);
+    for (unsigned i = 0; i < 20; ++i) TimerRun();
+    assert(has2wifi.loop_calls == 1);
+  } else if (scenario == "late_approval_identity" || scenario == "late_failure_identity" || scenario == "cancelled_late_approval") {
+    prepare(); has2wifi.approve = false;
+    has2wifi.situation_ok = scenario != "late_failure_identity";
+    card();
+    if (scenario != "late_failure_identity") { delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1); TimerRun(); }
+    assert(!revival_approval_pending && !ghost_open_pending && last_open_tag_user == "G1P1");
+    if (scenario == "cancelled_late_approval") {
+      my["game_state"] = "ready"; DataChange();
+      assert(last_open_tag_user.empty());
+    }
+    my["device_state"] = "open"; DataChange();
+    assert_pulse();
+    if (scenario == "cancelled_late_approval") assert(has2wifi.send_calls == 0 && has2wifi.marked_tags.empty());
+    else assert(has2wifi.marked_tags.size() == 1 && has2wifi.marked_tags.front() == "G1P1");
+  } else if (scenario == "timeout_clock_wrap") {
+    prepare(); fake_ms = std::numeric_limits<unsigned long>::max() - 100;
+    has2wifi.approve = false; card();
+    assert(revival_approval_pending);
+    delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1);
+    TimerRun();
+    assert(!revival_approval_pending && on_count() == 0 && last_open_tag_user == "G1P1");
   } else assert(false && "Unknown test case");
   std::cout << "PASS " << scenario << '\n';
 }

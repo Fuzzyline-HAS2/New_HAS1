@@ -78,7 +78,35 @@ int           ghost_poll_count      = 0;
 int           ghost_rssi_at_tag     = 0;
 unsigned long ghost_situation_ms    = 0;
 unsigned long ghost_role_receive_ms = 0;
-#define GHOST_OPEN_TIMEOUT_MS 15000  // 이 시간 안에도 open이 안 오면 타임아웃으로 기록하고 포기
+#define GHOST_OPEN_TIMEOUT_MS 15000  // 로컬 타이밍 로그와 승인 대기의 공통 상한
+
+// 진단용 ghost_open_pending과 별개로 모든 역할의 승인 요청을 한 번에 하나만 처리한다.
+#define REVIVAL_APPROVAL_TIMEOUT_MS GHOST_OPEN_TIMEOUT_MS
+#define REVIVAL_APPROVAL_POLL_MS 300
+#define REVIVAL_ADMIN_POLL_MS 1000
+#define RFID_REARM_ABSENT_MS 600
+bool revival_approval_pending = false;
+bool revival_approval_poll_due = false;
+bool revival_approval_polled_this_loop = false;
+unsigned long revival_approval_started_ms = 0;
+unsigned long revival_approval_last_poll_ms = 0;
+unsigned long revival_approval_last_admin_poll_ms = 0;
+String revival_request_device_state = "";
+
+// 계속 붙어 있는 게임 태그는 결과가 나온 뒤에도 재전송하지 않는다.
+// 양쪽 Gain에서 읽기 실패가 2회 이상, 600ms 이상 이어져야 같은 태그를 재무장한다.
+bool gameplay_tag_latched = false;
+String gameplay_tag_user = "";
+bool gameplay_tag_missing = false;
+unsigned long gameplay_tag_missing_since_ms = 0;
+unsigned int gameplay_tag_miss_count = 0;
+
+void BeginRevivalApproval(unsigned long tagDetectedMs);
+void EndRevivalApproval(const char *reason, bool preserveUser = false);
+void UpdateRevivalApprovalState();
+void PollRevivalApproval();
+void ObserveGameplayTag(bool detected);
+void AdminCardPollPending();
 
 bool send_nfc_err = false;
 
