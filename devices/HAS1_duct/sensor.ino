@@ -189,8 +189,11 @@ void Mp3Init()
 
   myDFPlayer.setTimeOut(1000); // Set serial communictaion time out 1000 ms
 
-  if (!myDFPlayer.begin(MySerial2))
-  { // Use softwareSerial to communicate with mp3.
+  // ACK 대기 없이 명령을 보내되, 부팅 응답으로 연결 여부는 확인한다.
+  myDFPlayer.begin(MySerial2, false);
+  uint8_t startup_type = myDFPlayer.readType();
+  if (startup_type != DFPlayerCardOnline && startup_type != DFPlayerUSBOnline)
+  {
     Serial.println(F("Unable to begin:"));
     Serial.println(F("1.Please recheck the connection!"));
     Serial.println(F("2.Please insert the SD card!"));
@@ -217,39 +220,7 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number)
 {
   if (!mp3_available) return;
 
-  static uint8_t play_error_count = 0; // MP3 파일이 처음 실행되면
-
-  uint8_t add_folder_number = 4; // 영어버전 시 mp3 폴더 변경
-
-  if ((String)(const char *)shift_machine["selected_language"] == "EN")
-  {
-    folder_number = add_folder_number + folder_number;
-    myDFPlayer.volume(26);
-  }
-  else
-  {
-    myDFPlayer.volume(30);
-  }
-
-  if (myDFPlayer.available())
-  {
-    myDFPlayer.playLargeFolder(folder_number, file_number);
-    play_error_count = 0;
-  }
-  else
-  {
-    if (play_error_count < 3)
-    {
-      myDFPlayer.playLargeFolder(folder_number, file_number);
-      play_error_count++;
-      Serial.print("Error count: ");
-      Serial.println(play_error_count);
-    }
-    else
-    {
-      Serial.println("MP3 play error: max retries exceeded");
-    }
-  }
+  Mp3QueuePhrase(Mp3MakePhrase(folder_number, file_number));
 }
 
 void Mp3Check()
@@ -268,28 +239,27 @@ void Mp3Check()
 
 void CooltimeMp3()
 {
-  int cooltime_min = (cooltime - current_time) / 60;
-  int cooltime_sec = (cooltime - current_time) % 60;
-  Serial.print("min : ");
-  Serial.println(cooltime_min);
-  Serial.print("sec : ");
-  Serial.println(cooltime_sec);
-  Mp3PlayLargeFolder(1, 3);
-  delay(2800);
-  if (cooltime_min > 0)
-  {
-    Mp3PlayLargeFolder(2, cooltime_min);
-    delay(1100);
-    Mp3PlayLargeFolder(1, 4);
-    delay(500);
-  }
-  if (cooltime_min <= 0)
-  {
-    Mp3PlayLargeFolder(3, cooltime_sec);
-    delay(1300);
-    Mp3PlayLargeFolder(1, 5);
-    delay(500);
-  }
+  RemainingTimeMp3(1, 3, cooltime - current_time);
+}
+
+// 문장 하나로 큐에 넣어 다른 안내가 분/초 사이에 끼어들지 않게 한다.
+void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds)
+{
+  if (remaining_seconds < 0) remaining_seconds = 0;
+  int minutes = remaining_seconds / 60;
+  int seconds = remaining_seconds % 60;
+  Mp3Phrase phrase = Mp3MakePhrase(intro_folder, intro_file);
+  if (intro_folder == 1 && intro_file == 3)
+    phrase.remaining_source = MP3_REMAINING_COOLDOWN;
+  else if (intro_folder == 4 && intro_file == 2)
+    phrase.remaining_source = MP3_REMAINING_TAGGER;
+  uint8_t language_offset = phrase.tracks[0].folder - intro_folder;
+  phrase.count = 3;
+  phrase.tracks[1].folder = (minutes > 0 ? 2 : 3) + language_offset;
+  phrase.tracks[1].file = minutes > 0 ? minutes : seconds;
+  phrase.tracks[2].folder = 1 + language_offset;
+  phrase.tracks[2].file = minutes > 0 ? 4 : 5;
+  Mp3QueuePhrase(phrase);
 }
 
 //******************************************* Switch ********************************************

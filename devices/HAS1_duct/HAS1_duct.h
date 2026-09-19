@@ -37,14 +37,16 @@ GameState game_state = setting;
 
 bool cool_time_neo_bool = true;
 bool tagger_mode = false;   // "이로운 효과"(덕트킬 포함) - tagger 수신 시 덕트 동결(보라색+RFID off), back 시 원복
-bool can_exit_on_tagger = true;  // false면 봉쇄 중 내부 스위치로 못 나감 (서버 my["can_exit_on_tagger"])
+
+// TODO: 서버의 봉쇄 시간 값을 받으면 이 기본값을 대체한다. 해제는 서버 명령으로만 처리한다.
+unsigned long tagger_duration_ms = 30000UL;
+unsigned long tagger_started_ms = 0;
 
 bool tagger_blink_active = false;  // 봉쇄(tagger_mode) 중 태그 시 보라색 점멸(3회) 진행 여부
 int tagger_blink_step = 0;
 
 bool mmmm_open = false;
 bool mmmm_prev_duct_available = false;
-bool mmmm_prev_cooltime_running = false;
 int mmmm_prev_current_time = 0;
 bool mmmm_prev_cool_time_neo_bool = false;
 //============================ Hardware Serial ============================
@@ -61,18 +63,19 @@ int cooltime_add = 30;
 void DuctTag(String tag_player);
 void DuctOpen(bool switch_push = false);
 void DuctClose();
-void TaggerSwitchClose();
 void CooltimeCalculation();
 int  CooltimeBarPixels();
 void CooltimeMp3();
+void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_seconds);
 void TagPlayerSend();
 void DuctKill();
 void TaggerModeTagBlocked();
+int TaggerRemainingSeconds();
+void TaggerRemainingMp3();
 void TaggerBlinkStep();
 void TaggerSwitchBlocked();
 void MmmmOpen();
 void MmmmClose();
-void MmmmTaggerClose();
 
 //*=============================== Sensor ===============================*
 /**
@@ -156,6 +159,8 @@ bool rfid_tag;
 void RfidInit();
 void RfidLoop();
 void CardChecking(uint8_t rfidData[32]);
+
+#include "audio_queue.h"
 
 //================================ Mp3 ===================================
 DFRobotDFPlayerMini myDFPlayer;

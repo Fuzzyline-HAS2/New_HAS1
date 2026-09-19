@@ -9,7 +9,7 @@
  * 
  */
 
-#define FIRMWARE_VER 45
+#define FIRMWARE_VER 50
 #define PARTITION_VER 1
 #include "HAS1_duct.h"
 
@@ -56,6 +56,7 @@ void loop() {
   TelnetRun();  // Telnet 클라이언트 접속/데이터 처리
   TimerRun();
   EmegencyPush();
+  Mp3Run();
 
   if (game_state == activate) {
     ActivateFunc();
