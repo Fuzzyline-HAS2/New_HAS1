@@ -52,6 +52,7 @@ def main() -> None:
         "different_tag", "reset_ready", "reset_setting", "reset_tagger",
         "non_ghost_then_ghost", "reopen_after_removal", "timeout_clock_wrap",
         "normal_poll_resume", "late_approval_identity", "late_failure_identity", "cancelled_late_approval",
+        "mode_ready_to_activate_device_static", "mode_game_change_keeps_relay_quiet", "mode_ready_ignores_device_rearm",
     ]
     with tempfile.TemporaryDirectory(prefix="revival-host-tests-") as directory:
         build = Path(directory)

@@ -25,6 +25,28 @@ The BLE local name keeps the server `device_name` unchanged after the `HAS3:`
 prefix. For example, `TS1` advertises as `HAS3:TS1`; `BI1` advertises as
 `HAS3:BI1`.
 
+## Device mode and server polling
+
+The LED colour, Wi-Fi poll interval and tag enable are a function of the
+(`game_state`, `device_state`) pair. `DataChange()` re-derives them whenever
+either field changes, not only on the transition of one field. This fixes two
+cases the field-by-field edge triggers got wrong: `ready -> activate` while
+`device_state` was already `"activate"` stayed red with the slow poll, and a
+`device_state` re-arm arriving during `ready` painted the ready red yellow.
+One-shot actions (the opening pulse, the `is_open` write, the OTA check) remain
+tied to a `device_state` transition only, so a `game_state` change after an
+opening never re-energises the relay.
+
+`WIFI_POLL_INTERVAL_ACTIVATE_MS` is 2000ms (was 300ms). Since v49 the approval
+wait polls `ReceiveMine()` directly every 300ms, so the idle activate poll no
+longer drives the opening latency; it only picks up server-side state changes
+such as a tagger blockade, which the device may now notice up to two seconds
+late. The change is an experiment against PN532 reads that stalled only in
+`activate` when a glove was held flat against the reader: the 300ms poll kept
+the loop more than half busy with blocking HTTP and put every PN532 attempt
+right after a Wi-Fi transmission. See `library_and_pin.h` for the reasoning
+and the follow-up (gain pinning) if this does not help.
+
 ## Relay response and local timing
 
 The first opening still requires the server to confirm `device_state="open"`.

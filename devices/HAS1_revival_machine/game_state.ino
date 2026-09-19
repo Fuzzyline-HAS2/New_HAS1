@@ -75,41 +75,65 @@ void DataChange()
     // 밝기 먼저 반영 — 이어지는 상태 전환이 새 밝기로 칠해지도록. 변경 감지는 SetBrightness() 내부.
     SetBrightness((int)my["brightness"]);
 
-    if ((String)(const char *)my["game_state"] != (String)(const char *)cur["game_state"])
+    const String game_state_now   = (String)(const char *)my["game_state"];
+    const String device_state_now = (String)(const char *)my["device_state"];
+    const bool game_changed   = game_state_now   != (String)(const char *)cur["game_state"];
+    const bool device_changed = device_state_now != (String)(const char *)cur["device_state"];
+    // 기기의 모드(색, 폴링 주기, 태그 활성)는 game_state와 device_state 두 값의 조합으로 정해진다.
+    // 둘 중 하나만 바뀌어도 조합이 바뀌므로, 어느 쪽이 바뀌든 모드를 다시 계산한다.
+    // 예전처럼 각 필드의 전이에만 반응하면 ready -> activate 로 갈 때 device_state가 이미
+    // "activate"였던 경우 노란색/activate 폴링이 적용되지 않고 ready의 빨간색에 머물렀다.
+    const bool state_changed = game_changed || device_changed;
+
+    if (game_changed && game_state_now != "activate")
     {
-        if ((String)(const char *)my["game_state"] != "activate")
-        {
-            gameplay_tag_latched = false;
-            gameplay_tag_user = "";
-            gameplay_tag_missing = false;
-            gameplay_tag_miss_count = 0;
-        }
-        if ((String)(const char *)my["game_state"] == "setting")
+        gameplay_tag_latched = false;
+        gameplay_tag_user = "";
+        gameplay_tag_missing = false;
+        gameplay_tag_miss_count = 0;
+    }
+
+    if (state_changed)
+    {
+        if (game_state_now == "setting")
         {
             SettingFunc();
         }
-        else if ((String)(const char *)my["game_state"] == "ready")
+        else if (game_state_now == "ready")
         {
             ReadyFunc();
         }
-        else if ((String)(const char *)my["game_state"] == "activate")
+        else if (game_state_now == "activate")
         {
             ActivateRunOnce();
         }
     }
 
-    if ((String)(const char *)my["device_state"] != (String)(const char *)cur["device_state"])
+    // activate 게임 중의 기기 모드. 색/폴링/솔레노이드 OFF만 다루는 멱등 동작이라 다시 계산해도
+    // 안전하다. game_state가 ready/setting이면 그쪽 색(빨강/흰색)이 우선이므로 여기서 덧칠하지 않는다.
+    if (state_changed && game_state_now == "activate")
     {
-        if ((String)(const char *)my["device_state"] == "activate")
+        if (device_state_now == "activate")
         {
             NeopixelSet(yellow);   // activate - 네오픽셀 전체 노란색(고정)
             SolenoidOff();         // 재무장 신호일 뿐 태그 이벤트가 아니므로 통전하지 않음
             NeoFunc = NeoNo;       // 호흡 애니메이션 없음
-            // 태그로 문이 열릴 수 있는 구간이므로 폴링을 300ms로 좁혀
-            // device_state="open" 반영 지연을 줄인다.
             SetWifiPollInterval(WIFI_POLL_INTERVAL_ACTIVATE_MS);
         }
-        else if ((String)(const char *)my["device_state"] == "open")
+        else if (device_state_now == "tagger")
+        {
+            NeopixelSet(purple);   // tagger - 네오픽셀 전체 보라색(고정)
+            SolenoidOff();         // tagger 상태에서는 열리면 안 되므로 통전하지 않는다.
+            NeoFunc = NeoNo;
+            SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 사용 불가 상태라 급하게 폴링할 필요 없음
+        }
+    }
+
+    // 한 번만 일어나야 하는 동작(솔레노이드 통전, is_open 기록, OTA 확인)은 device_state의
+    // 전이에만 묶는다. game_state가 바뀌었다고 문을 다시 열거나 OTA를 다시 확인하면 안 된다.
+    if (device_changed)
+    {
+        if (device_state_now == "open")
         {
             NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
             int rssiOpen = WiFi.RSSI();
@@ -139,14 +163,7 @@ void DataChange()
                 last_open_tag_user = "";
             }
         }
-        else if ((String)(const char *)my["device_state"] == "tagger")
-        {
-            NeopixelSet(purple);   // tagger - 네오픽셀 전체 보라색(고정)
-            SolenoidOff();         // tagger 상태에서는 열리면 안 되므로 통전하지 않는다.
-            NeoFunc = NeoNo;
-            SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);  // 사용 불가 상태라 급하게 폴링할 필요 없음
-        }
-        else if ((String)(const char *)my["device_state"] == "github")
+        else if (device_state_now == "github")
         {
             ota.check();
         }
