@@ -82,7 +82,48 @@ A(유지) 3회, B(즉시 제거) 3회를 **번갈아** 한다. 몰아서 하면 
 
 ## 4. 캡처를 끝낸 뒤
 
-`q` + Enter로 종료하고, 생성된 `revival_ab.log`를 그대로 전달한다. 편집하거나 잘라내지 말 것 —
-줄 사이의 **침묵 구간**이 측정 대상이라 중간을 지우면 분석이 불가능해진다.
+`q` + Enter로 종료한다. 로그를 편집하거나 잘라내지 말 것 — 줄 사이의 **침묵 구간**이 측정
+대상이라 중간을 지우면 분석이 불가능해진다.
 
-`analyze_capture.py`가 이 파일을 읽어 시행별 타임라인과 A/B 비교표를 출력한다.
+```bash
+python3 devices/HAS1_revival_machine/scripts/analyze_capture.py revival_ab.log
+python3 devices/HAS1_revival_machine/scripts/analyze_capture.py revival_ab.log --timeline   # 전체 타임라인
+python3 devices/HAS1_revival_machine/scripts/analyze_capture.py --selftest                  # 파서 자체 검증
+```
+
+## 5. 로그에서 무엇이 보이고 무엇이 안 보이는가 (v49 소스 확인 결과)
+
+분석기는 아래 사실 위에 세워져 있다. `HAS2_Wifi::HttpRequest`는 `request`가 `"Loop"`가
+**아닐 때만** 응답을 콘솔에 찍는다(`HAS2_Wifi.cpp:656-663`).
+
+| 동작 | 콘솔 출력 | 셀 수 있나 |
+|---|---|---|
+| 성공한 `request=Loop` 폴링 | **아무것도 없음** | ✗ 침묵 구간으로만 보인다 |
+| `Receive` (글러브 role/is_open) | 글러브 행 JSON 전체 | ✓ |
+| `ReceiveMine` (기기 행) | 기기 행 JSON 전체 | ✓ |
+| 승인 대기 폴링 1회 | 기기 행 JSON + `Data Change` | ✓ **폴링 횟수를 직접 셀 수 있다** |
+| `Situation` | 본문 또는 `HTTP GET... code: 200, empty body, request: <URL>` | ✓ `[RFID] Situation send ... took=` 줄로 확정 |
+| HTTP 실패 | 요청 URL과 코드/에러 | ✓ |
+
+**가장 중요한 함정**: `[GhostTiming] RELAY ON` 줄은 `SolenoidPulse(5000)`의 5초 블로킹
+delay가 **끝난 뒤에** 찍힌다(`game_state.ino:119-131`). 그러므로 이 줄의 호스트 시각은 실제
+릴레이 HIGH보다 약 5초 늦다. PR #27이 정확히 이걸 놓쳐 오진했다.
+
+- 줄에 실린 `total` 값은 기기가 `tagDetectedMs` → 실제 GPIO HIGH로 직접 잰 값이라 5초가
+  섞여 있지 않다. **이 값이 기준값이다.**
+- 분석기는 호스트 시각에서 5000ms를 빼 교차검증하고, 두 값이 400ms 넘게 어긋나면 경고한다.
+
+## 6. 분석기가 내는 판정
+
+`침묵 구간 합계`에서 릴레이 통전 5초는 제외된다. 남은 침묵은 콘솔에 아무것도 남기지 않는 작업,
+즉 **PN532 판독/`ApplyGain`, 성공한 `request=Loop` 폴링, `delay()`** 뿐이다.
+
+| 관측 | 결론 |
+|---|---|
+| 유지 시행에서 `Situation 호출 수 > 1` 또는 `사이클 내 재판독 수 > 0` | v49 래치가 샌다. 반복 판독이 원인 (H1/H2) |
+| 래치는 지켜졌는데 유지 쪽 `polls`와 `침묵 구간 합계`가 크다 | 폴링 구조 또는 PN532가 원인 (H3/H4) |
+| 유지 쪽 `role 조회`/`Situation` 왕복 자체가 길다 | 기기가 아니라 서버/AP 지연 |
+| 유지/제거 차이 200ms 미만 | 재현 실패. 조건(혼잡도·글러브·상태)을 다시 맞춰야 한다 |
+
+`MMMM` 대조군(D)은 서버 왕복이 전혀 없으므로, 여기서도 유지 시 느리면 원인은 통신이 아니라
+PN532/루프다.
