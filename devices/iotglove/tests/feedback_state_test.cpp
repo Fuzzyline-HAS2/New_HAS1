@@ -237,6 +237,39 @@ static void commandSchedules() {
   assert(s.onMs == 300 && s.gapMs == 0 && s.count == 1 && s.total == 300);
 }
 
+static void commandEdgesAndLevels() {
+  FeedbackEngine engine;
+  auto f = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
+  assert(!engine.update(f, 0, false, 0).motor);       // Baseline.
+  assert(engine.update(f, 12, false, 1000).motor);    // 0 -> 12 edge: short x1 (200 ms).
+  assert(engine.update(f, 12, false, 1199).motor);
+  assert(!engine.update(f, 12, false, 1200).motor);
+  assert(!engine.update(f, 12, false, 2000).motor);   // A held value never restarts.
+  assert(engine.update(f, 13, false, 3000).motor);    // 12 -> 13 edge: short x2.
+  assert(!engine.update(f, 13, false, 3200).motor);
+  assert(engine.update(f, 13, false, 3400).motor);
+  assert(!engine.update(f, 13, false, 3600).motor);
+  assert(!engine.update(f, 0, false, 4000).motor);    // Back to 0: silence.
+  assert(engine.update(f, 13, false, 5000).motor);    // Same command replays after a 0 gap.
+  assert(!engine.update(f, 13, false, 5600).motor);
+  assert(engine.update(f, 15, false, 6000).motor);    // Long x1: 600 ms.
+  assert(engine.update(f, 15, false, 6599).motor);
+  assert(!engine.update(f, 15, false, 6600).motor);
+  assert(!engine.update(f, 7, false, 7000).motor);    // 4..9 behave like 0.
+  assert(!engine.update(f, 2, false, 7100).motor);
+
+  assert(engine.update(f, 11, false, 8000).motor);    // 11 holds the motor on...
+  assert(engine.update(f, 11, false, 9000).motor);
+  assert(!engine.update(f, 0, false, 10000).motor);   // ...until released.
+  assert(engine.update(f, 17, false, 11000).motor);   // Long x3 running (ON 11000-11599, 11800-12399)...
+  assert(!engine.update(f, 10, false, 11100).motor);  // ...mute cancels it.
+  assert(!engine.update(f, 10, false, 11500).motor);
+  assert(!engine.update(f, 0, false, 11900).motor);   // Released mute: the cancelled train does not resume.
+  assert(engine.update(f, 14, false, 12000).motor);   // Short x3 (ON 12000-12199, 12400-12599, 12800-12999)...
+  assert(engine.update(f, 11, false, 12100).motor);   // ...replaced by continuous ON...
+  assert(!engine.update(f, 0, false, 12450).motor);   // ...and it does not resume when ON is released.
+}
+
 int main() {
   patternsAndConfiguration();
   semanticTransitionsAndNoReplay();
@@ -244,5 +277,6 @@ int main() {
   onlyServerRoleTransitionsSignal();
   wrapAndTaggerLeds();
   commandSchedules();
+  commandEdgesAndLevels();
   puts("PASS: configured state haptics, priorities, reconnect suppression, authoritative roles, tagger LEDs and operator vibe commands");
 }
