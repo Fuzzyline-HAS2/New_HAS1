@@ -49,6 +49,11 @@ void setup() {
     StepMotorInit();
     pinMode(RELAY_PIN, OUTPUT);
     digitalWrite(RELAY_PIN, HIGH);
+    // 부팅 홈잉. 재부팅 직전 날개가 어디 있었는지 알 수 없으므로, 서버 상태를 반영하는
+    // DataChanged() 전에 리미트 스위치까지 닫아 홈을 잡는다. 이미 닫혀 있었다면
+    // EscapeClose()의 while이 한 번도 돌지 않아 0스텝으로 즉시 끝난다.
+    Serial.println("[HOME] 부팅 홈잉");
+    EscapeClose();
     // has2wifi.Setup("KT_GiGA_6C64","ed46zx1198");
     // has2wifi.Setup();
     DataChanged();

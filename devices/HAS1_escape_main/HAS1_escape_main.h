@@ -97,6 +97,14 @@ bool ClearGithubOtaState();
 void StepMotorInit();
 void EscapeClose();
 void EscapeOpen();
+// 날개 위치. false=홈(리미트 스위치 눌림), true=열림(홈에서 stepsPerRevolution*10 스텝).
+//
+// EscapeOpen()은 피드백 없이 정해진 스텝을 무조건 돌기 때문에, 이미 열린 상태에서 다시
+// 부르면 그만큼 더 열린다. 재부팅되면 DataChanged()의 cur이 비어 있어 서버의 activate가
+// 처음 보는 변경이 되고, ActivateFunc()가 열린 날개를 또 여는 일이 벌어졌다
+// (노션 이슈: "activate 상태에서 watchdog시 날개가 열린 상태에서 더 열림").
+// setup()의 부팅 홈잉이 이 값을 false로 맞춰두고, 그 뒤로는 여기서 위치를 기억한다.
+bool wingsOpen = false;
 const int stepsPerRevolution = 100; // 기본세팅 200 AE탈장만 100으로 설정함
 //****************************************SimpleTimer
 //SETUP****************************************************************

@@ -83,7 +83,7 @@ EscapeClose();
 
 ### E. 버전
 
-`FIRMWARE_VER` 37 → 38.
+`FIRMWARE_VER`는 소스에서 손대지 않는다. Deploy Firmware 워크플로의 "버전 증가" 단계가 `ci_deploy.py bump`로 `.ino`의 값을 +1 해서 `Firmware vN` 커밋을 브랜치에 push한다. 수동으로 38로 올리면 CI가 39로 만들거나 bump 스크립트와 충돌한다. 현재 소스와 배포된 release 모두 v37이므로 배포 후 v38이 된다.
 
 ### 건드리지 않는 파일
 

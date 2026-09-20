@@ -3,6 +3,7 @@ HAS1_escape_main 소프트웨어 로직의 Python 시뮬레이션.
 wifi.ino(DataChanged, SettingFunc, ActivateFunc, ReadyFunc)와
 Game_system.ino(TagCount)를 미러링합니다.
 error_recovery.ino(LatchSystemFault, ClearSystemFault, HandleRuntimeRecovery) 포함.
+stepper_Motor.ino의 wingsOpen 플래그와 setup()의 부팅 홈잉도 미러링합니다.
 하드웨어 없이 순수 소프트웨어 단위 테스트에 사용합니다.
 """
 
@@ -21,6 +22,10 @@ class EscapeMainSM:
         self._timer_enabled = False
         self._sent: list = []     # has2wifi.Send() 호출 기록
         self._events: list = []   # Serial.println() 등 동작 기록
+
+        # ── 날개 위치 (stepper_Motor.ino wingsOpen 대응) ──────────────────
+        # False=홈(리미트 스위치 눌림), True=열림(홈에서 1000스텝)
+        self.wings_open = False
 
         # ── Motor timeout simulation (stepper_Motor.ino watchdog 대응) ──────
         self._motor_close_timeout = False  # EscapeClose() 10초 초과 시 True
@@ -44,6 +49,15 @@ class EscapeMainSM:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
+    def boot(self, game_state: str = None, device_state: str = None):
+        """
+        setup() 시뮬레이션. 서버 상태를 반영하기 전에 홈잉(EscapeClose)을 먼저 하고,
+        그 다음 첫 DataChanged()를 부른다.
+        """
+        self._ev("[HOME] boot homing")
+        self._escape_close()
+        self.data_changed(game_state=game_state, device_state=device_state)
+
     def data_changed(self, game_state: str = None, device_state: str = None):
         """DataChanged() 시뮬레이션."""
         if game_state is not None:
@@ -63,7 +77,7 @@ class EscapeMainSM:
             if self.device_state == "player_win":
                 self._clear_system_fault()
                 self._ev("AllNeoOn(BLUE)")
-                self._ev("EscapeClose")
+                self._escape_close()
 
         self._cur_game = self.game_state
         self._cur_device = self.device_state
@@ -144,13 +158,26 @@ class EscapeMainSM:
 
     # ── Private (Arduino 함수 대응) ─────────────────────────────────────────
 
+    def _escape_open(self):
+        """stepper_Motor.ino EscapeOpen() — 이미 열려 있으면 모터를 돌리지 않는다."""
+        if self.wings_open:
+            self._ev("[MOTOR] EscapeOpen skipped")
+            return
+        self._ev("EscapeOpen")
+        self.wings_open = True
+
+    def _escape_close(self):
+        """stepper_Motor.ino EscapeClose() — 리미트 스위치까지 닫고 홈으로 표시."""
+        self._ev("EscapeClose")
+        self.wings_open = False
+
     def _setting_func(self):
         """wifi.ino SettingFunc()"""
         self._clear_system_fault()
         self._ev("SETTING")
         self.relay_high = True
         self._ev("AllNeoOn(WHITE)")
-        self._ev("EscapeClose")
+        self._escape_close()
         if self._motor_close_timeout:
             return
         self._mode = "wait"
@@ -162,7 +189,7 @@ class EscapeMainSM:
         self._ev("READY")
         self.relay_high = True
         self._ev("AllNeoOn(RED)")
-        self._ev("EscapeClose")
+        self._escape_close()
         if self._motor_close_timeout:
             return
         self._mode = "wait"
@@ -173,7 +200,7 @@ class EscapeMainSM:
         self._ev("ACTIVATE")
         self._ev("MP3 VE1")
         self._ev("AllNeoOn(YELLOW)")
-        self._ev("EscapeOpen")
+        self._escape_open()
         if self._motor_open_timeout:
             return
         self.relay_high = False
@@ -199,7 +226,7 @@ class EscapeMainSM:
                 "value": "escape",
             })
             self._ev("Send device_state=escape")
-            self._ev("EscapeClose")
+            self._escape_close()
             self._mode = "wait"
             self._timer_enabled = False
             self._ev("MP3 VE5")
