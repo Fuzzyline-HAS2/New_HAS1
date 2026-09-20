@@ -19,7 +19,7 @@
 - 영어 폴더 매핑: 폴더 9 → 10, 그 외 +4
 - `left_time`: `my["left_time"]`, 초 단위, 서버 카운트다운. 0 이하·부재는 무시하고 30초 기본값 유지.
 - `use_duct_num`은 어느 변경에서도 건드리지 않는다. `sensor.ino`의 `Mp3Check()`(죽은 코드)도 건드리지 않는다.
-- 커밋 메시지는 한국어 `fix(duct): …`/`feat(duct): …`/`test(duct): …` 형식, 끝에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- 커밋 메시지는 한국어 `fix(duct): …`/`feat(duct): …`/`test(duct): …` 형식. 끝의 attribution 트레일러는 실행 시점에 지정된 것을 쓴다(Task 1~3은 `Claude Fable 5.1`, Task 4부터는 `Claude Opus 5`).
 - 테스트 러너의 함수 추출 정규식은 반환형이 `void|int|bool|Mp3Phrase`인 함수만 잡는다. 새 함수는 이 반환형 중 하나로 만든다.
 
 ---
@@ -421,7 +421,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `devices/HAS1_duct/tests/host_harness.cpp` (`server_activate`, `server_activate_door_open`, `server_activate_blockade`)
 
 **Interfaces:**
-- Consumes: `ExitTaggerMode()`, `digitalRead(RELAY_PIN)`, `cooltime_timer`
+- Consumes: `ExitTaggerMode()`, `duct_close_timer`/`duct_close_timer_id`, `cooltime_timer`
 - Produces: `void CooltimeFinish()` — 쿨타임 완료 처리(노란색, `device_state=activate` 전송, `current_time=0`, `duct_available=true`, `cool_time_neo_bool=false`, 타이머 삭제). `void ServerActivate()` — 서버 `activate` 수신 처리.
 
 - [ ] **Step 1: 실패하는 펌웨어 테스트 추가**
@@ -544,13 +544,15 @@ void ServerActivate();
 /**
  * @brief 서버 device_state=activate 수신(운영 OS "활성화" 버튼).
  *        쿨타임 중이면 즉시 끝내고, 봉쇄 중이면 기존처럼 봉쇄를 푼다. 사용횟수 사다리는 유지.
- *        릴레이 HIGH(개방 4초, 관리자 개방 포함) 중에는 건너뛴다. 이때 상태를 바꾸면
- *        닫힘 콜백이 쿨타임을 다시 시작해 표시와 실제가 어긋난다.
+ *        문이 열려 있는 4초(관리자 개방 포함) 동안은 건너뛴다. 이때 상태를 바꾸면
+ *        닫힘 콜백이 쿨타임을 다시 시작해 표시와 실제가 어긋난다. 개방 여부는
+ *        duct_close_timer 로 판단한다 - RELAY_PIN 은 OUTPUT 이라 ESP32에서 digitalRead 가
+ *        항상 0을 돌려줄 수 있어 게이트로 쓸 수 없다.
  *        쿨타임이 자연 종료되어 디바이스가 보낸 activate가 되돌아오는 경우는 duct_available로 걸러진다.
  */
 void ServerActivate()
 {
-    if (game_state == activate && !duct_available && digitalRead(RELAY_PIN) == LOW)
+    if (game_state == activate && !duct_available && !duct_close_timer.isEnabled(duct_close_timer_id))
         CooltimeFinish();
     ExitTaggerMode();
 }
@@ -592,7 +594,7 @@ cd /Users/byeongjun/workspace/New_HAS1 && git add devices/HAS1_duct/timer.ino de
 그대로 두던 문제. 쿨타임 완료 처리를 CooltimeFinish로 추출해 타이머 만료와
 ServerActivate가 공유한다. 사용횟수는 유지하고, 문이 열려 있는 동안은 무시한다.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -622,6 +624,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
         my["left_time"] = "25"; TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 25, "server left_time replaces the default");
         advance(3000); check(TaggerRemainingSeconds() == 22, "remaining time counts down from the last received value");
+        TaggerLeftTimeUpdate();   // 같은 값(25) 재수신 - 수신 시각을 다시 찍으면 안 된다
+        check(TaggerRemainingSeconds() == 22, "repeated identical left_time does not rewind the countdown");
         expectBlockadeAudio(22);
         my["left_time"] = "10"; TaggerLeftTimeUpdate(); advance(500);
         check(TaggerRemainingSeconds() == 10, "newer left_time wins and partial seconds round up");
@@ -681,14 +685,17 @@ void TaggerLeftTimeUpdate();
 
 ```cpp
 /**
- * @brief 서버 폴링마다 호출. 봉쇄 중이고 left_time(초)이 양수면 값과 수신 시각을 저장한다.
- *        값이 같아도 수신 시각을 갱신해야 경과 보정이 정확하다. 0 이하·부재는 무시한다.
+ * @brief 서버 폴링마다 호출. 봉쇄 중이고 left_time(초)이 양수이며 직전 값과 다를 때만
+ *        값과 수신 시각을 저장한다. 0 이하·부재는 무시한다.
+ *        같은 값에 수신 시각을 다시 찍으면 폴링마다 카운트다운이 되감겨,
+ *        서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
  */
 void TaggerLeftTimeUpdate()
 {
     if (!tagger_mode) return;
     int left_time = (int)my["left_time"];
     if (left_time <= 0) return;
+    if (tagger_left_time_valid && left_time == tagger_left_time_s) return;
     tagger_left_time_s = left_time;
     tagger_left_time_ms = millis();
     tagger_left_time_valid = true;
@@ -770,7 +777,7 @@ cd /Users/byeongjun/workspace/New_HAS1 && git add devices/HAS1_duct/HAS1_duct.h 
 경과 시간을 빼 안내한다. 아직 못 받았거나 0 이하면 기존 30초 기본값. 봉쇄 해제는
 여전히 서버 명령으로만 한다.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---

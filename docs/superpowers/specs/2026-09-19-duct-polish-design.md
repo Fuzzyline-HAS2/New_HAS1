@@ -67,7 +67,7 @@
 
 ```
 ServerActivate():
-  if (game_state == activate && !duct_available && digitalRead(RELAY_PIN) == LOW)
+  if (game_state == activate && !duct_available && !duct_close_timer.isEnabled(duct_close_timer_id))
       CooltimeFinish();        // 쿨타임 즉시 종료
   ExitTaggerMode();            // 기존 봉쇄 해제 동작 유지
 ```
@@ -79,8 +79,11 @@ ServerActivate():
 **가드 이유:**
 - `game_state != activate` 또는 이미 사용 가능이면 할 일이 없다. 쿨타임이 자연 종료되어 디바이스가 보낸 `activate`가
   다음 폴링에 되돌아올 때도 이 조건으로 무시된다.
-- 릴레이 HIGH(문 열림 4초, 관리자 개방 포함) 중에는 무시한다. 이때 상태를 바꾸면 닫힘 콜백(`DuctClose`/`MmmmClose`)이
+- 문이 열려 있는 4초(관리자 개방 포함) 동안은 무시한다. 이때 상태를 바꾸면 닫힘 콜백(`DuctClose`/`MmmmClose`)이
   쿨타임을 다시 시작해 표시와 실제 상태가 어긋난다. 운영자가 그 4초 안에 누르는 경우는 드물다.
+  개방 여부는 `duct_close_timer`로 판단한다. 두 개방 경로(`DuctOpen`/`MmmmOpen`)가 모두 4초 타임아웃을 걸고,
+  `MmmmOpen`은 걸려 있던 예약을 먼저 지우므로 이 플래그가 개방 구간과 정확히 겹친다. `RELAY_PIN`은 `OUTPUT`이라
+  ESP32에서 `digitalRead`가 항상 0을 돌려줄 수 있어 게이트로 쓸 수 없고, 호스트 테스트는 그 차이를 잡지 못한다.
 - 봉쇄+쿨타임이 겹친 상태에서는 쿨타임 종료 후 봉쇄 해제 순서로 둘 다 풀린다. `activate` 전송이 두 번 나갈 수 있으나 무해하다.
 
 **알려진 한계:** 서버 DB가 이미 `activate`인데 디바이스는 쿨타임 중인 경우(예: `lock` 전송 실패) 값이 바뀌지 않아 버튼이 감지되지 않는다.
@@ -102,8 +105,9 @@ ServerActivate():
 **변경:**
 - 전역 추가: `int tagger_left_time_s`, `unsigned long tagger_left_time_ms`(수신 시각), `bool tagger_left_time_valid`.
 - `EnterTaggerMode()`에서 `tagger_left_time_valid = false`로 초기화.
-- 새 함수 `TaggerLeftTimeUpdate()`: `tagger_mode`일 때 `(int)my["left_time"]`이 0보다 크면 값과 `millis()`를 저장하고 valid로 표시.
-  `DataChange`가 매 호출마다 부른다(값이 바뀌지 않아도 최신 수신 시각을 갱신해야 경과 보정이 정확하다).
+- 새 함수 `TaggerLeftTimeUpdate()`: `tagger_mode`이고 `(int)my["left_time"]`이 0보다 크며 **직전에 받은 값과 다를 때만**
+  값과 `millis()`를 저장하고 valid로 표시. `DataChange`가 매 호출마다 부른다. 값이 같은데도 수신 시각을 다시 찍으면
+  폴링마다 카운트다운이 되감겨, 서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
 - `TaggerRemainingSeconds()`: valid면 `left_time_s - (millis() - 수신시각)/1000`(올림, 0 이하는 0). 아니면 기존 30초 계산 유지.
 - 봉쇄 해제는 지금처럼 서버 명령(`back`/`activate`)으로만 한다. `left_time`이 0이 되어도 디바이스가 스스로 풀지 않는다.
 
@@ -112,7 +116,7 @@ ServerActivate():
 **검증(호스트 테스트):** `TaggerLeftTimeUpdate`, `TaggerRemainingSeconds`로
 - `left_time` 없음 → 기본 30초 카운트다운.
 - `left_time=25` 수신 후 3초 경과 → 22.
-- 재수신 시 최신값 기준으로 갱신.
+- 같은 값 재수신은 카운트다운을 되감지 않음. 다른 값 재수신은 최신값 기준으로 갱신.
 - 봉쇄 재진입 시 이전 값 무효화.
 
 ## 배포
