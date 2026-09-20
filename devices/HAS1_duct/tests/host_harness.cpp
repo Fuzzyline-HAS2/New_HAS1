@@ -340,6 +340,37 @@ int main(int argc, char** argv) {
         audioEvents.clear(); MmmmOpen();
         check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "admin card plays the outside opening line");
         advance(4000); check(relay == LOW && !mmmm_open, "admin opening closes");
+    } else if (test == "server_activate") {
+        openNormal(); advance(6000); check(!duct_available && current_time == 2, "cooldown in progress");
+        has2wifi.states.clear();
+        ServerActivate();
+        check(duct_available && current_time == 0 && !cooltime_timer.isEnabled(cooltime_timer_id),
+              "server activate ends the cooldown immediately");
+        check(use_duct_num == 1, "server activate keeps the use counter");
+        check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "server activate paints yellow");
+        check(has2wifi.states == std::vector<String>{"activate"}, "server activate reports activate once");
+        has2wifi.states.clear(); ServerActivate();
+        check(duct_available && has2wifi.states.empty(), "server activate while available changes nothing");
+        DuctTag("G1P2"); check(relay == HIGH && use_duct_num == 2, "duct opens again after forced activation");
+    } else if (test == "server_activate_door_open") {
+        openNormal(); advance(1000); ServerActivate();
+        check(!duct_available && relay == HIGH, "server activate is ignored while the door is open");
+        advance(3000); check(relay == LOW && cooltime_timer.isEnabled(cooltime_timer_id), "door still closes into a normal cooldown");
+        finished();
+        openNormal(); advance(6000); MmmmOpen(); advance(500); ServerActivate();
+        check(mmmm_open && !duct_available, "server activate is ignored during admin opening");
+        advance(3500);
+        check(!mmmm_open && !duct_available && cooltime_timer.isEnabled(cooltime_timer_id), "admin close restores the cooldown");
+        finished();
+    } else if (test == "server_activate_blockade") {
+        openNormal(); advance(6000); EnterTaggerMode(); has2wifi.states.clear();
+        ServerActivate();
+        check(!tagger_mode && duct_available && current_time == 0, "server activate releases blockade and cooldown together");
+        check(!has2wifi.states.empty() && has2wifi.states.back() == "activate", "server reports activate after release");
+        check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "released duct is yellow");
+        EnterTaggerMode(); has2wifi.states.clear(); ServerActivate();
+        check(!tagger_mode && duct_available && has2wifi.states == std::vector<String>{"activate"},
+              "available blockade release keeps existing exit behaviour");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }

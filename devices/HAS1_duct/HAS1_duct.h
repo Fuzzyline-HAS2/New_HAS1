@@ -105,6 +105,7 @@ void ActionFunc();
 void DataChange();
 void EnterTaggerMode();
 void ExitTaggerMode();
+void ServerActivate();
 
 //=============================== Neopixel ===============================
 #define NUMPIXELS_LINE           30
@@ -188,6 +189,7 @@ int wifi_timer_id;
 int tagger_blink_timer_id;
 
 void TimerRun();
+void CooltimeFinish();
 void CooltimeTimerFunc();
 void RfidTagTimerFunc();
 void WifiTimerFunc();

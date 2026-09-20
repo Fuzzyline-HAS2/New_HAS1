@@ -31,7 +31,7 @@ audio = (ROOT / "audio_queue.ino").read_text().replace('#include "HAS1_duct.h"',
 body = core + "\n" + "\n".join(function(game, n) for n in
     ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc",
      "ActivateRunOnce"])
-body += "\n" + function(timer, "CooltimeTimerFunc")
+body += "\n" + function(timer, "CooltimeTimerFunc") + "\n" + function(timer, "CooltimeFinish")
 body += "\n" + "\n".join(function(sensor, name) for name in
                            ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder"])
 prototypes = "\n".join(re.findall(r"^(?:void|int|bool)\s+\w+\([^)]*\)", body, re.M))
@@ -52,7 +52,7 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "server_cooltime_fallback",
          "audio_0", "audio_28", "audio_60", "audio_90",
          "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close",
-         "open_audio_paths"]
+         "open_audio_paths", "server_activate", "server_activate_door_open", "server_activate_blockade"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     src, exe = Path(tmp) / "test.cpp", Path(tmp) / "test"
     src.write_text(source)

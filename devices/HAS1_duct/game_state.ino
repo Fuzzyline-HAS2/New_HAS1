@@ -163,7 +163,7 @@ void DataChange()
         // tagger 이므로 실제로 값이 바뀐다). ExitTaggerMode 가 되보내는 activate 는
         // 이미 cur 에 반영된 뒤라 재진입하지 않는다.
         else if((String)(const char *)my["device_state"] == "activate"){
-            ExitTaggerMode();
+            ServerActivate();
         }
         else if((String)(const char *)my["device_state"] == "open"){
             MmmmOpen();
