@@ -202,11 +202,47 @@ static void wrapAndTaggerLeds() {
   assert(!wrap.update(f, 0, false, 99).motor);  // 300 ms transition pulse across wrap.
 }
 
+static void commandSchedules() {
+  Settings config;
+  auto s = feedback_config::pulses(200, 200, 3);
+  assert(s.total == 1000 && s.count == 3 && s.onMs == 200 && s.gapMs == 200);
+  assert(feedback_config::motorOn(s, 0) && feedback_config::motorOn(s, 199));
+  assert(!feedback_config::motorOn(s, 200) && !feedback_config::motorOn(s, 399));
+  assert(feedback_config::motorOn(s, 400) && feedback_config::motorOn(s, 599));
+  assert(!feedback_config::motorOn(s, 600) && !feedback_config::motorOn(s, 799));
+  assert(feedback_config::motorOn(s, 800) && feedback_config::motorOn(s, 999));
+  assert(!feedback_config::motorOn(s, 1000));
+  assert(feedback_config::pulses(0, 200, 3).total == 0);       // Zero ON disables.
+  assert(feedback_config::pulses(200, 200, 0).total == 0);     // Zero count disables.
+  assert(feedback_config::pulses(UINT32_MAX, 0, 2).total == 0);  // Overflow rejected.
+  assert(feedback_config::pulses(300, 0, 1).total == 300);
+
+  assert(feedback_config::commandSchedule(12, config).total == 200);
+  assert(feedback_config::commandSchedule(13, config).total == 600);
+  assert(feedback_config::commandSchedule(14, config).total == 1000);
+  assert(feedback_config::commandSchedule(15, config).total == 600);
+  assert(feedback_config::commandSchedule(16, config).total == 1400);
+  assert(feedback_config::commandSchedule(17, config).total == 2200);
+  assert(feedback_config::commandSchedule(0, config).total == 0);
+  assert(feedback_config::commandSchedule(11, config).total == 0);
+  assert(feedback_config::commandSchedule(18, config).total == 0);
+  assert(feedback_config::isCommand(12) && feedback_config::isCommand(17));
+  assert(!feedback_config::isCommand(11) && !feedback_config::isCommand(18));
+  assert(feedback_config::kVibeMute == 10 && feedback_config::kVibeOn == 11);
+
+  // Existing state patterns keep their exact shape on the generalized schedule.
+  s = feedback_config::schedule(Pattern::Short2, config);
+  assert(s.onMs == 150 && s.gapMs == 100 && s.count == 2 && s.total == 400);
+  s = feedback_config::schedule(Pattern::Long1, config);
+  assert(s.onMs == 300 && s.gapMs == 0 && s.count == 1 && s.total == 300);
+}
+
 int main() {
   patternsAndConfiguration();
   semanticTransitionsAndNoReplay();
   prioritiesAndCancellation();
   onlyServerRoleTransitionsSignal();
   wrapAndTaggerLeds();
-  puts("PASS: configured state haptics, priorities, reconnect suppression, authoritative roles and tagger LEDs");
+  commandSchedules();
+  puts("PASS: configured state haptics, priorities, reconnect suppression, authoritative roles, tagger LEDs and operator vibe commands");
 }

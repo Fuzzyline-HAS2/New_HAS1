@@ -26,36 +26,61 @@ struct Settings {
   // Preserve the existing explicit-event timings: 300 and 150/100/150 ms.
   Pattern onRemoved = Pattern::Long1;
   Pattern onFound = Pattern::Short2;
+
+  // Operator vibe commands (server vibe 12..17) are tuned apart from state patterns.
+  uint32_t commandShortMs = 200;
+  uint32_t commandLongMs = 600;
+  uint32_t commandGapMs = 200;
 };
 
+// Server vibe values that are operator commands rather than proximity levels (0/1/3).
+constexpr uint8_t kVibeMute = 10;          // Hold: motor never runs.
+constexpr uint8_t kVibeOn = 11;            // Hold: motor runs continuously.
+constexpr uint8_t kVibeCommandFirst = 12;  // 12..14 short x1..3, 15..17 long x1..3, once per edge.
+constexpr uint8_t kVibeCommandLast = 17;
+
+inline bool isCommand(uint8_t vibe) { return vibe >= kVibeCommandFirst && vibe <= kVibeCommandLast; }
+
+// A pulse train: `count` pulses of `onMs`, separated by `gapMs`. `total` ends with the last ON.
 struct Schedule {
-  uint32_t firstOn = 0;
-  uint32_t gap = 0;
-  uint32_t secondOn = 0;
+  uint32_t onMs = 0;
+  uint32_t gapMs = 0;
+  uint32_t count = 0;
   uint32_t total = 0;
 };
 
-inline Schedule schedule(Pattern pattern, const Settings& settings) {
+inline Schedule pulses(uint32_t onMs, uint32_t gapMs, uint32_t count) {
   Schedule out;
-  switch (pattern) {
-    case Pattern::Short1: out.firstOn = settings.shortMs; break;
-    case Pattern::Long1: out.firstOn = settings.longMs; break;
-    case Pattern::Short2:
-      out.firstOn = out.secondOn = settings.shortMs;
-      out.gap = settings.doubleGapMs;
-      break;
-    case Pattern::Off: return out;
-  }
-  const uint64_t total = uint64_t(out.firstOn) + out.gap + out.secondOn;
   // Zero disables the pulse; reject overflowing/ambiguous millis durations.
-  if (!out.firstOn || total > 0x7fffffffULL) return Schedule{};
+  if (!onMs || !count) return out;
+  const uint64_t total = uint64_t(onMs) * count + uint64_t(gapMs) * (count - 1);
+  if (total > 0x7fffffffULL) return out;
+  out.onMs = onMs;
+  out.gapMs = gapMs;
+  out.count = count;
   out.total = uint32_t(total);
   return out;
 }
 
+inline Schedule schedule(Pattern pattern, const Settings& settings) {
+  switch (pattern) {
+    case Pattern::Short1: return pulses(settings.shortMs, 0, 1);
+    case Pattern::Long1: return pulses(settings.longMs, 0, 1);
+    case Pattern::Short2: return pulses(settings.shortMs, settings.doubleGapMs, 2);
+    case Pattern::Off: break;
+  }
+  return Schedule{};
+}
+
+inline Schedule commandSchedule(uint8_t vibe, const Settings& settings) {
+  if (vibe >= 12 && vibe <= 14) return pulses(settings.commandShortMs, settings.commandGapMs, uint32_t(vibe - 11));
+  if (vibe >= 15 && vibe <= 17) return pulses(settings.commandLongMs, settings.commandGapMs, uint32_t(vibe - 14));
+  return Schedule{};
+}
+
 inline bool motorOn(const Schedule& pattern, uint32_t elapsed) {
-  return elapsed < pattern.firstOn ||
-      (elapsed >= pattern.firstOn + pattern.gap && elapsed < pattern.total);
+  // An empty schedule has total 0, so the division below never sees a zero period.
+  return elapsed < pattern.total && elapsed % (pattern.onMs + pattern.gapMs) < pattern.onMs;
 }
 
 inline Pattern forState(const Feedback& state, const Settings& settings) {
