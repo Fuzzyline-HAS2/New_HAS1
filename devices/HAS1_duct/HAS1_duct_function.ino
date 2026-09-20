@@ -179,14 +179,19 @@ void DuctKill()
 }
 
 /**
- * @brief 서버 폴링마다 호출. 봉쇄 중이고 left_time(초)이 양수이며 직전 값과 다를 때만
+ * @brief 서버 데이터가 갱신될 때마다(DataChange) 호출. 봉쇄 중이고 left_time(초)이 양수이며 직전 값과 다를 때만
  *        값과 수신 시각을 저장한다. 0 이하·부재는 무시한다.
  *        같은 값에 수신 시각을 다시 찍으면 폴링마다 카운트다운이 되감겨,
  *        서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
+ *        서버가 아직 봉쇄를 인지하지 못했으면(device_state != tagger) 값을 받지 않는다.
+ *        DuctKill 은 device_state=tagger 를 보내기 전에 EnterTaggerMode 를 먼저 부르므로,
+ *        그 한 폴링 동안 my["left_time"] 에 남아 있는 이전 봉쇄의 값을 새 값으로 오인할 수 있다.
+ *        서버가 tagger 를 되돌려줄 때까지는 30초 기본값을 쓴다.
  */
 void TaggerLeftTimeUpdate()
 {
     if (!tagger_mode) return;
+    if ((String)(const char *)my["device_state"] != "tagger") return;
     int left_time = (int)my["left_time"];
     if (left_time <= 0) return;
     if (tagger_left_time_valid && left_time == tagger_left_time_s) return;

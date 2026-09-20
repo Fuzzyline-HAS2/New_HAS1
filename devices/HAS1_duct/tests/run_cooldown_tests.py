@@ -62,7 +62,8 @@ with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     for case in cases:
         subprocess.run([str(exe), case], check=True)
     audio_cases = ["audio_fifo", "audio_door_timers", "audio_v2_blockade", "audio_overflow", "audio_duplicate",
-                   "audio_missing", "audio_wrap", "audio_language", "audio_stale", "audio_folder9_language"]
+                   "audio_missing", "audio_wrap", "audio_language", "audio_stale", "audio_folder9_language",
+                   "audio_blockade_left_time"]
     audio_main = Path(__file__).with_name("audio_harness.cpp").read_text()
     src.write_text(source[:source.index("int main(int argc")] + audio_main)
     subprocess.run(["clang++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DACTUAL_AUDIO",

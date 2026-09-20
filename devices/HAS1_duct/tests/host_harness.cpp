@@ -352,6 +352,10 @@ int main(int argc, char** argv) {
         has2wifi.states.clear(); ServerActivate();
         check(duct_available && has2wifi.states.empty(), "server activate while available changes nothing");
         DuctTag("G1P2"); check(relay == HIGH && use_duct_num == 2, "duct opens again after forced activation");
+        advance(4000);
+        check(relay == LOW && cooltime_timer.isEnabled(cooltime_timer_id),
+              "the timer slot ServerActivate deleted is cleanly reusable for the next cooldown");
+        finished();
     } else if (test == "server_activate_door_open") {
         openNormal(); advance(1000); ServerActivate();
         check(!duct_available && relay == HIGH, "server activate is ignored while the door is open");
@@ -372,7 +376,10 @@ int main(int argc, char** argv) {
         check(!tagger_mode && duct_available && has2wifi.states == std::vector<String>{"activate"},
               "available blockade release keeps existing exit behaviour");
     } else if (test == "blockade_left_time") {
+        my["left_time"] = "3";   // 이전 봉쇄에서 남아 있던 값
         EnterTaggerMode(); TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "a value the server has not acknowledged yet is ignored");
+        my["device_state"] = "tagger"; my["left_time"] = ""; TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 30, "missing left_time keeps the 30 second default");
         my["left_time"] = "25"; TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 25, "server left_time replaces the default");
@@ -386,6 +393,13 @@ int main(int argc, char** argv) {
         check(TaggerRemainingSeconds() == 10, "zero left_time does not overwrite the last value");
         advance(12000);
         check(TaggerRemainingSeconds() == 0 && tagger_mode, "expired server value announces zero but never self-releases");
+        my["left_time"] = "90"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 90, "a blockade longer than a minute is accepted");
+        audioEvents.clear(); tag["role"] = "player";
+        uint8_t minute_card[32] = {'G', '1', 'P', '1'};
+        CardChecking(minute_card);
+        check(audioEvents == std::vector<String>{"play:4:2", "play:2:1", "play:1:4"},
+              "blockade over a minute announces minutes instead of seconds");
         ExitTaggerMode(); my["left_time"] = ""; EnterTaggerMode(); TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 30, "re-entering the blockade forgets the previous server value");
         ExitTaggerMode(); my["left_time"] = "7"; TaggerLeftTimeUpdate();

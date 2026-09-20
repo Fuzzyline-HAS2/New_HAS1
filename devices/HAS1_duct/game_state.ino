@@ -189,7 +189,7 @@ void DataChange()
         }
     }
 
-    // 봉쇄 남은 시간: 서버 left_time을 폴링마다 반영 (device_state=tagger 와 같은 응답에 와도 위에서
+    // 봉쇄 남은 시간: 서버 left_time을 DataChange 마다 반영 (device_state=tagger 와 같은 응답에 와도 위에서
     // EnterTaggerMode 가 먼저 실행되므로 여기서 바로 잡힌다)
     TaggerLeftTimeUpdate();
 

@@ -122,6 +122,16 @@ int main(int argc, char** argv) {
               "English maps folder 09 to 10 and other folders by +4");
         check(audioStartTimes[2] - audioStartTimes[1] == 2400 + MP3_TRACK_MARGIN_MS,
               "English outside opening uses its own measured length");
+    } else if (test == "audio_blockade_left_time") {
+        my["device_state"] = "tagger";
+        EnterTaggerMode(); my["left_time"] = "25"; TaggerLeftTimeUpdate();
+        Mp3PlayLargeFolder(4, 1); TaggerRemainingMp3();
+        check(audioEvents == std::vector<String>{"play:4:1"}, "remaining-time phrase waits behind the confirmation");
+        advance(4649);
+        check(audioEvents.back() == "play:4:2", "blockade intro starts after the full confirmation");
+        drainAudio();
+        check(audioEvents == std::vector<String>{"play:4:1", "play:4:2", "play:3:21", "play:1:5"},
+              "number track reflects the server time remaining at playback start, not at queue time");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
