@@ -38,6 +38,9 @@ class FeedbackEngine {
       pendingGhostAck_ = false;
       known_ = state.stateValid;
       remember(state);
+      // Suppressed (OTA/reset) polls consume a held command so it never plays late. Invalid polls
+      // carry a forced vibe of 0 and leave lastVibe_ alone, so the next valid poll is not an edge.
+      if (state.stateValid) { lastVibe_ = vibe; haveVibe_ = true; }
       return out;
     }
     const bool baseline = !known_ || state.stateEpoch != epoch_;
@@ -49,12 +52,19 @@ class FeedbackEngine {
     if (baseline) {
       cancel();
       pendingGhostAck_ = false;
+      // A command already held at first sync or after an identity/epoch change is consumed, not
+      // played. A baseline caused only by a transient invalid poll keeps lastVibe_, so a command
+      // that changed meanwhile still plays.
+      if (!haveVibe_ || state.stateEpoch != epoch_) lastVibe_ = vibe;
+      haveVibe_ = true;
     }
     if (pattern_.total && uint32_t(now - patternStart_) >= pattern_.total) cancel();
     // Stop any preceding activity before a new setting/ready/end notification.
     // This is an edge, not a per-poll cancellation of the new notification.
-    if ((changed && quiescent(state)) ||
-        (state.display == Display::Ended && display_ != Display::Ended)) cancel();
+    // Operator commands are not state feedback and outlive these transitions.
+    if (source_ != Source::Command &&
+        ((changed && quiescent(state)) ||
+         (state.display == Display::Ended && display_ != Display::Ended))) cancel();
     if (changed) pendingGhostAck_ = false;
 
     // Operator vibe commands. 10/11 are levels that hold while the server keeps the value;
@@ -78,8 +88,9 @@ class FeedbackEngine {
       // A capture's later server acknowledgement must not repeat its vibration.
       if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
           state.phase == Phase::Active) pendingGhostAck_ = true;
-    } else if (changed && !removedAcknowledged && source_ != Source::Event) {
-      // Consume transitions during explicit events; never queue a stale replay.
+    } else if (changed && !removedAcknowledged && source_ != Source::Event &&
+               source_ != Source::Command) {
+      // Consume transitions during explicit events or commands; never queue a stale replay.
       start(feedback_config::forState(state, settings_), Source::State, now);
     }
     known_ = true;
@@ -111,7 +122,8 @@ class FeedbackEngine {
   Phase phase_ = Phase::Unknown;
   Display display_ = Display::Setting;
   uint32_t epoch_ = 0;
-  uint8_t lastVibe_ = 0;  // Last server vibe seen on a valid poll; commands play on change only.
+  uint8_t lastVibe_ = 0;   // Last server vibe seen on a valid poll; commands play on change only.
+  bool haveVibe_ = false;  // False until the first valid poll; baseline consumption depends on it.
 
   static bool quiescent(const Feedback& state) {
     return state.phase == Phase::Setting || state.phase == Phase::Ready ||

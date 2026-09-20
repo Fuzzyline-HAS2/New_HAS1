@@ -270,6 +270,82 @@ static void commandEdgesAndLevels() {
   assert(!engine.update(f, 0, false, 12450).motor);   // ...and it does not resume when ON is released.
 }
 
+static void commandPrioritiesAndExceptions() {
+  FeedbackEngine engine;
+  auto f = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
+  engine.update(f, 0, false, 0);  // Baseline.
+
+  // Chip events interrupt a running command: a game signal beats an operator cue.
+  assert(engine.update(f, 14, false, 1000).motor);    // Short x3: ON 1000-1199, 1400-1599, 1800-1999.
+  f.haptic = Haptic::Removed;
+  assert(engine.update(f, 14, false, 1250).motor);    // Removed (Long1, 300 ms) starts inside the command's OFF gap.
+  f.haptic = Haptic::None;
+  assert(engine.update(f, 14, false, 1549).motor);
+  assert(!engine.update(f, 14, false, 1550).motor);   // Event done; the interrupted command does not resume (1550 was an ON window).
+
+  // Role transitions do not cut a running command.
+  assert(engine.update(f, 16, false, 3000).motor);    // Long x2: ON 3000-3599, 3800-4399.
+  f.role = Role::Ghost; f.display = Display::Ghost;
+  assert(!engine.update(f, 16, false, 3650).motor);   // Gap holds; the Ghost transition pulse is not started.
+  assert(engine.update(f, 16, false, 3800).motor);
+  assert(engine.update(f, 16, false, 4399).motor);
+  assert(!engine.update(f, 16, false, 4400).motor);
+
+  // Quiescent (setting/ready/ended) transitions do not cut a running command either.
+  f = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
+  engine.update(f, 0, false, 5000);                   // Player transition pulse (150 ms) plays and ends.
+  assert(!engine.update(f, 0, false, 5500).motor);
+  assert(engine.update(f, 17, false, 6000).motor);    // Long x3: ON 6000-6599, 6800-7399, 7600-8199.
+  f.deviceState = DeviceState::Ready; f.phase = Phase::Ready; f.display = Display::Ready;
+  assert(!engine.update(f, 17, false, 6700).motor);   // Ready did not cut it (its own pulse would be ON now).
+  assert(engine.update(f, 17, false, 6900).motor);    // The command's second pulse continues.
+  assert(!engine.update(f, 17, false, 8200).motor);
+
+  // Commands work in any state. Invalid polls carry a forced vibe of 0 and must not create edges:
+  // the same command afterwards stays silent, a changed one still plays.
+  assert(engine.update(f, 12, false, 9000).motor);    // Ready state, command plays.
+  assert(!engine.update(f, 12, false, 9200).motor);
+  f.stateValid = false;
+  assert(!engine.update(f, 0, false, 9500).motor);
+  f.stateValid = true;
+  assert(!engine.update(f, 12, false, 10000).motor);  // Same 12 after the blip: no replay.
+  f.stateValid = false;
+  engine.update(f, 0, false, 10500);
+  f.stateValid = true;
+  assert(engine.update(f, 13, false, 11000).motor);   // Changed during the blip: plays.
+  assert(!engine.update(f, 13, false, 11600).motor);
+
+  // OTA/reset consumes commands instead of replaying them afterwards.
+  assert(!engine.update(f, 14, false, 12000, true).motor);
+  assert(!engine.update(f, 14, false, 12100).motor);  // Released: 14 was consumed.
+  assert(engine.update(f, 15, false, 12500).motor);   // A new edge after release plays normally.
+
+  // A command already held at first sync or after an epoch change is consumed, not played.
+  FeedbackEngine fresh;
+  auto g = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
+  assert(!fresh.update(g, 12, false, 0).motor);
+  assert(!fresh.update(g, 12, false, 500).motor);
+  g.stateEpoch++;                                     // Reconnect / identity replacement while 13 is held.
+  assert(!fresh.update(g, 13, false, 1000).motor);
+  assert(!fresh.update(g, 13, false, 1100).motor);
+  assert(fresh.update(g, 12, false, 2000).motor);     // 13 -> 12 after the baseline is a real edge.
+
+  // Mute silences game feedback too: proximity, chip events and transitions.
+  FeedbackEngine muted;
+  auto m = state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player);
+  muted.update(m, 0, true, 0);
+  assert(muted.update(m, 3, true, 1000).motor);       // Same-room proximity pulse (t % 1000 < 100).
+  assert(!muted.update(m, 10, true, 2000).motor);     // Muted inside a proximity ON window.
+  m.haptic = Haptic::Removed;
+  assert(!muted.update(m, 10, true, 2050).motor);     // Chip event swallowed.
+  m.haptic = Haptic::None;
+  m.deviceState = DeviceState::Ready; m.phase = Phase::Ready; m.display = Display::Ready;
+  assert(!muted.update(m, 10, true, 2100).motor);     // Ready transition swallowed.
+  m.deviceState = DeviceState::Activate; m.phase = Phase::Active; m.display = Display::Player;
+  assert(!muted.update(m, 10, true, 2200).motor);     // Player transition swallowed.
+  assert(muted.update(m, 3, true, 3000).motor);       // Released: proximity is back, no stale transition replays.
+}
+
 int main() {
   patternsAndConfiguration();
   semanticTransitionsAndNoReplay();
@@ -278,5 +354,6 @@ int main() {
   wrapAndTaggerLeds();
   commandSchedules();
   commandEdgesAndLevels();
+  commandPrioritiesAndExceptions();
   puts("PASS: configured state haptics, priorities, reconnect suppression, authoritative roles, tagger LEDs and operator vibe commands");
 }
