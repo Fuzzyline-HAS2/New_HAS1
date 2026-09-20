@@ -24,6 +24,15 @@ void DuctTag(String tag_player)
     }
 }
 
+/**
+ * @brief 개방 안내. 밖에서 열면(태그·서버 관리 개방·MMMM) "당겨주십시오"(09/0712),
+ *        안에서 스위치로 열면 "밀어주십시오" 계열(09/0719). 영어는 Mp3MakePhrase가 폴더 10으로 바꾼다.
+ */
+void OpenMp3(bool inside)
+{
+    Mp3PlayLargeFolder(9, inside ? 719 : 712);
+}
+
 void DuctOpen(bool switch_push)
 {
     if (mmmm_open) return;
@@ -52,7 +61,7 @@ void DuctOpen(bool switch_push)
         {
             cooltime_timer.deleteTimer(cooltime_timer_id);
         }
-        Mp3PlayLargeFolder(1, 2);
+        OpenMp3(switch_push);
         switch_available = false;
         duct_available = false;
         // 문이 닫힌 뒤 시작할 쿨타임을 준비한다.
@@ -138,6 +147,22 @@ void CooltimeCalculation()
     }
 }
 
+/**
+ * @brief 서버 device_state=activate 수신(운영 OS "활성화" 버튼).
+ *        쿨타임 중이면 즉시 끝내고, 봉쇄 중이면 기존처럼 봉쇄를 푼다. 사용횟수 사다리는 유지.
+ *        문이 열려 있는 4초(관리자 개방 포함) 동안은 건너뛴다. 이때 상태를 바꾸면
+ *        닫힘 콜백이 쿨타임을 다시 시작해 표시와 실제가 어긋난다. 개방 여부는
+ *        RELAY_PIN 되읽기 대신 duct_close_timer 로 판단한다 - 두 개방 경로가 모두 4초
+ *        타임아웃을 걸어 이 플래그가 개방 구간과 정확히 겹치고, GPIO 모드 해석에 기대지 않는다.
+ *        쿨타임이 자연 종료되어 디바이스가 보낸 activate가 되돌아오는 경우는 duct_available로 걸러진다.
+ */
+void ServerActivate()
+{
+    if (game_state == activate && !duct_available && !duct_close_timer.isEnabled(duct_close_timer_id))
+        CooltimeFinish();
+    ExitTaggerMode();
+}
+
 void TagPlayerSend()
 {
     has2wifi.Send((String)(const char *)my["device_name"], "tag_player", tag_player_name);
@@ -153,11 +178,47 @@ void DuctKill()
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
 }
 
+/**
+ * @brief 서버 데이터가 갱신될 때마다(DataChange) 호출. 봉쇄 중이고 left_time(초)이 양수이며 직전 값과 다를 때만
+ *        값과 수신 시각을 저장한다. 0 이하·부재는 무시한다.
+ *        같은 값에 수신 시각을 다시 찍으면 폴링마다 카운트다운이 되감겨,
+ *        서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
+ *        서버가 '이번' 봉쇄를 확인해 주기 전에는(tagger_server_confirmed) 값을 받지 않는다.
+ *        my["device_state"] 문자열만 보면 안 된다 - 봉쇄 중 게임이 리셋되면 DataChange 가
+ *        tagger_mode 만 내리고 서버 레코드는 "tagger" 인 채로 남아, 다음 덕트킬이 그 값을
+ *        새 봉쇄의 확인으로 오인한다.
+ *        DuctKill 은 device_state=tagger 를 보내기 전에 EnterTaggerMode 를 먼저 부르므로,
+ *        그 한 폴링 동안 my["left_time"] 에 남아 있는 이전 봉쇄의 값을 새 값으로 오인할 수 있다.
+ *        서버가 tagger 를 되돌려줄 때까지는 30초 기본값을 쓴다.
+ */
+void TaggerLeftTimeUpdate()
+{
+    if (!tagger_mode) return;
+    if (!tagger_server_confirmed) return;
+    int left_time = (int)my["left_time"];
+    if (left_time <= 0) return;
+    if (tagger_left_time_valid && left_time == tagger_left_time_s) return;
+    tagger_left_time_s = left_time;
+    tagger_left_time_ms = millis();
+    tagger_left_time_valid = true;
+}
+
 int TaggerRemainingSeconds()
 {
-    unsigned long elapsed_ms = millis() - tagger_started_ms;
-    if (elapsed_ms >= tagger_duration_ms) return 0;
-    unsigned long remaining_ms = tagger_duration_ms - elapsed_ms;
+    unsigned long elapsed_ms;
+    unsigned long total_ms;
+    if (tagger_left_time_valid)
+    {
+        elapsed_ms = millis() - tagger_left_time_ms;
+        total_ms = (unsigned long)tagger_left_time_s * 1000UL;
+    }
+    else
+    {
+        elapsed_ms = millis() - tagger_started_ms;
+        total_ms = tagger_duration_ms;
+    }
+    if (elapsed_ms >= total_ms) return 0;
+    unsigned long remaining_ms = total_ms - elapsed_ms;
     return remaining_ms / 1000UL + (remaining_ms % 1000UL != 0);
 }
 
@@ -232,7 +293,7 @@ void MmmmOpen()
 
     switch_available = false;
     duct_available   = false;
-    Mp3PlayLargeFolder(1, 2);
+    OpenMp3(false);
     if (!tagger_mode)
     {
         pixels_line.lightColor(line_red);

@@ -31,7 +31,7 @@ audio = (ROOT / "audio_queue.ino").read_text().replace('#include "HAS1_duct.h"',
 body = core + "\n" + "\n".join(function(game, n) for n in
     ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc",
      "ActivateRunOnce"])
-body += "\n" + function(timer, "CooltimeTimerFunc")
+body += "\n" + function(timer, "CooltimeTimerFunc") + "\n" + function(timer, "CooltimeFinish")
 body += "\n" + "\n".join(function(sensor, name) for name in
                            ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder"])
 prototypes = "\n".join(re.findall(r"^(?:void|int|bool)\s+\w+\([^)]*\)", body, re.M))
@@ -39,7 +39,8 @@ prototypes = prototypes.replace("void DuctOpen(bool switch_push)", "void DuctOpe
 prototypes = ";\n".join(prototypes.splitlines()) + ";\n"
 source = (Path(__file__).with_name("host_harness.cpp").read_text()
           .replace("// FIRMWARE_GLOBALS", globals_ + "\n" + prototypes)
-          .replace("// DOMAIN_AUDIO_FACTORY", function(audio, "Mp3MakePhrase"))
+          .replace("// DOMAIN_AUDIO_FACTORY",
+                   function(audio, "Mp3LanguageFolder") + "\n" + function(audio, "Mp3MakePhrase"))
           .replace("// ACTUAL_AUDIO_FUNCTIONS", audio)
           .replace("// FIRMWARE_FUNCTIONS", body))
 cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
@@ -50,7 +51,9 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "switch_counts", "switch_tag_share_count", "blocked_open_not_counted",
          "server_cooltime_fallback",
          "audio_0", "audio_28", "audio_60", "audio_90",
-         "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close"]
+         "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close",
+         "open_audio_paths", "server_activate", "server_activate_door_open", "server_activate_blockade",
+         "blockade_left_time", "blockade_left_time_reset"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     src, exe = Path(tmp) / "test.cpp", Path(tmp) / "test"
     src.write_text(source)
@@ -59,7 +62,8 @@ with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     for case in cases:
         subprocess.run([str(exe), case], check=True)
     audio_cases = ["audio_fifo", "audio_door_timers", "audio_v2_blockade", "audio_overflow", "audio_duplicate",
-                   "audio_missing", "audio_wrap", "audio_language", "audio_stale"]
+                   "audio_missing", "audio_wrap", "audio_language", "audio_stale", "audio_folder9_language",
+                   "audio_blockade_left_time"]
     audio_main = Path(__file__).with_name("audio_harness.cpp").read_text()
     src.write_text(source[:source.index("int main(int argc")] + audio_main)
     subprocess.run(["clang++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DACTUAL_AUDIO",

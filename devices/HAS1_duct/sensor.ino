@@ -253,6 +253,9 @@ void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_s
     phrase.remaining_source = MP3_REMAINING_COOLDOWN;
   else if (intro_folder == 4 && intro_file == 2)
     phrase.remaining_source = MP3_REMAINING_TAGGER;
+  // 언어 오프셋을 폴더 차이로 역산한다. Mp3LanguageFolder 가 폴더 9만 10으로 보내는 예외를
+  // 두고 있어, intro_folder 가 9인 호출이 생기면 이 값이 1이 되어 숫자 트랙이 어긋난다.
+  // 현재 호출은 (1,3)과 (4,2) 뿐이라 안전하다.
   uint8_t language_offset = phrase.tracks[0].folder - intro_folder;
   phrase.count = 3;
   phrase.tracks[1].folder = (minutes > 0 ? 2 : 3) + language_offset;

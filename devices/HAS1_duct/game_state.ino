@@ -154,6 +154,9 @@ void DataChange()
         }
         else if((String)(const char *)my["device_state"] == "tagger"){
             EnterTaggerMode();
+            // 이 분기는 device_state 가 실제로 바뀌었을 때만 실행된다 = 서버가 이번 봉쇄를
+            // 방금 확인해 준 것이므로 left_time 을 이번 봉쇄의 값으로 받아도 된다.
+            tagger_server_confirmed = true;
         }
         else if((String)(const char *)my["device_state"] == "back"){
             ExitTaggerMode();
@@ -163,7 +166,7 @@ void DataChange()
         // tagger 이므로 실제로 값이 바뀐다). ExitTaggerMode 가 되보내는 activate 는
         // 이미 cur 에 반영된 뒤라 재진입하지 않는다.
         else if((String)(const char *)my["device_state"] == "activate"){
-            ExitTaggerMode();
+            ServerActivate();
         }
         else if((String)(const char *)my["device_state"] == "open"){
             MmmmOpen();
@@ -188,6 +191,10 @@ void DataChange()
             ActivateRunOnce();
         }
     }
+
+    // 봉쇄 남은 시간: 서버 left_time을 DataChange 마다 반영 (device_state=tagger 와 같은 응답에 와도 위에서
+    // EnterTaggerMode 가 먼저 실행되므로 여기서 바로 잡힌다)
+    TaggerLeftTimeUpdate();
 
     // 아래 분기들은 tagger 동결 중에는 무시 (덕트 강제 오픈/밝기 재도색이 동결을 깨뜨림)
     if(!tagger_mode){
@@ -214,6 +221,8 @@ void EnterTaggerMode()
     if (tagger_mode) return;   // 재진입 방지 (tagger -> activate -> tagger 등)
     tagger_mode = true;        // RfidLoop / CooltimeTimerFunc 자동 정지
     tagger_started_ms = millis();
+    tagger_left_time_valid = false;   // 새 봉쇄: 서버 left_time을 다시 받기 전까지 30초 기본값
+    tagger_server_confirmed = false;  // 서버가 이번 봉쇄를 확인해 줄 때까지 left_time 을 받지 않는다
 
     // 닫기 예약을 유지해야 일반 쿨타임 시작과 관리자 상태 복원이 빠지지 않는다.
     // 각 닫기 함수가 봉쇄 중 색상과 서버 상태를 보존한다.

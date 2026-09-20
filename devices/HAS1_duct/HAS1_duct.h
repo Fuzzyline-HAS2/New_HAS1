@@ -38,9 +38,14 @@ GameState game_state = setting;
 bool cool_time_neo_bool = true;
 bool tagger_mode = false;   // "이로운 효과"(덕트킬 포함) - tagger 수신 시 덕트 동결(보라색+RFID off), back 시 원복
 
-// TODO: 서버의 봉쇄 시간 값을 받으면 이 기본값을 대체한다. 해제는 서버 명령으로만 처리한다.
+// 봉쇄 남은 시간은 서버 left_time(초, 서버가 카운트다운)을 우선 쓰고, 아직 못 받았으면 30초 기본값.
+// 해제는 서버 명령(back/activate)으로만 처리한다.
 unsigned long tagger_duration_ms = 30000UL;
 unsigned long tagger_started_ms = 0;
+int tagger_left_time_s = 0;              // 마지막으로 받은 서버 left_time(초)
+unsigned long tagger_left_time_ms = 0;   // 그 값을 받은 시각(millis)
+bool tagger_left_time_valid = false;     // 이번 봉쇄에서 서버 값을 받았는지
+bool tagger_server_confirmed = false;    // 서버가 '이번' 봉쇄를 확인해 줬는지(left_time 수용 조건)
 
 bool tagger_blink_active = false;  // 봉쇄(tagger_mode) 중 태그 시 보라색 점멸(3회) 진행 여부
 int tagger_blink_step = 0;
@@ -63,6 +68,7 @@ int cooltime_add = 30;
 void DuctTag(String tag_player);
 void DuctOpen(bool switch_push = false);
 void DuctClose();
+void OpenMp3(bool inside);
 void CooltimeCalculation();
 int  CooltimeBarPixels();
 void CooltimeMp3();
@@ -71,6 +77,7 @@ void TagPlayerSend();
 void DuctKill();
 void TaggerModeTagBlocked();
 int TaggerRemainingSeconds();
+void TaggerLeftTimeUpdate();
 void TaggerRemainingMp3();
 void TaggerBlinkStep();
 void TaggerSwitchBlocked();
@@ -104,6 +111,7 @@ void ActionFunc();
 void DataChange();
 void EnterTaggerMode();
 void ExitTaggerMode();
+void ServerActivate();
 
 //=============================== Neopixel ===============================
 #define NUMPIXELS_LINE           30
@@ -187,6 +195,7 @@ int wifi_timer_id;
 int tagger_blink_timer_id;
 
 void TimerRun();
+void CooltimeFinish();
 void CooltimeTimerFunc();
 void RfidTagTimerFunc();
 void WifiTimerFunc();

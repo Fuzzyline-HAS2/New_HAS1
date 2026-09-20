@@ -330,6 +330,98 @@ int main(int argc, char** argv) {
               "original four second close still fires under blockade");
         check(cooltime_timer.isEnabled(cooltime_timer_id) && current_time == 0,
               "original close still prepares frozen normal cooldown");
+    } else if (test == "open_audio_paths") {
+        // 펌웨어 하네스 main은 mp3_available을 켜지 않는다. Mp3PlayLargeFolder가 이 플래그로 조기 반환하므로 켜 준다.
+        mp3_available = true;
+        openNormal();
+        check(audioEvents == std::vector<String>{"play:9:712"}, "outside tag plays the outside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); pressSwitch();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:719"}, "inside switch plays the inside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); DuctOpen();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "server manage open plays the outside opening line");
+        advance(4000); finished();
+        audioEvents.clear(); MmmmOpen();
+        check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "admin card plays the outside opening line");
+        advance(4000); check(relay == LOW && !mmmm_open, "admin opening closes");
+    } else if (test == "server_activate") {
+        openNormal(); advance(6000); check(!duct_available && current_time == 2, "cooldown in progress");
+        has2wifi.states.clear();
+        ServerActivate();
+        check(duct_available && current_time == 0 && !cooltime_timer.isEnabled(cooltime_timer_id),
+              "server activate ends the cooldown immediately");
+        check(use_duct_num == 1, "server activate keeps the use counter");
+        check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "server activate paints yellow");
+        check(has2wifi.states == std::vector<String>{"activate"}, "server activate reports activate once");
+        has2wifi.states.clear(); ServerActivate();
+        check(duct_available && has2wifi.states.empty(), "server activate while available changes nothing");
+        DuctTag("G1P2"); check(relay == HIGH && use_duct_num == 2, "duct opens again after forced activation");
+        advance(4000);
+        check(relay == LOW && cooltime_timer.isEnabled(cooltime_timer_id),
+              "the timer slot ServerActivate deleted is cleanly reusable for the next cooldown");
+        finished();
+    } else if (test == "server_activate_door_open") {
+        openNormal(); advance(1000); ServerActivate();
+        check(!duct_available && relay == HIGH, "server activate is ignored while the door is open");
+        advance(3000); check(relay == LOW && cooltime_timer.isEnabled(cooltime_timer_id), "door still closes into a normal cooldown");
+        finished();
+        openNormal(); advance(6000); MmmmOpen(); advance(500); ServerActivate();
+        check(mmmm_open && !duct_available, "server activate is ignored during admin opening");
+        advance(3500);
+        check(!mmmm_open && !duct_available && cooltime_timer.isEnabled(cooltime_timer_id), "admin close restores the cooldown");
+        finished();
+    } else if (test == "server_activate_blockade") {
+        openNormal(); advance(6000); EnterTaggerMode(); has2wifi.states.clear();
+        ServerActivate();
+        check(!tagger_mode && duct_available && current_time == 0, "server activate releases blockade and cooldown together");
+        check(!has2wifi.states.empty() && has2wifi.states.back() == "activate", "server reports activate after release");
+        check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "released duct is yellow");
+        EnterTaggerMode(); has2wifi.states.clear(); ServerActivate();
+        check(!tagger_mode && duct_available && has2wifi.states == std::vector<String>{"activate"},
+              "available blockade release keeps existing exit behaviour");
+    } else if (test == "blockade_left_time") {
+        my["left_time"] = "3";   // 이전 봉쇄에서 남아 있던 값
+        EnterTaggerMode(); TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "a value the server has not acknowledged yet is ignored");
+        tagger_server_confirmed = true; my["left_time"] = ""; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "missing left_time keeps the 30 second default");
+        my["left_time"] = "25"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 25, "server left_time replaces the default");
+        advance(3000); check(TaggerRemainingSeconds() == 22, "remaining time counts down from the last received value");
+        TaggerLeftTimeUpdate();   // 같은 값(25) 재수신 - 수신 시각을 다시 찍으면 안 된다
+        check(TaggerRemainingSeconds() == 22, "repeated identical left_time does not rewind the countdown");
+        expectBlockadeAudio(22);
+        my["left_time"] = "10"; TaggerLeftTimeUpdate(); advance(500);
+        check(TaggerRemainingSeconds() == 10, "newer left_time wins and partial seconds round up");
+        my["left_time"] = "0"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 10, "zero left_time does not overwrite the last value");
+        advance(12000);
+        check(TaggerRemainingSeconds() == 0 && tagger_mode, "expired server value announces zero but never self-releases");
+        my["left_time"] = "90"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 90, "a blockade longer than a minute is accepted");
+        audioEvents.clear(); tag["role"] = "player";
+        uint8_t minute_card[32] = {'G', '1', 'P', '1'};
+        CardChecking(minute_card);
+        check(audioEvents == std::vector<String>{"play:4:2", "play:2:1", "play:1:4"},
+              "blockade over a minute announces minutes instead of seconds");
+        ExitTaggerMode(); my["left_time"] = ""; EnterTaggerMode(); TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "re-entering the blockade forgets the previous server value");
+        ExitTaggerMode(); my["left_time"] = "7"; TaggerLeftTimeUpdate();
+        check(!tagger_left_time_valid, "left_time is ignored outside the blockade");
+    } else if (test == "blockade_left_time_reset") {
+        // 봉쇄 중 게임이 리셋되면 DataChange 는 tagger_mode 만 내리고 서버 레코드(device_state,
+        // left_time)는 그대로 둔다. 그 뒤 덕트킬로 시작된 새 봉쇄가 이전 봉쇄의 확인과 값을
+        // 물려받으면 안 된다.
+        EnterTaggerMode(); tagger_server_confirmed = true;
+        my["left_time"] = "40"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 40, "a confirmed blockade uses the server value");
+        tagger_mode = false; ActivateRunOnce();   // 봉쇄 중 게임 리셋 (back 없이)
+        EnterTaggerMode(); TaggerLeftTimeUpdate(); // 다음 덕트킬
+        check(TaggerRemainingSeconds() == 30 && !tagger_left_time_valid,
+              "a new blockade does not inherit the previous confirmation");
+        tagger_server_confirmed = true; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 40, "the new blockade accepts the value once the server confirms it");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
