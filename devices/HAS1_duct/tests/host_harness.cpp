@@ -18,6 +18,11 @@ unsigned long now = 0;
 int relay = LOW, doorSensor = HIGH, switchInput = HIGH;
 std::vector<String> audioEvents;
 void digitalWrite(int, int value) { relay = value; }
+// Returning the driven value for RELAY_PIN is faithful, not a shortcut. arduino-esp32 3.3.11
+// defines OUTPUT as 0x03 (esp32-hal-gpio.h:46-49), so pinMode(pin, OUTPUT) reaches gpio_config()
+// as GPIO_MODE_INPUT_OUTPUT; gpio_config() branches on mode bit 0 and enables the pad input
+// buffer, so digitalRead() on an output pin tracks the level it drives. A pin-readback gate that
+// passes here therefore also holds on hardware.
 int digitalRead(int pin) { return pin == RELAY_PIN ? relay : pin == SW_PIN ? switchInput : doorSensor; }
 // Record blocking audio delays without advancing the timer scheduler.
 void delay(unsigned long ms) { audioEvents.push_back("delay:" + std::to_string(ms)); }
