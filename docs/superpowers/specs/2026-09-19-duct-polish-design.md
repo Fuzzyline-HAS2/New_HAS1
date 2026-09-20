@@ -132,10 +132,14 @@ ServerActivate():
   값과 `millis()`를 저장하고 valid로 표시. `DataChange`가 매 호출마다 부른다. 값이 같은데도 수신 시각을 다시 찍으면
   폴링마다 카운트다운이 되감겨, 서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
 - `TaggerRemainingSeconds()`: valid면 `left_time_s - (millis() - 수신시각)/1000`(올림, 0 이하는 0). 아니면 기존 30초 계산 유지.
-- 서버가 봉쇄를 인지한 뒤(`my["device_state"] == "tagger"`)에만 값을 받는다. `DuctKill`은 `EnterTaggerMode()`를
-  먼저 부르고 `device_state=tagger`를 나중에 보내므로, 그 한 폴링 동안 레코드에 남아 있는 **이전 봉쇄의**
-  `left_time`을 새 값으로 오인할 수 있다. 서버 경로로 들어온 봉쇄는 그 필드가 이미 `tagger`라 지연이 없고,
-  덕트킬은 왕복 한 번 동안만 30초 기본값을 쓴다.
+- **서버가 '이번' 봉쇄를 확인해 준 뒤에만 값을 받는다.** 전역 `tagger_server_confirmed`는 `EnterTaggerMode()`가
+  매번 내리고, `DataChange`의 `device_state` **변경** 분기가 `tagger`를 받을 때만 올린다.
+  `DuctKill`은 `EnterTaggerMode()`를 먼저 부르고 `device_state=tagger`를 나중에 보내므로, 그 한 폴링 동안
+  레코드에 남아 있는 **이전 봉쇄의** `left_time`을 새 값으로 오인할 수 있다.
+  `my["device_state"]` 문자열 비교로는 부족하다. 봉쇄 중 게임이 리셋되면 `DataChange`의 game_state 분기가
+  `tagger_mode`만 내리고 서버 레코드는 `tagger`인 채로 남는데, 그러면 다음 덕트킬이 그 값을 이번 봉쇄의
+  확인으로 오인한다(리뷰에서 재현됨). 변경 분기로 올리면 그 경로에서는 확인이 서지 않아 30초 기본값으로 안전하게 떨어진다.
+  서버 경로로 들어온 봉쇄는 같은 `DataChange` 안에서 확인이 서므로 지연이 없다.
 - 봉쇄 해제는 지금처럼 서버 명령(`back`/`activate`)으로만 한다. `left_time`이 0이 되어도 디바이스가 스스로 풀지 않는다.
 
 **0초 처리:** 남은 시간이 0이면 기존 규칙대로 03/0000 파일이 없어 문장 전체가 생략된다(무음). 곧 서버 해제 명령이 오므로 그대로 둔다.

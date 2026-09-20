@@ -45,6 +45,7 @@ unsigned long tagger_started_ms = 0;
 int tagger_left_time_s = 0;              // 마지막으로 받은 서버 left_time(초)
 unsigned long tagger_left_time_ms = 0;   // 그 값을 받은 시각(millis)
 bool tagger_left_time_valid = false;     // 이번 봉쇄에서 서버 값을 받았는지
+bool tagger_server_confirmed = false;    // 서버가 '이번' 봉쇄를 확인해 줬는지(left_time 수용 조건)
 
 bool tagger_blink_active = false;  // 봉쇄(tagger_mode) 중 태그 시 보라색 점멸(3회) 진행 여부
 int tagger_blink_step = 0;

@@ -123,8 +123,8 @@ int main(int argc, char** argv) {
         check(audioStartTimes[2] - audioStartTimes[1] == 2400 + MP3_TRACK_MARGIN_MS,
               "English outside opening uses its own measured length");
     } else if (test == "audio_blockade_left_time") {
-        my["device_state"] = "tagger";
-        EnterTaggerMode(); my["left_time"] = "25"; TaggerLeftTimeUpdate();
+        EnterTaggerMode(); tagger_server_confirmed = true;
+        my["left_time"] = "25"; TaggerLeftTimeUpdate();
         Mp3PlayLargeFolder(4, 1); TaggerRemainingMp3();
         check(audioEvents == std::vector<String>{"play:4:1"}, "remaining-time phrase waits behind the confirmation");
         advance(4649);

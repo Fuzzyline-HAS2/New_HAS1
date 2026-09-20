@@ -154,6 +154,9 @@ void DataChange()
         }
         else if((String)(const char *)my["device_state"] == "tagger"){
             EnterTaggerMode();
+            // 이 분기는 device_state 가 실제로 바뀌었을 때만 실행된다 = 서버가 이번 봉쇄를
+            // 방금 확인해 준 것이므로 left_time 을 이번 봉쇄의 값으로 받아도 된다.
+            tagger_server_confirmed = true;
         }
         else if((String)(const char *)my["device_state"] == "back"){
             ExitTaggerMode();
@@ -219,6 +222,7 @@ void EnterTaggerMode()
     tagger_mode = true;        // RfidLoop / CooltimeTimerFunc 자동 정지
     tagger_started_ms = millis();
     tagger_left_time_valid = false;   // 새 봉쇄: 서버 left_time을 다시 받기 전까지 30초 기본값
+    tagger_server_confirmed = false;  // 서버가 이번 봉쇄를 확인해 줄 때까지 left_time 을 받지 않는다
 
     // 닫기 예약을 유지해야 일반 쿨타임 시작과 관리자 상태 복원이 빠지지 않는다.
     // 각 닫기 함수가 봉쇄 중 색상과 서버 상태를 보존한다.

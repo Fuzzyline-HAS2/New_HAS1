@@ -379,7 +379,7 @@ int main(int argc, char** argv) {
         my["left_time"] = "3";   // 이전 봉쇄에서 남아 있던 값
         EnterTaggerMode(); TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 30, "a value the server has not acknowledged yet is ignored");
-        my["device_state"] = "tagger"; my["left_time"] = ""; TaggerLeftTimeUpdate();
+        tagger_server_confirmed = true; my["left_time"] = ""; TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 30, "missing left_time keeps the 30 second default");
         my["left_time"] = "25"; TaggerLeftTimeUpdate();
         check(TaggerRemainingSeconds() == 25, "server left_time replaces the default");
@@ -404,6 +404,19 @@ int main(int argc, char** argv) {
         check(TaggerRemainingSeconds() == 30, "re-entering the blockade forgets the previous server value");
         ExitTaggerMode(); my["left_time"] = "7"; TaggerLeftTimeUpdate();
         check(!tagger_left_time_valid, "left_time is ignored outside the blockade");
+    } else if (test == "blockade_left_time_reset") {
+        // 봉쇄 중 게임이 리셋되면 DataChange 는 tagger_mode 만 내리고 서버 레코드(device_state,
+        // left_time)는 그대로 둔다. 그 뒤 덕트킬로 시작된 새 봉쇄가 이전 봉쇄의 확인과 값을
+        // 물려받으면 안 된다.
+        EnterTaggerMode(); tagger_server_confirmed = true;
+        my["left_time"] = "40"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 40, "a confirmed blockade uses the server value");
+        tagger_mode = false; ActivateRunOnce();   // 봉쇄 중 게임 리셋 (back 없이)
+        EnterTaggerMode(); TaggerLeftTimeUpdate(); // 다음 덕트킬
+        check(TaggerRemainingSeconds() == 30 && !tagger_left_time_valid,
+              "a new blockade does not inherit the previous confirmation");
+        tagger_server_confirmed = true; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 40, "the new blockade accepts the value once the server confirms it");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
