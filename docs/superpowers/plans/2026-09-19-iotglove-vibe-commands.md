@@ -12,7 +12,9 @@
 
 ## Global Constraints
 
-- 작업 브랜치: `claude/iotglove-vibe-commands` (main 기준, 스펙 커밋 `d82cfc8` 이후). 모든 커밋은 이 브랜치에.
+- **작업 위치: 전용 워크트리 `/Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands`** (브랜치 `claude/iotglove-vibe-commands`).
+  공유 체크아웃 `/Users/byeongjun/workspace/New_HAS1`는 다른 세션이 `claude/escape-wing-homing`으로 쓰고 있다 —
+  거기서 `git checkout`/`git switch`를 실행하지 말 것. 모든 명령은 위 워크트리 경로에서 실행한다.
 - 서버 `vibe` 허용 범위는 **0~17 정수**. 그 밖(18 이상·음수·누락)은 기존대로 스냅샷 거부.
 - 명령 진동 길이: **짧 200ms / 길 600ms / 간격 200ms**. 상태전환 진동(150/300/100ms)은 **변경 금지**.
 - 10~17은 `game_state`·`device_state`·`role` 무관. 유일 예외: OTA/리셋 중 모터 OFF(기존 `iotglove.cpp:455`).
@@ -20,20 +22,20 @@
 - `FIRMWARE_VER`은 **수동으로 올리지 않는다** — CI(`ci_deploy.py bump`)가 7 → 8로 올린다.
 - iotglove 코드 주석은 **영문**(기존 컨벤션). 문서(README/SERVER_CONTRACT)는 한국어.
 - 호스트 테스트는 하드웨어 없이 `python3 devices/iotglove/tools/run_tests.py`로 전부 통과해야 한다.
-- 커밋 메시지 끝: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
+- 커밋 메시지 끝: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
 
 ## 공통 명령 (각 태스크의 "실행" 단계에서 반복 사용)
 
 `feedback_state_test.cpp` 하나만 빠르게 빌드·실행:
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && OUT=$(mktemp -d) && c++ -std=c++17 -Wall -Wextra -Werror -pedantic -I libraries/IoTGloveProtocol/src -I devices/iotglove devices/iotglove/tests/feedback_state_test.cpp devices/iotglove/game_state.cpp -o "$OUT/t" && "$OUT/t"
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && OUT=$(mktemp -d) && c++ -std=c++17 -Wall -Wextra -Werror -pedantic -I libraries/IoTGloveProtocol/src -I devices/iotglove devices/iotglove/tests/feedback_state_test.cpp devices/iotglove/game_state.cpp -o "$OUT/t" && "$OUT/t"
 ```
 
 전체 호스트 테스트(15개 실행파일):
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && python3 devices/iotglove/tools/run_tests.py 2>&1 | tail -4
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && python3 devices/iotglove/tools/run_tests.py 2>&1 | tail -4
 ```
 
 ## File Structure
@@ -219,9 +221,9 @@ Expected: 마지막 줄 `Passed 15 firmware host test executables`
 - [ ] **Step 5: 커밋**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands
 git add devices/iotglove/feedback_config.h devices/iotglove/tests/feedback_state_test.cpp
-git commit -m "feat(iotglove): generalize haptic schedule to pulse trains and add vibe command patterns" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(iotglove): generalize haptic schedule to pulse trains and add vibe command patterns" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -418,9 +420,9 @@ Expected: `Passed 15 firmware host test executables`. `-Wextra -Werror`에서 `h
 - [ ] **Step 5: 커밋**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands
 git add devices/iotglove/feedback.h devices/iotglove/tests/feedback_state_test.cpp
-git commit -m "feat(iotglove): play server vibe commands 12-17 once per edge and hold 10/11 as levels" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(iotglove): play server vibe commands 12-17 once per edge and hold 10/11 as levels" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -593,9 +595,9 @@ Expected: `Passed 15 firmware host test executables`
 - [ ] **Step 5: 커밋**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands
 git add devices/iotglove/feedback.h devices/iotglove/tests/feedback_state_test.cpp
-git commit -m "feat(iotglove): rank vibe commands below chip events, above state patterns; consume at sync and OTA" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(iotglove): rank vibe commands below chip events, above state patterns; consume at sync and OTA" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -613,22 +615,25 @@ git commit -m "feat(iotglove): rank vibe commands below chip events, above state
 
 - [ ] **Step 1: 격리 스케치북 준비 (없으면 생성)**
 
+`$GB`는 **Bash 호출 사이에 유지되지 않는다.** 그래서 고정 경로를 쓰고, 이후 모든 단계에서 같은 줄로 다시 정의한다.
+
 ```bash
-GB=/private/tmp/claude-501/-Users-byeongjun-workspace-New-HAS1/baab33f6-c845-4710-a3a8-40505d866d09/scratchpad/glovebook
+GB="$HOME/.cache/iotglove-glovebook"
 if [ ! -f "$GB/libraries/iotglove-dependencies.json" ]; then
-  GB=$(mktemp -d)/glovebook && mkdir -p "$GB" && printf 'directories:\n  data: %s/Library/Arduino15\n  downloads: %s/Library/Arduino15/staging\n  user: %s\n' "$HOME" "$HOME" "$GB" > "$GB/arduino-cli.yaml"
-  python3 /Users/byeongjun/workspace/New_HAS1/devices/iotglove/tools/prepare_libraries.py --libraries-dir "$GB/libraries"
+  mkdir -p "$GB" && printf 'directories:\n  data: %s/Library/Arduino15\n  downloads: %s/Library/Arduino15/staging\n  user: %s\n' "$HOME" "$HOME" "$GB" > "$GB/arduino-cli.yaml"
+  python3 /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands/devices/iotglove/tools/prepare_libraries.py --libraries-dir "$GB/libraries"
   arduino-cli --config-file "$GB/arduino-cli.yaml" lib install "ArduinoJson@7.4.3" "Adafruit NeoPixel@1.12.0"
 fi
-echo "GB=$GB"
+ls "$GB/libraries" && echo "GB=$GB"
 ```
 
-Expected: 마지막 줄에 `GB=...` 경로. (이전 세션의 glovebook이 살아 있으면 그대로 재사용된다.)
+Expected: `HAS2_Wifi SecureOTA SimpleTimer ArduinoJson Adafruit_NeoPixel iotglove-dependencies.json` 류의 목록과 `GB=/Users/byeongjun/.cache/iotglove-glovebook`.
+`prepare_libraries.py`는 기존 디렉터리를 덮어쓰지 않으므로, 위 `if` 가드가 없으면 "Refusing to overwrite"로 실패한다.
 
 - [ ] **Step 2: 수정 전 컴파일로 기준선 확인**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && python3 devices/iotglove/tools/compile.py ttgo --config-file "$GB/arduino-cli.yaml" --libraries-dir "$GB/libraries" 2>&1 | grep -E "^Sketch uses|error" 
+GB="$HOME/.cache/iotglove-glovebook" && cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && python3 devices/iotglove/tools/compile.py ttgo --config-file "$GB/arduino-cli.yaml" --libraries-dir "$GB/libraries" 2>&1 | grep -E "^Sketch uses|error" 
 ```
 
 Expected: `Sketch uses ... bytes (5x%) of program storage space.` 한 줄, `error` 없음 (Task 1~3 변경이 펌웨어 빌드를 깨지 않았음을 먼저 확인).
@@ -658,7 +663,7 @@ Expected: `Sketch uses ... bytes (5x%) of program storage space.` 한 줄, `erro
 - [ ] **Step 4: 컴파일 검증 (ttgo + training)**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && for p in ttgo training; do python3 devices/iotglove/tools/compile.py $p --config-file "$GB/arduino-cli.yaml" --libraries-dir "$GB/libraries" 2>&1 | grep -E "^Compile|^Sketch uses|error"; done
+GB="$HOME/.cache/iotglove-glovebook" && cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && for p in ttgo training; do python3 devices/iotglove/tools/compile.py $p --config-file "$GB/arduino-cli.yaml" --libraries-dir "$GB/libraries" 2>&1 | grep -E "^Compile|^Sketch uses|error"; done
 ```
 
 Expected: `Compile ttgo: ...` / `Sketch uses ...` / `Compile training: ...` / `Sketch uses ...` — `error` 없음. 크기는 v7(1,089,429 B)에서 수백 B 이내 증가.
@@ -666,9 +671,9 @@ Expected: `Compile ttgo: ...` / `Sketch uses ...` / `Compile training: ...` / `S
 - [ ] **Step 5: 커밋**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands
 git add devices/iotglove/wifi.cpp
-git commit -m "feat(iotglove): accept server vibe 0-17 so operator commands reach the feedback engine" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(iotglove): accept server vibe 0-17 so operator commands reach the feedback engine" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -735,7 +740,7 @@ git commit -m "feat(iotglove): accept server vibe 0-17 so operator commands reac
 - [ ] **Step 4: 확인**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && grep -n "vibe 연출 명령\|10~17" devices/iotglove/docs/SERVER_CONTRACT.md devices/iotglove/README.md | head
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && grep -n "vibe 연출 명령\|10~17" devices/iotglove/docs/SERVER_CONTRACT.md devices/iotglove/README.md | head
 ```
 
 Expected: SERVER_CONTRACT.md에 표 행·절 제목·README 문장까지 최소 3줄 매칭.
@@ -743,9 +748,9 @@ Expected: SERVER_CONTRACT.md에 표 행·절 제목·README 문장까지 최소 
 - [ ] **Step 5: 커밋**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands
 git add devices/iotglove/docs/SERVER_CONTRACT.md devices/iotglove/README.md
-git commit -m "docs(iotglove): document server vibe commands 10-17 and the hold/recompute contract" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "docs(iotglove): document server vibe commands 10-17 and the hold/recompute contract" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -759,7 +764,7 @@ git commit -m "docs(iotglove): document server vibe commands 10-17 and the hold/
 - [ ] **Step 1: 전체 호스트 테스트**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && python3 devices/iotglove/tools/run_tests.py 2>&1 | tail -3
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && python3 devices/iotglove/tools/run_tests.py 2>&1 | tail -3
 ```
 
 Expected: `Passed 15 firmware host test executables`
@@ -771,16 +776,22 @@ Task 4 Step 4의 명령 그대로. Expected: 두 프로파일 모두 `Sketch use
 - [ ] **Step 3: push + PR**
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && git push -u origin claude/iotglove-vibe-commands
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && git push -u origin claude/iotglove-vibe-commands
 ```
+
+PR 본문은 스펙 내용 끝에 attribution 줄을 붙인 임시 파일로 만든다.
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && gh pr create --base main --head claude/iotglove-vibe-commands --title "iotglove: 서버 vibe 연출 명령 10~17 (음소거·연속 ON·짧은/긴 진동 1~3회)" --body-file docs/superpowers/specs/2026-09-19-iotglove-vibe-commands-design.md
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && B=$(mktemp)/body.md && mkdir -p "$(dirname "$B")" && { cat docs/superpowers/specs/2026-09-19-iotglove-vibe-commands-design.md; printf '\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n'; } > "$B" && gh pr create --base main --head claude/iotglove-vibe-commands --title "iotglove: 서버 vibe 연출 명령 10~17 (음소거·연속 ON·짧은/긴 진동 1~3회)" --body-file "$B"
 ```
 
-Expected: PR URL 출력. (본문은 스펙 문서 그대로. 필요하면 `gh pr edit`로 요약 추가. PR 본문 끝에 `🤖 Generated with [Claude Code](https://claude.com/claude-code)` 줄이 있어야 하므로 `--body-file` 대신 스펙 내용 + 그 줄을 붙인 임시 파일을 쓴다.)
+Expected: PR URL 출력.
 
-- [ ] **Step 4: 릴리즈 (Deploy Firmware, 브랜치에서)**
+- [ ] **Step 4: 릴리즈 (Deploy Firmware, 브랜치에서) — 사용자 확인 후에만**
+
+⚠️ **먼저 사용자에게 확인받는다.** 사용자는 직전 OTA에서 "iot 제외"라고 하여 iotglove를 의도적으로 빼두었고,
+v7(밝기 통일)도 아직 현장에 올라가 있지 않다. 따라서 v8 릴리즈는 자동으로 진행하지 말고,
+"v7을 건너뛴 상태에서 v8을 릴리즈할까요?"라고 물어 승인받은 뒤에만 아래를 실행한다.
 
 허용 규칙 `Bash(gh workflow run *)`에 맞게 **단일 명령**으로 실행한다(`cd`나 `&&`로 묶지 않는다):
 
@@ -791,7 +802,7 @@ gh workflow run deploy-firmware.yml -R Fuzzyline-HAS2/New_HAS1 --ref claude/iotg
 Expected: 출력 없음(접수). 약 2분 뒤:
 
 ```bash
-cd /Users/byeongjun/workspace/New_HAS1 && id=$(gh run list -R Fuzzyline-HAS2/New_HAS1 --workflow deploy-firmware.yml --branch claude/iotglove-vibe-commands -L 1 --json databaseId --jq '.[0].databaseId') && gh run watch "$id" -R Fuzzyline-HAS2/New_HAS1 --exit-status -i 10 >/dev/null && git fetch -q origin claude/iotglove-vibe-commands && git --no-pager log origin/claude/iotglove-vibe-commands --oneline -2 && gh release download iotglove -R Fuzzyline-HAS2/New_HAS1 -p version.txt -O - && git merge -q --ff-only origin/claude/iotglove-vibe-commands
+cd /Users/byeongjun/workspace/New_HAS1/.claude/worktrees/iotglove-vibe-commands && id=$(gh run list -R Fuzzyline-HAS2/New_HAS1 --workflow deploy-firmware.yml --branch claude/iotglove-vibe-commands -L 1 --json databaseId --jq '.[0].databaseId') && gh run watch "$id" -R Fuzzyline-HAS2/New_HAS1 --exit-status -i 10 >/dev/null && git fetch -q origin claude/iotglove-vibe-commands && git --no-pager log origin/claude/iotglove-vibe-commands --oneline -2 && gh release download iotglove -R Fuzzyline-HAS2/New_HAS1 -p version.txt -O - && git merge -q --ff-only origin/claude/iotglove-vibe-commands
 ```
 
 Expected: `Firmware v8` 커밋이 원격 최상단, 릴리즈 `version.txt` = `8`, 로컬 fast-forward.
