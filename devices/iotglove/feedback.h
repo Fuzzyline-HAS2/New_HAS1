@@ -38,6 +38,9 @@ class FeedbackEngine {
       pendingGhostAck_ = false;
       known_ = state.stateValid;
       remember(state);
+      // Suppressed (OTA/reset) polls consume a held command so it never plays late. Invalid polls
+      // carry a forced vibe of 0 and leave lastVibe_ alone, so the next valid poll is not an edge.
+      if (state.stateValid) { lastVibe_ = vibe; haveVibe_ = true; }
       return out;
     }
     const bool baseline = !known_ || state.stateEpoch != epoch_;
@@ -49,13 +52,35 @@ class FeedbackEngine {
     if (baseline) {
       cancel();
       pendingGhostAck_ = false;
+      // A command already held at first sync or after an identity/epoch change is consumed, not
+      // played. A baseline caused only by a transient invalid poll keeps lastVibe_, so a command
+      // that changed meanwhile still plays.
+      if (!haveVibe_ || state.stateEpoch != epoch_) lastVibe_ = vibe;
+      haveVibe_ = true;
     }
     if (pattern_.total && uint32_t(now - patternStart_) >= pattern_.total) cancel();
     // Stop any preceding activity before a new setting/ready/end notification.
     // This is an edge, not a per-poll cancellation of the new notification.
-    if ((changed && quiescent(state)) ||
-        (state.display == Display::Ended && display_ != Display::Ended)) cancel();
+    // Operator commands are not state feedback and outlive these transitions.
+    if (source_ != Source::Command &&
+        ((changed && quiescent(state)) ||
+         (state.display == Display::Ended && display_ != Display::Ended))) cancel();
     if (changed) pendingGhostAck_ = false;
+
+    // Operator vibe commands. 10/11 are levels that hold while the server keeps the value;
+    // 12..17 play once per change of value (the server must pass through another value to repeat).
+    const bool vibeEdge = vibe != lastVibe_;
+    lastVibe_ = vibe;
+    if (vibe == feedback_config::kVibeMute || vibe == feedback_config::kVibeOn) {
+      if (vibeEdge) cancel();  // Nothing queued resumes once the level is released.
+      known_ = true;
+      remember(state);
+      out.motor = vibe == feedback_config::kVibeOn;
+      return out;
+    }
+    if (vibeEdge && feedback_config::isCommand(vibe)) {
+      start(feedback_config::commandSchedule(vibe, settings_), Source::Command, now);
+    }
 
     if (state.haptic != Haptic::None) {
       const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
@@ -63,8 +88,9 @@ class FeedbackEngine {
       // A capture's later server acknowledgement must not repeat its vibration.
       if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
           state.phase == Phase::Active) pendingGhostAck_ = true;
-    } else if (changed && !removedAcknowledged && source_ != Source::Event) {
-      // Consume transitions during explicit events; never queue a stale replay.
+    } else if (changed && !removedAcknowledged && source_ != Source::Event &&
+               source_ != Source::Command) {
+      // Consume transitions during explicit events or commands; never queue a stale replay.
       start(feedback_config::forState(state, settings_), Source::State, now);
     }
     known_ = true;
@@ -83,7 +109,7 @@ class FeedbackEngine {
   }
 
  private:
-  enum class Source : uint8_t { None, State, Event };
+  enum class Source : uint8_t { None, State, Event, Command };
   feedback_config::Settings settings_;
   feedback_config::Schedule pattern_;
   uint32_t patternStart_ = 0;
@@ -96,6 +122,8 @@ class FeedbackEngine {
   Phase phase_ = Phase::Unknown;
   Display display_ = Display::Setting;
   uint32_t epoch_ = 0;
+  uint8_t lastVibe_ = 0;   // Last server vibe seen on a valid poll; commands play on change only.
+  bool haveVibe_ = false;  // False until the first valid poll; baseline consumption depends on it.
 
   static bool quiescent(const Feedback& state) {
     return state.phase == Phase::Setting || state.phase == Phase::Ready ||
@@ -104,10 +132,13 @@ class FeedbackEngine {
         state.deviceState == DeviceState::Exploration || state.deviceState == DeviceState::Ended;
   }
   void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; }
-  void start(feedback_config::Pattern pattern, Source source, uint32_t now) {
-    pattern_ = feedback_config::schedule(pattern, settings_);
+  void start(const feedback_config::Schedule& schedule, Source source, uint32_t now) {
+    pattern_ = schedule;
     source_ = pattern_.total ? source : Source::None;
     patternStart_ = now;
+  }
+  void start(feedback_config::Pattern pattern, Source source, uint32_t now) {
+    start(feedback_config::schedule(pattern, settings_), source, now);
   }
   void remember(const Feedback& state) {
     role_ = state.role;

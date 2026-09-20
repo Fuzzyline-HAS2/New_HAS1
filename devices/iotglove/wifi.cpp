@@ -1,6 +1,7 @@
 #include "wifi_client.h"
 #include "network_policy.h"
 #include "chip_report.h"
+#include "feedback_config.h"
 #include "library_and_pin.h"
 #include "secrets.h"
 #include <Arduino.h>
@@ -95,7 +96,9 @@ bool decodeSnapshot(ServerSnapshot& out) {
   long count, seconds, sacrificed, open, life, vibe, brightness;
   if (!number(my["revival_count"], 0, 4, count) || !number(my["revival_time"], 1, 86400, seconds) ||
       !number(my["is_sacrificed"], 0, 1, sacrificed) || !number(my["is_open"], 0, 1, open) ||
-      !number(my["life_chip"], 0, 100, life) || !number(my["vibe"], 0, 3, vibe)) return false;
+      !number(my["life_chip"], 0, 100, life) ||
+      // 0/1/3 proximity levels plus operator commands 10..17; anything else still rejects the snapshot.
+      !number(my["vibe"], 0, feedback_config::kVibeCommandLast, vibe)) return false;
   out.revivalCount = count; out.stepSeconds = seconds;
   out.sacrificed = sacrificed; out.open = open; out.lifeChip = life;
   out.vibe = vibe;
