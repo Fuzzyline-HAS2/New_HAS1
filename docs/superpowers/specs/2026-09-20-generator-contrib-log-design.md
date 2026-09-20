@@ -72,14 +72,27 @@
 `ContribEnd(starterContribLastCnt)`를 부르고 `lastTagState = false`로 되돌린다.
 tagger 인터럽트, 서버의 `setting`/`ready` 리셋처럼 스타터 밖에서 일어나는 모든 이탈을 한 곳에서 잡는다.
 
+**호출 위치는 `ptrCurrentMode()` 바로 앞이다.** 한 프레임 안에서 모드가 바뀔 수 있는 곳은 둘이다 —
+`ptrCurrentMode()` 자신과, `TimerRun()`이 부르는 `has2wifi.Loop(DataChanged)`.
+`ptrCurrentMode()` 앞에 두면 N번째 프레임 끝의 `DataChanged`가 바꾼 모드를 N+1 프레임 머리에서,
+새 모드 함수가 한 번도 돌기 전에 정리한다. `TimerRun()` 뒤에 두면 폴링 GET 바로 뒤에 이 블로킹 GET이
+같은 프레임에 연달아 붙는다.
+
+`SettingFunc()`/`ReadyFunc()`에서 `ContribEnd`를 직접 부르지 않는 이유도 같다 —
+그 둘은 `DataChanged` 콜백 안에서 실행되므로 블로킹 `Situation()`을 넣으면
+`BatteryFinish()`가 `ptrCurrentMode` 대입으로 피해 둔 재진입을 그대로 재현한다.
+
 ## 훅 지점
 
 `StarterActivate()` 안 4곳.
 
 1. 태그가 새로 올라오고 `role == "player"`로 판정된 직후 → `ContribBegin`
 2. 태그 감지가 `true → false`로 바뀌고 세션이 열려 있으면 → `ContribEnd(현재 칸)`
-3. 매 프레임 `starterContribLastCnt` 갱신
-4. 게이지 완료(`>= 28`) → `ContribEnd(28)`을 먼저, 그다음 기존 `StartFinish()`
+3. `gaugeNeoCnt`를 계산하고 28로 클램프한 직후 `starterContribLastCnt`를 갱신 —
+   **카드 없음/비플레이어 조기 리턴([`Game_system.ino:79`](../../../devices/HAS1_generator/Game_system.ino#L79))보다 위에 둔다.**
+   아래에 두면 가드가 걸릴 때마다 값이 낡고, 강제 종료가 낡은 값을 읽는다.
+   이 함수는 가드에 걸려도 호출은 되므로 "매 프레임"과 "매 호출"이 다르다.
+4. 게이지 완료(`>= NumPixels[GAUGE]`) → `ContribEnd(NumPixels[GAUGE])`을 먼저, 그다음 기존 `StartFinish()`
 
 ## 블로킹 비용
 
@@ -126,6 +139,9 @@ GET has2.php?request=Situation&table=generator_gauge&key=<발전기 device_name>
   `SettingFunc()`의 `encoderValue = 100` 리셋은 이미 행이 나간 뒤라 영향이 없다.
 - **완료 시 순서** — 기여 행을 먼저, `repaired` 전송을 나중에. 행 전송이 실패해도 수리 완료는 그대로 진행된다.
 - **짧게 뗐다 다시 올림** — `TAG_REMOVE_TIME_MS`(500ms) 디바운스가 떼짐으로 보지 않아 한 세션으로 이어진다.
+- **500ms 안에 다른 카드로 교체** — 같은 디바운스 때문에 `lastTagState`가 true로 유지되어 `role`을 다시 조회하지 않는다.
+  이전 사람의 판정이 그대로 쓰여 최대 500ms(대략 한 칸) 분량이 엉뚱한 사람에게 붙는다.
+  기존 RFID 디바운스에서 오는 선행 동작이고 크기가 제한적이라 그대로 둔다.
 - **재부팅/워치독** — 진행 중 세션은 RAM에 있어 유실된다.
 
 **알려진 한계:** `ContribLoop`이 세션을 강제 종료할 때 `lastTagState`만 되돌리고
