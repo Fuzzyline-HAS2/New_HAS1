@@ -178,11 +178,39 @@ void DuctKill()
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "tagger");
 }
 
+/**
+ * @brief 서버 폴링마다 호출. 봉쇄 중이고 left_time(초)이 양수이며 직전 값과 다를 때만
+ *        값과 수신 시각을 저장한다. 0 이하·부재는 무시한다.
+ *        같은 값에 수신 시각을 다시 찍으면 폴링마다 카운트다운이 되감겨,
+ *        서버가 같은 값을 반복해 보내는 동안 남은 시간이 그 값에서 멈춘다.
+ */
+void TaggerLeftTimeUpdate()
+{
+    if (!tagger_mode) return;
+    int left_time = (int)my["left_time"];
+    if (left_time <= 0) return;
+    if (tagger_left_time_valid && left_time == tagger_left_time_s) return;
+    tagger_left_time_s = left_time;
+    tagger_left_time_ms = millis();
+    tagger_left_time_valid = true;
+}
+
 int TaggerRemainingSeconds()
 {
-    unsigned long elapsed_ms = millis() - tagger_started_ms;
-    if (elapsed_ms >= tagger_duration_ms) return 0;
-    unsigned long remaining_ms = tagger_duration_ms - elapsed_ms;
+    unsigned long elapsed_ms;
+    unsigned long total_ms;
+    if (tagger_left_time_valid)
+    {
+        elapsed_ms = millis() - tagger_left_time_ms;
+        total_ms = (unsigned long)tagger_left_time_s * 1000UL;
+    }
+    else
+    {
+        elapsed_ms = millis() - tagger_started_ms;
+        total_ms = tagger_duration_ms;
+    }
+    if (elapsed_ms >= total_ms) return 0;
+    unsigned long remaining_ms = total_ms - elapsed_ms;
     return remaining_ms / 1000UL + (remaining_ms % 1000UL != 0);
 }
 

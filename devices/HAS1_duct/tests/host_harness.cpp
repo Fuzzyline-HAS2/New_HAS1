@@ -371,6 +371,25 @@ int main(int argc, char** argv) {
         EnterTaggerMode(); has2wifi.states.clear(); ServerActivate();
         check(!tagger_mode && duct_available && has2wifi.states == std::vector<String>{"activate"},
               "available blockade release keeps existing exit behaviour");
+    } else if (test == "blockade_left_time") {
+        EnterTaggerMode(); TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "missing left_time keeps the 30 second default");
+        my["left_time"] = "25"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 25, "server left_time replaces the default");
+        advance(3000); check(TaggerRemainingSeconds() == 22, "remaining time counts down from the last received value");
+        TaggerLeftTimeUpdate();   // 같은 값(25) 재수신 - 수신 시각을 다시 찍으면 안 된다
+        check(TaggerRemainingSeconds() == 22, "repeated identical left_time does not rewind the countdown");
+        expectBlockadeAudio(22);
+        my["left_time"] = "10"; TaggerLeftTimeUpdate(); advance(500);
+        check(TaggerRemainingSeconds() == 10, "newer left_time wins and partial seconds round up");
+        my["left_time"] = "0"; TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 10, "zero left_time does not overwrite the last value");
+        advance(12000);
+        check(TaggerRemainingSeconds() == 0 && tagger_mode, "expired server value announces zero but never self-releases");
+        ExitTaggerMode(); my["left_time"] = ""; EnterTaggerMode(); TaggerLeftTimeUpdate();
+        check(TaggerRemainingSeconds() == 30, "re-entering the blockade forgets the previous server value");
+        ExitTaggerMode(); my["left_time"] = "7"; TaggerLeftTimeUpdate();
+        check(!tagger_left_time_valid, "left_time is ignored outside the blockade");
     } else return 2;
     std::cout << "PASS " << test << '\n';
 }
