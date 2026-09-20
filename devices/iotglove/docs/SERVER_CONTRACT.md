@@ -57,10 +57,32 @@ Node의 `GET /api/esp`와 호환 별칭 `GET /has2.php`를 사용한다. 서버�
 | `is_sacrificed` | 정수 SET | 생명칩 봉헌 여부 필드. 존재 자체가 자동 포획 추적 구현을 뜻하지 않음 |
 | `battery_remaining` | 실수 SET; DB REAL | 전압 또는 %로 변환하지 않고 받은 실수를 저장 |
 | `location` | 문자열 SET, 서버가 `vibe` 재계산 | Origin 방 ID를 사용 |
-| `vibe` | 위치 계산 결과 수신 | 같은 방 **3**, 인접 방 **1**, 그 외 **0**. 주석의 같은 방=2보다 실제 함수 반환값을 기준으로 함 |
+| `vibe` | 위치 계산 결과 수신 + 운영자 연출 명령 | 근접: 같은 방 **3**, 인접 방 **1**, 그 외 **0**. 연출 명령 **10~17**(v8, 아래 절). 허용 범위 0~17 정수, 그 밖은 스냅샷 거부 |
 | `esp_version` | 공통 device 메타에 저장 | TTGO 버전 보고. Nextion 버전은 신규 펌웨어에서 보고하지 않음 |
 
 근거: [SET/증감 분류](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L204), [숫자 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L3288), [카운트 소유권/시간 해석](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/lib/glove-role-timer.js#L134), [테마별 역할/타이머](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/theme-family.js#L57).
+
+### vibe 연출 명령 (펌웨어 v8)
+
+| `vibe` | 동작 | 유형 |
+| --- | --- | --- |
+| 10 | 음소거 — 유지되는 동안 모터 절대 OFF (근접·상태전환·칩 이벤트 전부 침묵) | 유지형 |
+| 11 | 연속 ON — 유지되는 동안 모터 계속 ON | 유지형 |
+| 12 / 13 / 14 | 짧은 진동 200ms × 1 / 2 / 3회, 간격 200ms (총 0.2 / 0.6 / 1.0초) | 값이 바뀐 순간 1회 |
+| 15 / 16 / 17 | 긴 진동 600ms × 1 / 2 / 3회, 간격 200ms (총 0.6 / 1.4 / 2.2초) | 값이 바뀐 순간 1회 |
+| 2, 4~9 | 무동작 (0과 동일) | — |
+
+- `game_state`·`device_state`·`role`과 무관하게 동작한다. 예외는 OTA·리셋 중 모터 OFF만.
+- 우선순위: 10 > 11 > 칩 제거/발견 진동 > 명령 진동 > 상태전환 진동 > 근접 진동.
+- 12~17은 **값이 직전과 다른 값으로 바뀐 순간**에만 재생된다. 같은 값이 유지되면 재생하지 않는다.
+  같은 명령을 반복하려면 다른 값(보통 0)을 거친다: `12 → 0 → 12`.
+- **서버 계약**
+  1. 각 값은 **최소 2초 유지**한다(글러브 폴링 1초, 한 번 놓쳐도 관측되게).
+  2. 명령값(10~17)이 유지되는 동안 위치 기반 `vibe` 재계산이 이를 **덮어쓰지 않아야** 한다.
+  3. 명령이 끝나면 근접 값(0/1/3)으로 되돌린다 — 명령값이 유지되는 동안 근접 진동은 멈춘다.
+  4. 부팅·재연결 직후 첫 스냅샷에 들어 있는 명령값은 재생하지 않고 소비한다(OTA 재부팅 뒤 남아 있던 값이 울리지 않게).
+  5. 11을 장시간 유지하면 모터가 계속 돌아 발열·배터리를 소모한다. 펌웨어 제한은 없다.
+
 
 `role=ghost` 보고는 서버에서 `is_open=0`, `is_sacrificed=0`을 함께 설정한다. 따라서 역할 보고를 재시도 가능한 단순 SET으로 취급하면 이미 진행된 상태를 지울 수 있다. `role=player` 보고는 life_chip을 최소 1로 만들며, Origin에서는 Error 전용 `revival_due_at` 검사를 적용하지 않는다. 본게임 setting/stop 중 역할 보고는 성공 ACK를 반환해도 무시될 수 있다. [역할 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L1534), [Send 역할 분기](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L2640)
 
