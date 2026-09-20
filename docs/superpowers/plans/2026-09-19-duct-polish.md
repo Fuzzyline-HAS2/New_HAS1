@@ -546,8 +546,8 @@ void ServerActivate();
  *        쿨타임 중이면 즉시 끝내고, 봉쇄 중이면 기존처럼 봉쇄를 푼다. 사용횟수 사다리는 유지.
  *        문이 열려 있는 4초(관리자 개방 포함) 동안은 건너뛴다. 이때 상태를 바꾸면
  *        닫힘 콜백이 쿨타임을 다시 시작해 표시와 실제가 어긋난다. 개방 여부는
- *        duct_close_timer 로 판단한다 - RELAY_PIN 은 OUTPUT 이라 ESP32에서 digitalRead 가
- *        항상 0을 돌려줄 수 있어 게이트로 쓸 수 없다.
+ *        RELAY_PIN 되읽기 대신 duct_close_timer 로 판단한다 - 두 개방 경로가 모두 4초
+ *        타임아웃을 걸어 이 플래그가 개방 구간과 정확히 겹치고, GPIO 모드 해석에 기대지 않는다.
  *        쿨타임이 자연 종료되어 디바이스가 보낸 activate가 되돌아오는 경우는 duct_available로 걸러진다.
  */
 void ServerActivate()

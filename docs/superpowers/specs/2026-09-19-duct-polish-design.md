@@ -100,8 +100,13 @@ ServerActivate():
 - 문이 열려 있는 4초(관리자 개방 포함) 동안은 무시한다. 이때 상태를 바꾸면 닫힘 콜백(`DuctClose`/`MmmmClose`)이
   쿨타임을 다시 시작해 표시와 실제 상태가 어긋난다. 운영자가 그 4초 안에 누르는 경우는 드물다.
   개방 여부는 `duct_close_timer`로 판단한다. 두 개방 경로(`DuctOpen`/`MmmmOpen`)가 모두 4초 타임아웃을 걸고,
-  `MmmmOpen`은 걸려 있던 예약을 먼저 지우므로 이 플래그가 개방 구간과 정확히 겹친다. `RELAY_PIN`은 `OUTPUT`이라
-  ESP32에서 `digitalRead`가 항상 0을 돌려줄 수 있어 게이트로 쓸 수 없고, 호스트 테스트는 그 차이를 잡지 못한다.
+  `MmmmOpen`은 걸려 있던 예약을 먼저 지우므로 이 플래그가 개방 구간과 정확히 겹친다.
+
+  > **정정:** 처음에는 `RELAY_PIN` 되읽기가 ESP32에서 항상 0을 돌려줄 것이라 보고 이 게이트를 골랐으나 **그 전제는 틀렸다.**
+  > arduino-esp32 3.3.11은 `OUTPUT`을 `0x03`으로 정의하므로(`esp32-hal-gpio.h`) `pinMode(pin, OUTPUT)`이
+  > `gpio_config()`에 `GPIO_MODE_INPUT_OUTPUT`으로 내려가 입력 버퍼가 켜지고, OUTPUT 핀도 `digitalRead`가 구동값을
+  > 그대로 돌려준다. 즉 `digitalRead(RELAY_PIN) == LOW` 게이트도 실기에서 동작했을 것이다.
+  > 그래도 `duct_close_timer` 쪽을 유지한다. 개방 구간이라는 개념을 그대로 표현하고 GPIO 모드 해석에 기대지 않는다.
 - 봉쇄+쿨타임이 겹친 상태에서는 쿨타임 종료 후 봉쇄 해제 순서로 둘 다 풀린다. `activate` 전송이 두 번 나갈 수 있으나 무해하다.
 
 **알려진 한계:** 서버 DB가 이미 `activate`인데 디바이스는 쿨타임 중인 경우(예: `lock` 전송 실패) 값이 바뀌지 않아 버튼이 감지되지 않는다.
