@@ -1,7 +1,7 @@
 #include "iotglove.h"
 
 // SecureOTA CI increments the sketch version before compile/sign/release.
-#define FIRMWARE_VER 7
+#define FIRMWARE_VER 8
 #define PARTITION_VER 1
 
 void setup() { gloveBegin(FIRMWARE_VER, PARTITION_VER); }
