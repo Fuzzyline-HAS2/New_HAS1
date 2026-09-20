@@ -144,6 +144,19 @@ GET has2.php?request=Situation&table=generator_gauge&key=<발전기 device_name>
   기존 RFID 디바운스에서 오는 선행 동작이고 크기가 제한적이라 그대로 둔다.
 - **재부팅/워치독** — 진행 중 세션은 RAM에 있어 유실된다.
 
+**불변식:** `ContribLoop()`이 `ptrCurrentMode()`보다 앞에 있다는 점이 두 가지를 동시에 보장한다.
+하나는 위에 적은 모드 전환 정리 순서이고, 다른 하나는 `encoderValue`를 리셋하는 두 곳
+(`BatteryFinish()`의 `= 1`, `SettingFunc()`의 `= 100`)보다 세션 종료가 항상 먼저 일어난다는 것이다.
+`BatteryFinish()`는 오직 `ptrCurrentMode`로만 실행되고
+(`WirePollMain()`이 [`wire.ino:117`](../../../devices/HAS1_generator/wire.ino#L117)에서 직접 부르는 경우도
+그 프레임의 `ptrCurrentMode`는 이미 `StarterActivate`가 아니라 세션이 그 프레임 머리에서 닫힌 뒤다),
+`SettingFunc()`은 프레임 끝 `DataChanged` 안에서 돈다.
+그래서 강제 종료는 언제나 리셋 이전의 칸 수로 확정된다. 이 호출을 `TimerRun()` 뒤로 옮기면 보장이 깨진다.
+
+**알려진 한계:** `SettingFunc()`/`ReadyFunc()`은 `starterContribUser`를 직접 비우지 않는다.
+열린 세션의 정리를 전적으로 `ContribLoop`에 맡기는 구조이며, 위 불변식이 지켜지는 한 문제가 없다.
+두 함수를 나중에 고칠 때 이 의존을 모르면 귀속이 조용히 틀어질 수 있다.
+
 **알려진 한계:** `ContribLoop`이 세션을 강제 종료할 때 `lastTagState`만 되돌리고
 `tagOnReader` / `isPlayerTagged`([`Game_system.ino:15`](../../../devices/HAS1_generator/Game_system.ino#L15))는
 건드리지 않는다. 스타터로 복귀한 직후 최대 200ms 동안 이 두 값이 직전 판정을 그대로 들고 있어
