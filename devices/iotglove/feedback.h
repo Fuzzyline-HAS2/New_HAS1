@@ -57,6 +57,21 @@ class FeedbackEngine {
         (state.display == Display::Ended && display_ != Display::Ended)) cancel();
     if (changed) pendingGhostAck_ = false;
 
+    // Operator vibe commands. 10/11 are levels that hold while the server keeps the value;
+    // 12..17 play once per change of value (the server must pass through another value to repeat).
+    const bool vibeEdge = vibe != lastVibe_;
+    lastVibe_ = vibe;
+    if (vibe == feedback_config::kVibeMute || vibe == feedback_config::kVibeOn) {
+      if (vibeEdge) cancel();  // Nothing queued resumes once the level is released.
+      known_ = true;
+      remember(state);
+      out.motor = vibe == feedback_config::kVibeOn;
+      return out;
+    }
+    if (vibeEdge && feedback_config::isCommand(vibe)) {
+      start(feedback_config::commandSchedule(vibe, settings_), Source::Command, now);
+    }
+
     if (state.haptic != Haptic::None) {
       const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
       start(choice, Source::Event, now);
@@ -83,7 +98,7 @@ class FeedbackEngine {
   }
 
  private:
-  enum class Source : uint8_t { None, State, Event };
+  enum class Source : uint8_t { None, State, Event, Command };
   feedback_config::Settings settings_;
   feedback_config::Schedule pattern_;
   uint32_t patternStart_ = 0;
@@ -96,6 +111,7 @@ class FeedbackEngine {
   Phase phase_ = Phase::Unknown;
   Display display_ = Display::Setting;
   uint32_t epoch_ = 0;
+  uint8_t lastVibe_ = 0;  // Last server vibe seen on a valid poll; commands play on change only.
 
   static bool quiescent(const Feedback& state) {
     return state.phase == Phase::Setting || state.phase == Phase::Ready ||
@@ -104,10 +120,13 @@ class FeedbackEngine {
         state.deviceState == DeviceState::Exploration || state.deviceState == DeviceState::Ended;
   }
   void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; }
-  void start(feedback_config::Pattern pattern, Source source, uint32_t now) {
-    pattern_ = feedback_config::schedule(pattern, settings_);
+  void start(const feedback_config::Schedule& schedule, Source source, uint32_t now) {
+    pattern_ = schedule;
     source_ = pattern_.total ? source : Source::None;
     patternStart_ = now;
+  }
+  void start(feedback_config::Pattern pattern, Source source, uint32_t now) {
+    start(feedback_config::schedule(pattern, settings_), source, now);
   }
   void remember(const Feedback& state) {
     role_ = state.role;
