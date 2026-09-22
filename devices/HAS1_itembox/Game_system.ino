@@ -73,7 +73,11 @@ void ChangeGameState(GameState next) {
         case GAME_PAUSED:
             NeoSetAll(YELLOW);
             pauseStartTime = millis();
-            GameEventSend("device_state", "activate");
+            // "activate"로 보내면 has2wifi.Loop()의 다음 폴링에서 그대로 되돌아와
+            // DataChanged()가 이를 명령으로 오인해 ChangeGameState(GAME_ACTIVATE)를 호출,
+            // answerCnt를 즉시 리셋해버렸다(자기 트리거 버그). "solving"처럼 DataChanged()가
+            // 명령으로 인식하지 않는 값을 써서 대시보드 보고만 하고 게임 로직에는 영향 없게 한다.
+            GameEventSend("device_state", "paused");
             break;
         case GAME_CORRECT_ANIM:
         case GAME_WRONG_ANIM:
@@ -274,7 +278,7 @@ void DataChanged() {
                  ds == "player_lose") ChangeGameState(GAME_DONE);
         else if (ds == "tagger")      ChangeGameState(GAME_TAGGER);
         else if (ds == "github")      otaRequested = true;  // Core0으로 OTA 트리거 전달
-        // "solving" : HAS1에서 미사용 (Core0/1 분리로 WiFi 타이머 불필요) — 수신 시 무시
+        // "solving", "paused" : 대시보드 표시용 보고일 뿐 HAS1에서는 명령으로 미사용 — 수신 시 무시
         prevDeviceState = ds;
     }
     // activate는 중복 수신(이미 ACTIVATE 상태)이어도 항상 닫기.
