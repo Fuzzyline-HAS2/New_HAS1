@@ -335,7 +335,13 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     // 서버 계약상 유령 외 역할은 개방 대상이 아니다. 이벤트/즉시 조회는 유지하되
     // 거부된 생존자 태그가 다음 유령의 사용을 15초 동안 막지 않도록 대기를 끝낸다.
     if (tag_role != "ghost")
+    {
       EndRevivalApproval("role not eligible");
+      // 서버까지 다녀왔지만 유령이 아니라 거부됐다는 걸 태그한 사람에게 알려준다.
+      // device_state는 여기까지 오면 "activate"이므로 NeoBlinkPurple이 빨간색으로 점멸한다.
+      NeoBlinkPurple(3);
+      NeopixelSet(yellow);  // activate 상태 색으로 복원
+    }
   }
   else
     EndRevivalApproval("Situation failed", tag_role == "ghost");
