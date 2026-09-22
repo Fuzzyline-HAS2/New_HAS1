@@ -121,7 +121,7 @@ bool send_nfc_err = false;
 // 내부 상태 변수 타입으로만 쓰이고 함수 매개변수 타입으로는 쓰이지 않는다(ApplyGain은 int를 받음).
 // Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다도 앞에
 // 삽입돼서, 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
-enum GainMode { GAIN_NEAR, GAIN_FAR };
+enum GainMode { GAIN_CONTACT, GAIN_NEAR, GAIN_FAR };
 
 void RfidInit(void);
 void RfidLoop(void);
