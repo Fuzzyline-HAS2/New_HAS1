@@ -301,7 +301,10 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   has2wifi.Receive(tagUser);
   const unsigned long roleReceiveMs = millis() - roleReceiveStartMs;
   String tag_role = (String)(const char *)tag["role"];
-  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role);
+  // roleReceiveMs는 role=="ghost"일 때만 [GhostTiming] 로그로 남았다 - 이 자리에서 매번
+  // 찍어야 "태그 직후 지연이 Receive() HTTP 왕복 때문"인지 다른 role에서도 확인 가능하다.
+  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role +
+                 " (Receive took=" + String(roleReceiveMs) + "ms)");
   if ((int)tag["is_open"] != 0)
   {
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
