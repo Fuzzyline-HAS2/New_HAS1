@@ -236,6 +236,10 @@ bool HAS2_Wifi::TryConnect(const char *new_ssid, const char *new_password, unsig
 
   if (WiFi.status() == WL_CONNECTED)
   {
+    // modem sleep(전력 절약 모드)이 켜진 상태에서는 패킷 전송 전 라디오를 깨우는 데
+    // 매번 100~300ms 고정 지연이 붙는다(실측 로그: RSSI가 좋아도 situation_ms가
+    // 항상 ~300ms 바닥을 깜) - 게임 진행용 기기라 배터리보다 응답속도가 중요하므로 끈다.
+    WiFi.setSleep(false);
     SaveLastWifi(new_ssid, new_password);
     PrintConnectedWifi();
     return true;
