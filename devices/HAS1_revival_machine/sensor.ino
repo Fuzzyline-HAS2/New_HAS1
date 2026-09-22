@@ -30,15 +30,20 @@ void SensorInit()
 // 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
 // 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
 // MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
-// 중거리(2~4cm)가 각각 커버되므로, 감지 실패 시 반대 Gain으로 즉시 한 번 더 시도해
-// 근접~4cm 전 구간을 잇는다. TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+// 중거리(2~4cm)가 각각 커버되나, 완전 밀착(0mm)은 신호가 과도하게 강해 이 두 단계로도
+// 안 잡히는 경우가 현장에서 확인됨(밀착 상태로 몇 초씩 붙잡아야 겨우 읽힘). GAIN_CONTACT를
+// 추가해 NEAR보다 한 단계 더 낮춘 Gain(약 20dB, 추정치 — 실기 튜닝 필요)으로 밀착 구간을
+// 커버한다. 감지 실패 시 나머지 두 Gain을 순서대로 즉시 재시도해 밀착~4cm 전 구간을 잇는다.
+// TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
 static GainMode currentGain = GAIN_NEAR;
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
 // PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
 static bool ApplyGain(int mode)
 {
-  uint8_t rfCfg = (mode == GAIN_NEAR) ? 0x19 : 0x49;  // 23dB(근거리) / 33dB(중거리)
+  // 0x09(약 20dB, 추정) / 0x19(23dB, 근거리) / 0x49(33dB, 중거리). 0x09는 기존 두 값의
+  // 비트 패턴(RxGain 필드만 한 단계 낮춤)에서 유추한 추정치라 실기에서 재보정이 필요하다.
+  uint8_t rfCfg = (mode == GAIN_CONTACT) ? 0x09 : (mode == GAIN_NEAR) ? 0x19 : 0x49;
   uint8_t cmd[] = {
       0x32,       // RFConfiguration
       0x0A,       // Type A 106kbps Analog Setting
@@ -84,13 +89,21 @@ static bool DetectAndRead(uint8_t outData[32])
   return nfc.ntag2xx_ReadPage(7, outData) != 0;
 }
 
-// 현재 Gain으로 실패하면 반대 Gain으로 즉시 재시도. 성공한 Gain은 currentGain에 남아 다음 호출에도 유지된다.
+// 현재 Gain으로 실패하면 CONTACT→NEAR→FAR 순서로 나머지 Gain을 하나씩 즉시 재시도한다.
+// 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
   if (DetectAndRead(outData)) return true;
-  currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-  ApplyGain(currentGain);
-  return DetectAndRead(outData);
+
+  static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
+  for (int i = 0; i < 3; i++)
+  {
+    if (kGainOrder[i] == currentGain) continue;  // 이미 위에서 시도한 Gain
+    currentGain = kGainOrder[i];
+    ApplyGain(currentGain);
+    if (DetectAndRead(outData)) return true;
+  }
+  return false;
 }
 
 /**
@@ -288,7 +301,10 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   has2wifi.Receive(tagUser);
   const unsigned long roleReceiveMs = millis() - roleReceiveStartMs;
   String tag_role = (String)(const char *)tag["role"];
-  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role);
+  // roleReceiveMs는 role=="ghost"일 때만 [GhostTiming] 로그로 남았다 - 이 자리에서 매번
+  // 찍어야 "태그 직후 지연이 Receive() HTTP 왕복 때문"인지 다른 role에서도 확인 가능하다.
+  Serial.println("[RFID] " + tagUser + " is_open=" + String((int)tag["is_open"]) + " role=" + tag_role +
+                 " (Receive took=" + String(roleReceiveMs) + "ms)");
   if ((int)tag["is_open"] != 0)
   {
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
