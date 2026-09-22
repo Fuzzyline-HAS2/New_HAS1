@@ -13,6 +13,11 @@ void SensorInit()
   pixels_mid.setBrightness(color_brightness);
   pixels_bot.setBrightness(color_brightness);
 
+  // mid는 device_state와 무관하게 항상 흰색 고정 — NeopixelSet()이 top/bot만 칠하므로
+  // 여기서 한 번만 켜두면 이후 상태 전환에도 계속 흰색으로 유지된다.
+  pixels_mid.fill(Adafruit_NeoPixel::Color(white[0], white[1], white[2]));
+  pixels_mid.show();
+
   // Rfid init
   RfidInit();
 
@@ -278,7 +283,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   // is_open은 생명장치가 아니라 태그한 iotGlove 쪽 필드. 이미 true면(이 iotGlove가
   // 생명장치를 이미 연 적 있으면) 서버로 보내지 않고 사용 불가로 처리한다.
   // device_state=="tagger"와 달리 여기서는 점멸 후에도 device_state가 계속 "activate"라
-  // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 보라색에 머무르게 되므로 복원한다.
+  // NeoBlinkPurple만 쓰면 노란색(activate)으로 안 돌아오고 빨간색 점멸의 마지막 색에 머무르게 되므로 복원한다.
   const unsigned long roleReceiveStartMs = millis();
   has2wifi.Receive(tagUser);
   const unsigned long roleReceiveMs = millis() - roleReceiveStartMs;
@@ -363,16 +368,17 @@ bool RfidNsecTag(int sec)
   return false;
 }
 
-// tagger 상태에서 태그됐을 때 "사용 불가" 알림으로 보라색을 짧게 점멸시킨 뒤,
-// tagger 상태의 기본 색(보라색 고정)으로 되돌린다.
+// "사용 불가" 알림으로 짧게 점멸시킨다. device_state=="tagger"면 그 상태의 기본 색(보라색)으로,
+// 그 외(예: activate 중 is_open 차단)는 빨간색으로 점멸한다. 점멸 후 상태 복원은 호출부 책임.
 void NeoBlinkPurple(int times)
 {
   int neoOff[3] = {0, 0, 0};
+  int* blinkColor = ((String)(const char *)my["device_state"] == "tagger") ? purple : red;
   for (int i = 0; i < times; i++)
   {
     NeopixelSet(neoOff);
     delay(150);
-    NeopixelSet(purple);
+    NeopixelSet(blinkColor);
     delay(150);
   }
 }
@@ -380,14 +386,13 @@ void NeoBlinkPurple(int times)
 //******************************************* Neopixel Helpers *******************************************
 void NeopixelSet(int color[3])
 {
+  // mid는 건드리지 않는다 — device_state와 무관하게 항상 흰색 고정(SensorInit 참고).
   current_neopixel_color = color;
   uint32_t c = Adafruit_NeoPixel::Color(color[0], color[1], color[2]);
   pixels_top.fill(c); pixels_top.show();
-  pixels_mid.fill(c); pixels_mid.show();
   pixels_bot.fill(c); pixels_bot.show();
   delay(10);
   pixels_top.show();
-  pixels_mid.show();
   pixels_bot.show();
 }
 
