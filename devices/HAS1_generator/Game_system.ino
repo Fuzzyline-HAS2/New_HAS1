@@ -13,7 +13,8 @@
 void StarterActivate(){
     // RFID 체크는 200ms마다만 수행 (블로킹으로 인한 루프 지연 방지)
     static bool tagOnReader = false;    // 이번 체크에서 리더 위에 태그가 감지됐는지
-    static bool lastTagState = false;   // 직전 체크에서의 감지 상태 (새로 올라온 태그인지 판단용)
+    // 직전 체크에서의 감지 상태(새로 올라온 태그인지 판단용)는 전역 starterLastTagState —
+    // ContribLoop()이 세션을 강제 종료한 뒤 false로 되돌려야 해서 함수 밖으로 옮겼다.
     static bool isPlayerTagged = false; // 현재 리더 위 태그가 role=="player"인지 여부
     static unsigned long lastRfidCheck = 0;
     if (millis() - lastRfidCheck >= 200){
@@ -22,7 +23,7 @@ void StarterActivate(){
         // (rfid.ino 참고). 감지에 성공한 Gain은 내부에 유지되어 뒤이은 ntag2xx_ReadPage에도 그대로 쓰인다.
         tagOnReader = RfidPresenceCheck();
         if (tagOnReader) {
-            if (!lastTagState) { // 새 태그가 올라왔을 때만 role 확인
+            if (!starterLastTagState) { // 새 태그가 올라왔을 때만 role 확인
                 uint8_t data[32];
                 if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)){
                     String tagUser = "";
@@ -30,14 +31,21 @@ void StarterActivate(){
                     has2wifi.Receive(tagUser); // 서버에 조회해 tag["role"]을 채움
                     isPlayerTagged = ((String)(const char*)tag["role"] == "player");
                     Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Revival Blocked");
+                    // 기여도 세션 시작 — 이 카드가 붙어 있는 동안 오른 칸 수가 이 사람 몫이 된다.
+                    if (isPlayerTagged) ContribBegin(tagUser, StarterGaugeCnt());
                 } else {
                     isPlayerTagged = false;
                 }
             }
-            // 태그가 계속 얹혀 있는 동안(lastTagState==true)은 재조회하지 않고
+            // 태그가 계속 얹혀 있는 동안(starterLastTagState==true)은 재조회하지 않고
             // 직전에 판정한 isPlayerTagged 값을 그대로 유지한다 (통신 절약).
         }
-        lastTagState = tagOnReader;
+        else if (starterLastTagState){
+            // 태그가 떼어진 순간 — 이 세션의 순증을 확정해 서버에 남긴다.
+            // (세션이 열려 있지 않으면 ContribEnd가 알아서 no-op)
+            ContribEnd(StarterGaugeCnt());
+        }
+        starterLastTagState = tagOnReader;
     }
 
     // 게이지 목표 칸 수(gaugeNeoCnt)는 encoderValue/starterEncoderUnit으로 즉시 계산되지만,
@@ -55,8 +63,11 @@ void StarterActivate(){
     const unsigned long GAUGE_STEP_INTERVAL_MS = 100; // 작을수록 더 즉각적, 클수록 더 부드러움
     static unsigned long lastGaugeStepTime = 0;
     static unsigned long lastGaugeRefresh = 0;
-    int gaugeNeoCnt = encoderValue / starterEncoderUnit;
-    if (gaugeNeoCnt > NumPixels[GAUGE]) gaugeNeoCnt = NumPixels[GAUGE];
+    int gaugeNeoCnt = StarterGaugeCnt();
+    // 기여도 기록용 최신 칸 수 갱신 — 아래 "카드 없음/비플레이어" 조기 리턴보다 반드시 위에 둔다.
+    // 아래에 두면 가드가 걸릴 때마다 값이 낡고, ContribLoop()의 강제 종료가 낡은 값을 읽는다.
+    // (이 함수는 가드에 걸려도 호출은 되므로 "매 프레임"과 "매 호출"이 다르다.)
+    starterContribLastCnt = gaugeNeoCnt;
 
     bool needRender = false;
     if (displayedGaugeNeoCnt < 0){
@@ -95,6 +106,11 @@ void StarterActivate(){
     // 미처 다 따라잡기도 전에 완료 처리가 먼저 튀어나오지 않게 한다.
     if(displayedGaugeNeoCnt >= NumPixels[GAUGE]){
         EncoderDetach();
+        // 마지막 구간을 채운 사람의 기여도를 먼저 확정한다 — StartFinish()가 ptrCurrentMode를
+        // WaitFunc으로 바꾸므로 여기서 안 남기면 ContribLoop()이 다음 프레임에 남기게 되는데,
+        // 그때는 이미 SettingFunc 등이 encoderValue를 건드렸을 수 있다.
+        // 전송이 실패해도 아래 수리 완료 처리는 그대로 진행된다.
+        ContribEnd(NumPixels[GAUGE]);
         // SendCmd("page pgFixed");  // (Nextion 시절 잔재 — 현재 미사용)
         StartFinish();                              // 서버에 repaired 알림 및 다음 상태 전환
         BlinkTimer.deleteTimer(blinkTimerId);

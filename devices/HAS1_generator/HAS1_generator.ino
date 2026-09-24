@@ -106,6 +106,17 @@ void setup() {
 void loop() {
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
     EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영
+    // 스타터를 벗어난 채 열려 있는 기여도 세션을 정리한다.
+    // [중요] ptrCurrentMode() "앞"이어야 한다 — 이 위치가 두 가지를 동시에 보장한다:
+    //  1) 직전 프레임 끝의 TimerRun()->DataChanged()가 모드를 바꿨다면, 새 모드 함수가
+    //     한 번도 돌기 전에 여기서 마무리된다.
+    //  2) encoderValue를 리셋하는 두 곳(BatteryFinish의 =1, SettingFunc의 =100)보다 항상
+    //     먼저 실행된다. BatteryFinish는 오직 ptrCurrentMode로만 실행되고(WirePollMain이
+    //     직접 부르는 경우도 그 프레임의 ptrCurrentMode는 이미 StarterActivate가 아니다),
+    //     SettingFunc은 프레임 끝 DataChanged 안에서 돈다. 그래서 세션 종료는 언제나
+    //     리셋 이전의 칸 수로 확정된다. TimerRun() 뒤로 옮기면 이 보장이 깨지고,
+    //     덤으로 폴링 GET 바로 뒤에 전송 GET이 같은 프레임에 연달아 붙는다.
+    ContribLoop();
     ptrCurrentMode();  // 현재 모드 함수 실행 (예: WaitFunc / RfidLoopMain / WirePollMain / StarterActivate)
     // battery_max/starter_finish/repaired 단계는 ptrCurrentMode가 WirePollMain이 아니라서(BatteryFinish/
     // StarterActivate/WaitFunc 등) 배선 폴링이 끊긴다 - 그 사이 배선을 뽑아 배터리팩을 재사용하는 부정행위를

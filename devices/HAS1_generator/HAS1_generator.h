@@ -69,6 +69,24 @@ const unsigned long starterNeoDivider = 15000*7.5; // (현재 코드에서 직�
 int starterEncoderUnit = 4000;        // 게이지 1칸당 필요한 엔코더 값
 int starterDecreaseAmount = 1125;     // 2초마다 감소하는 엔코더 양
 bool blinkOn = false; // BlinkTimerFunc()가 네오픽셀을 켬/끔 번갈아 할 때 현재 상태를 기억하는 플래그
+
+// StarterActivate()의 함수-지역 static이었으나 contrib.ino의 ContribLoop()이 세션을 강제
+// 종료한 뒤 false로 되돌려야 해서 전역으로 올림 — 그래야 카드가 리더에 그대로 얹혀 있어도
+// 스타터로 복귀했을 때 "새 태그"로 다시 인식되어 새 세션이 열린다.
+bool starterLastTagState = false; // 직전 200ms 체크에서 태그가 리더 위에 있었는지
+//****************************************Contribution Log****************************************************************
+// "누가 게이지를 얼만큼 채웠는지" 기록 — 플레이어 카드가 올라와 있는 동안만 엔코더가 돌아가는
+// 구조라(StarterActivate) 스타터 단계의 진행량은 사람과 1:1로 묶인다. 카드가 올라와 role=="player"로
+// 확인된 순간부터 떼어질 때까지를 한 "세션"으로 보고, 그 구간의 게이지 순증을 서버에 한 행씩 남긴다.
+// (배선 충전 단계는 RFID가 관여하지 않아 기여자를 알 방법이 없으므로 대상이 아니다.)
+String starterContribUser = "";   // 세션 중인 플레이어 코드(GxPx). 빈 문자열이면 세션 없음
+int starterContribStartCnt = 0;   // 세션이 시작된 시점의 게이지 칸 수
+int starterContribLastCnt = 0;    // StarterActivate()가 매 호출 갱신하는 최신 칸 수 —
+                                   // 스타터를 벗어난 뒤 ContribLoop()이 강제 종료할 때 이 값을 쓴다
+int  StarterGaugeCnt();                            // 현재 게이지 목표 칸 수(0~NumPixels[GAUGE]) (contrib.ino)
+void ContribBegin(const String &user, int cnt);    // 세션 시작 (contrib.ino)
+void ContribEnd(int cnt);                          // 세션 종료 + 순증 전송. 세션이 없으면 no-op (contrib.ino)
+void ContribLoop();                                // 스타터 이탈 감지 — loop()에서 ptrCurrentMode() 직전 호출 (contrib.ino)
 //****************************************Timer System****************************************************************
 // SimpleTimer 인스턴스 3개 — 각각 독립된 인터벌로 TimerRun()에서 매 loop마다 run()된다.
 SimpleTimer GameTimer;  // 스타터 진행 중 엔코더 값 감소를 주기적으로 트리거
