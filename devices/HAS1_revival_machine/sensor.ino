@@ -89,6 +89,23 @@ static bool DetectAndRead(uint8_t outData[32])
   return nfc.ntag2xx_ReadPage(7, outData) != 0;
 }
 
+// RFConfiguration(0x32) CfgItem 0x01(RF field)로 필드를 껐다/켠다. ISO14443A 태그는 한 번
+// 교신(anti-collision+SELECT)에 성공하면 ACTIVE 상태로 넘어가 이후 REQA(일반 폴링)에
+// 응답하지 않는다 - 필드를 벗어나 전원이 끊겨야(또는 명시적 Release/Deselect) 리셋된다.
+// 태그를 리더에 계속 붙여둔 채로는 "우연히 리셋될 때"까지 기다리는 수밖에 없었던 게
+// 현장 증상(밀착 유지 시 미인식, 짧게 뗐다 대면 즉시 인식)과 들어맞는다. 필드를 잠깐
+// 껐다 켜서 강제로 전원을 끊으면, 태그가 실제로 필드를 벗어났다 재진입한 것과 같은
+// 효과로 ACTIVE 상태가 풀린다.
+static bool ToggleRfField(bool on)
+{
+  uint8_t cmd[] = {
+      0x32,                    // RFConfiguration
+      0x01,                    // CfgItem: RF field
+      (uint8_t)(on ? 0x01 : 0x00)  // bit0: RF field ON(1)/OFF(0)
+  };
+  return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+}
+
 // 현재 Gain으로 실패하면 CONTACT→NEAR→FAR 순서로 나머지 Gain을 하나씩 즉시 재시도한다.
 // 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
@@ -103,6 +120,11 @@ static bool DetectWithGainSwitch(uint8_t outData[32])
     ApplyGain(currentGain);
     if (DetectAndRead(outData)) return true;
   }
+
+  // 3개 Gain 모두 실패 - 태그가 ACTIVE 상태로 굳어 REQA에 응답 안 하는 상황을 의심하고
+  // 강제로 리셋한다. 다음 폴링 사이클(RFID_DEBOUNCE_MS 뒤)에서 새 REQA가 먹힐 것으로 기대.
+  ToggleRfField(false);
+  ToggleRfField(true);
   return false;
 }
 
