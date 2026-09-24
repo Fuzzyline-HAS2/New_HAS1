@@ -19,6 +19,12 @@ static bool adminBoxOverride = false;
 // 정답 애니메이션(GAME_CORRECT_ANIM) 실측 소요시간 로깅용 — entry에서 찍고 종료 직전 diff 출력.
 static unsigned long correctAnimStartMs = 0;
 
+// 진동 펄스 상태 — setVibrationByProximity()가 매 호출 갱신. GAME_PUZZLE 진입 시 -1로 리셋해
+// 새 라운드가 이전 라운드의 잔여 위상(OFF 중간 등)을 물려받지 않고 항상 ON부터 시작하게 한다.
+static int           vibPulseGrade      = -1;
+static bool          vibPulseOn         = false;
+static unsigned long vibPulseLastSwitch = 0;
+
 // ── 상태 전환 ──────────────────────────────────────────────────────────────────────────
 void ChangeGameState(GameState next) {
     Log("GAME", String(GameStateName(gameState)) + " -> " + String(GameStateName(next)));
@@ -68,6 +74,7 @@ void ChangeGameState(GameState next) {
             rfidLastSeenTime  = millis();                  // 태그 이탈 판정 기준 초기화
             EncoderEnable();
             displayedEncoderPos = -1;                       // 새 라운드마다 이전 위치에서 애니메이션 시작하지 않도록 즉시 동기화
+            vibPulseGrade = -1;                             // 진동 펄스도 새 라운드는 항상 ON부터 시작
             GameEventSend("device_state", "solving");      // 서버에 퍼즐 진행 중 상태 보고
             break;
         case GAME_PAUSED:
@@ -188,7 +195,17 @@ static int ringDistance(int a, int b, int range) {
     return abs(ringDelta(a, b, range));
 }
 
-// 엔코더 위치와 정답 거리에 따라 진동 세기 설정 — 게임 로직, HAL 호출만 함
+// grade 0~2(진동 있는 구간) 전용 on/off 펄스 주기 — 가까울수록 빠르게 울렸다 꺼지길 반복해
+// PWM 듀티 차이만으로는 구분이 애매했던 근접도를 촉각으로도 뚜렷하게 느끼게 한다.
+// 순서는 실측 테스트로 확정 전 1차 추정치이므로 배포 후 체감에 맞춰 바로 조정할 것.
+struct VibPulse { uint16_t onMs; uint16_t offMs; };
+static const VibPulse vibPulsePattern[3] = {
+    {  80, 40 },  // grade 0: 정답 최근접 — 가장 빠른 펄스
+    { 100, 50 },  // grade 1
+    { 150, 70 },  // grade 2: 진동 있는 구간 중 가장 먼 곳 — 가장 느린 펄스
+};
+
+// 엔코더 위치와 정답 거리에 따라 진동 세기·펄스를 설정 — 게임 로직, HAL 호출만 함
 static void setVibrationByProximity(int answer, long encValue) {
     int diff  = ringDistance(answer, (int)encValue, ENCODER_RANGE);
     int aRange = modeValue[RANGE][ANSWER_RANGE];
@@ -199,7 +216,30 @@ static void setVibrationByProximity(int answer, long encValue) {
     else if (diff < aRange + vRange * 2) grade = 2;
     else if (diff < aRange + vRange * 3) grade = 3;
     else                                 grade = 4;
-    vibrationOn(modeValue[VIBESTREGNTH][grade]);
+
+    int strength = modeValue[VIBESTREGNTH][grade];
+    if (grade > 2 || strength == 0) {
+        // 진동 없는 구간 — 펄스 상태 리셋. 다시 가까워지면 항상 ON부터 새로 시작.
+        vibrationOff();
+        vibPulseGrade = -1;
+        return;
+    }
+
+    if (grade != vibPulseGrade) {
+        // grade 전환 순간 즉시 ON — 이전 grade의 잔여 OFF 위상이 새 패턴으로 새지 않게 한다.
+        vibPulseGrade      = grade;
+        vibPulseOn         = true;
+        vibPulseLastSwitch = millis();
+        vibrationOn(strength);
+        return;
+    }
+
+    uint16_t phaseMs = vibPulseOn ? vibPulsePattern[grade].onMs : vibPulsePattern[grade].offMs;
+    if (millis() - vibPulseLastSwitch >= phaseMs) {
+        vibPulseOn         = !vibPulseOn;
+        vibPulseLastSwitch = millis();
+        if (vibPulseOn) vibrationOn(strength); else vibrationOff();
+    }
 }
 
 // ArduinoJson | 0 은 서버가 숫자를 string으로 내릴 때 0을 반환.
