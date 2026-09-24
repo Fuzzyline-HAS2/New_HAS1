@@ -195,12 +195,13 @@ static int ringDistance(int a, int b, int range) {
     return abs(ringDelta(a, b, range));
 }
 
-// grade 0~2(진동 있는 구간) 전용 on/off 펄스 주기 — 가까울수록 빠르게 울렸다 꺼지길 반복해
-// PWM 듀티 차이만으로는 구분이 애매했던 근접도를 촉각으로도 뚜렷하게 느끼게 한다.
+// grade 1~2(진동은 있지만 정답은 아닌 근접 구간) 전용 on/off 펄스 주기 — 가까울수록 빠르게
+// 울렸다 꺼지길 반복해 PWM 듀티 차이만으로는 애매했던 근접도를 촉각으로 뚜렷하게 느끼게 한다.
+// grade 0(정답 최근접)은 펄스 없이 최대 세기로 쭉 울리는 쪽이 "찾았다" 신호로 더 명확해서 제외.
 // 순서는 실측 테스트로 확정 전 1차 추정치이므로 배포 후 체감에 맞춰 바로 조정할 것.
 struct VibPulse { uint16_t onMs; uint16_t offMs; };
 static const VibPulse vibPulsePattern[3] = {
-    {  80, 40 },  // grade 0: 정답 최근접 — 가장 빠른 펄스
+    {  80, 40 },  // (grade 0 인덱스, 미사용 — 아래에서 grade 0은 별도 분기로 빠짐)
     { 100, 50 },  // grade 1
     { 150, 70 },  // grade 2: 진동 있는 구간 중 가장 먼 곳 — 가장 느린 펄스
 };
@@ -218,6 +219,13 @@ static void setVibrationByProximity(int answer, long encValue) {
     else                                 grade = 4;
 
     int strength = modeValue[VIBESTREGNTH][grade];
+    if (grade == 0) {
+        // 정답 최근접 — 펄스 없이 최대 세기로 계속 울림. 펄스 상태는 리셋해둬서 이후
+        // grade 1/2로 넘어갈 때 항상 ON부터 새로 시작하게 한다.
+        vibrationOn(strength);
+        vibPulseGrade = -1;
+        return;
+    }
     if (grade > 2 || strength == 0) {
         // 진동 없는 구간 — 펄스 상태 리셋. 다시 가까워지면 항상 ON부터 새로 시작.
         vibrationOff();
