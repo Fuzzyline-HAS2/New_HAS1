@@ -361,11 +361,25 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   }
 
   BeginRevivalApproval(tagDetectedMs);
-  unsigned long situationStartMs = millis();
-  bool situation_sent = has2wifi.Situation(tagUser, "revival_machine");
-  ghost_situation_ms = millis() - situationStartMs;
-  Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL") +
-                 " took=" + String(ghost_situation_ms) + "ms");
+  bool situation_sent;
+  if (tag_role == "ghost")
+  {
+    // 유령 개방은 [GhostTiming] RELAY ON 로그의 situation= 값이 정확해야 하므로
+    // 기존처럼 응답을 기다린다.
+    unsigned long situationStartMs = millis();
+    situation_sent = has2wifi.Situation(tagUser, "revival_machine");
+    ghost_situation_ms = millis() - situationStartMs;
+    Serial.println("[RFID] Situation send " + tagUser + " result=" + String(situation_sent ? "OK" : "FAIL") +
+                   " took=" + String(ghost_situation_ms) + "ms");
+  }
+  else
+  {
+    // 비유령은 대부분 곧바로 거절로 끝나 Situation 결과를 몰라도 된다(아래에서 role
+    // 기준으로 바로 승인 대기를 끝냄) - 응답을 기다리지 않고 비동기로 보내 그만큼의
+    // 지연을 없앤다. 실제 전송 성공/시간은 비동기 태스크가 같은 형식으로 로그를 남긴다.
+    has2wifi.SituationAsync(tagUser, "revival_machine");
+    situation_sent = true;
+  }
 
   // HTTP 200은 승인 자체가 아니다. 즉시 상태를 읽고, 미확정이면 전용 폴링으로 계속 확인한다.
   // API가 거부 사유를 노출하지 않으므로 상태가 그대로인 거부도 15초 상한으로 끝낸다.
@@ -377,8 +391,9 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     if (tag_role != "ghost")
     {
       EndRevivalApproval("role not eligible");
-      // 서버까지 다녀왔지만 유령이 아니라 거부됐다는 걸 태그한 사람에게 알려준다.
-      // device_state는 여기까지 오면 "activate"이므로 NeoBlinkPurple이 빨간색으로 점멸한다.
+      // Receive()로 이미 확인한 role 기준으로(Situation 응답은 비동기라 기다리지 않음)
+      // 유령이 아니라 거부됐다는 걸 태그한 사람에게 알려준다. device_state는 여기까지
+      // 오면 "activate"이므로 NeoBlinkPurple이 빨간색으로 점멸한다.
       NeoBlinkPurple(3);
       NeopixelSet(yellow);  // activate 상태 색으로 복원
     }

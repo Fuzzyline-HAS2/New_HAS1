@@ -574,6 +574,68 @@ bool HAS2_Wifi::Situation(String affected_device_name, String situation, String 
 }
 
 /**
+ * @brief [private] 비동기 Situation용 태스크 인자
+ */
+struct HAS2_AsyncSituationParams
+{
+  String url;
+  String affected_device_name;
+};
+
+/**
+ * @brief [private] 응답을 기다리지 않는 Situation을 별도 태스크(Core 0)에서 처리.
+ * SendAsync와 같은 이유로 로컬 HTTPClient를 쓴다. 다만 Situation은 호출 직후
+ * result/took 로그가 지연 진단의 핵심 근거였어서, 완료 시점에 태스크 안에서
+ * 같은 형식으로 로그를 남긴다(호출부 로그보다 늦게/다른 줄 사이에 찍힐 수 있음).
+ */
+static void HAS2_AsyncSituationTask(void *pvParameters)
+{
+  HAS2_AsyncSituationParams *params = (HAS2_AsyncSituationParams *)pvParameters;
+  unsigned long startMs = millis();
+
+  HTTPClient localHttp;
+  localHttp.begin(params->url);
+  int httpcode = localHttp.GET();
+  localHttp.end();
+
+  _has2DebugPrint->println("[RFID] Situation send " + params->affected_device_name +
+                            " result=" + String(httpcode == HTTP_CODE_OK ? "OK" : "FAIL") +
+                            " took=" + String(millis() - startMs) + "ms (async)");
+
+  delete params;
+  vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 응답을 기다리지 않는 Situation 전송 - 메인 흐름이 왕복 시간만큼 블로킹되지
+ * 않는다. 실패해도 호출부가 승인 폴링/타임아웃으로 정리한다는 전제로 쓸 것
+ * (revival_machine의 role-not-eligible 즉시 종료처럼 결과를 몰라도 되는 경우).
+ *
+ * @param affected_device_name 영향을 받는 장치
+ * @param situation  상황
+ * @param key_device 키로 사용할 장치. 생략하면 자신의 장치 이름 사용
+ */
+void HAS2_Wifi::SituationAsync(String affected_device_name, String situation, String key_device)
+{
+  String key = key_device.length() ? key_device : (String)(const char *)my["device_name"];
+  String url = server + "?request=" + "Situation" + "&table=" + situation + "&key=" + key + "&value=" + affected_device_name;
+
+  HAS2_AsyncSituationParams *params = new HAS2_AsyncSituationParams();
+  params->url = url;
+  params->affected_device_name = affected_device_name;
+
+  BaseType_t created = xTaskCreatePinnedToCore(
+      HAS2_AsyncSituationTask, "has2_async_situation", 6144, params, 1, nullptr, 0);
+
+  if (created != pdPASS)
+  {
+    _has2DebugPrint->println("HAS2_AsyncSituationTask create failed, fallback to blocking Situation");
+    delete params;
+    HttpRequest("Send", url); // 태스크 생성 실패 시에만 블로킹으로 대체
+  }
+}
+
+/**
  * @brief 자신의 데이터를 읽음
  *
  */

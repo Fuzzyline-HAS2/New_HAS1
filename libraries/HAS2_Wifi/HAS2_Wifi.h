@@ -93,6 +93,7 @@ public:
     void Send(String device_name, String column, String value);
     void SendAsync(String device_name, String column, String value);
     bool Situation(String affected_device_name, String situation, String key_device = "");
+    void SituationAsync(String affected_device_name, String situation, String key_device = "");
     void Loop();
     void Loop(void (*Func)(void));
     void FirmwareUpdate(String device_type, String ip_address = "172.30.1.43");

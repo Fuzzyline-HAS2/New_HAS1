@@ -156,6 +156,11 @@ struct Has2WifiStub {
     fake_ms += situation_delay_ms;
     return situation_ok;
   }
+  void SituationAsync(const String& user, const String&) {
+    // 실제 SituationAsync()는 호출부를 블로킹하지 않으므로 fake_ms를 진행시키지 않는다 -
+    // 그게 이 함수를 쓰는 이유다. 호출 자체는 Situation()과 동일하게 계수한다.
+    ++situation_calls; situation_tags.push_back(user);
+  }
   void ReceiveMine() {
     ++mine_calls;
     fake_ms += approval_delay_ms;
