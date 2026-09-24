@@ -173,19 +173,9 @@ void RfidLoop()
   uint8_t data[32];
   bool detected = DetectWithGainSwitch(data);
   ObserveGameplayTag(detected);
-  if (!detected) return;
-
-  // 이미 처리 끝난 같은 태그를 계속 붙잡고 있으면 CardChecking()까지 가지 않는다.
-  // (CardChecking() 내부에도 같은 판단이 있지만, 거기서 걸리면 tag_user_data 로그만
-  // 반복 찍혀서 "계속 뭔가 시도하다 실패하는" 것처럼 보인다 - 여기서 미리 걸러 조용히 둔다.)
-  if (gameplay_tag_latched)
-  {
-    String heldUser = "";
-    for (int i = 0; i < 4; i++) heldUser += (char)data[i];
-    if (heldUser == gameplay_tag_user) return;
-  }
-
-  CardChecking(data);
+  // tag_user_data 로그를 매번 남겨야 "읽히는데 무시되는 것"과 "아예 안 읽히는 것"을
+  // 로그로 구분할 수 있다 - 둘 다 조용하면 디버깅이 안 된다.
+  if (detected) CardChecking(data);
 }
 
 // 승인 조회를 먼저 처리하고, 조회하지 않는 루프에서만 1초 간격으로 관리자 카드를 확인한다.
