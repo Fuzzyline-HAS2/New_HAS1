@@ -642,6 +642,12 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request)
   //   int httpRequestCnt = 0;
   // ReRequsetHttp:
 
+  // 매 요청마다 TCP 연결을 새로 맺으면 3-way handshake가 매번 들어간다. setReuse(true)는
+  // end()가 (서버가 keep-alive를 허용하는 한) 소켓을 닫지 않고 유지하게 해서, 같은 호스트로
+  // 가는 다음 요청이 핸드셰이크 없이 바로 나가게 한다 - 태그 처리 중 Receive()->Situation()
+  // 처럼 연달아 나가는 요청에서 특히 효과를 기대. 서버가 매 요청 후 연결을 끊는 구성(예:
+  // PHP 내장 개발서버)이면 자동으로 새 연결로 폴백하므로 안전하다.
+  http.setReuse(true);
   http.begin(string_request); // 요청을 PHP로 전송
 
   int httpcode = http.GET();
