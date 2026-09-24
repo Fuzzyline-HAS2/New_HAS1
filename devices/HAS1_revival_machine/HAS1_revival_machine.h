@@ -91,7 +91,10 @@ unsigned long ghost_role_receive_ms = 0;
 #define REVIVAL_APPROVAL_TIMEOUT_MS GHOST_OPEN_TIMEOUT_MS
 #define REVIVAL_APPROVAL_POLL_MS 300
 #define REVIVAL_ADMIN_POLL_MS 1000
-#define RFID_REARM_ABSENT_MS 600
+// 600ms는 밀착 유지 중 PN532가 몇 초씩 간헐적으로 못 읽는 현상(현장 리포트)에는 너무 짧아서,
+// 태그가 실제로는 계속 붙어있는데도 "빠졌다"고 오판해 매번 새 사이클(Situation 재전송 포함)을
+// 돌렸다. 5초로 넉넉히 올려서 일시적 RF 미검출을 진짜 제거와 헷갈리지 않게 한다.
+#define RFID_REARM_ABSENT_MS 5000
 bool revival_approval_pending = false;
 bool revival_approval_poll_due = false;
 bool revival_approval_polled_this_loop = false;
