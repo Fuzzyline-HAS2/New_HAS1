@@ -106,10 +106,18 @@ static bool ToggleRfField(bool on)
   return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
 }
 
-// 현재 Gain으로 실패하면 CONTACT→NEAR→FAR 순서로 나머지 Gain을 하나씩 즉시 재시도한다.
-// 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
+// 1차 실패는 곧장 Gain을 바꾸기보다 "ACTIVE 고착"부터 의심한다 - 굳어서 REQA에 응답을
+// 안 하는 거라면 Gain을 아무리 바꿔봐야 소용없다(신호 세기 문제가 아니라 프로토콜 상태
+// 문제라서). 그래서 즉시 필드를 리셋하고 같은 Gain으로 바로 재시도해 같은 폴링 사이클
+// 안에서 복구를 노린다. 그래도 실패하면 진짜 거리/커플링 문제일 수 있으니 그때서야
+// CONTACT→NEAR→FAR로 나머지 Gain을 순서대로 재시도한다. 성공한 Gain은 currentGain에
+// 남아 다음 호출도 그 Gain부터 시도한다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
+  if (DetectAndRead(outData)) return true;
+
+  ToggleRfField(false);
+  ToggleRfField(true);
   if (DetectAndRead(outData)) return true;
 
   static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
@@ -121,8 +129,7 @@ static bool DetectWithGainSwitch(uint8_t outData[32])
     if (DetectAndRead(outData)) return true;
   }
 
-  // 3개 Gain 모두 실패 - 태그가 ACTIVE 상태로 굳어 REQA에 응답 안 하는 상황을 의심하고
-  // 강제로 리셋한다. 다음 폴링 사이클(RFID_DEBOUNCE_MS 뒤)에서 새 REQA가 먹힐 것으로 기대.
+  // 리셋 + 3개 Gain까지 모두 실패 - 다음 폴링 사이클을 위해 한 번 더 리셋해둔다.
   ToggleRfField(false);
   ToggleRfField(true);
   return false;
