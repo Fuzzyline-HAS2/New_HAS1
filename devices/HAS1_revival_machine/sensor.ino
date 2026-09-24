@@ -106,22 +106,11 @@ static bool ToggleRfField(bool on)
   return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
 }
 
-// RF 필드 리셋은 "이미 한 번 인식해서 붙잡고 있던 태그"(gameplay_tag_latched)가 갑자기
-// 안 읽힐 때만 쓴다 - ACTIVE 고착을 의심할 근거가 있는 경우다. 태그가 아예 없어서 그냥
-// 탐색 중인 상태(대부분의 폴링)까지 매번 리셋하면, 마침 그 순간 사람이 새로 태그를
-// 올려놓는 전원 인가 타이밍과 겹쳐 오히려 새 태그 인식을 방해한다(현장: 뗐다 다시
-// 대도 여러 번 연속으로 아예 안 읽힘 - tag_user_data조차 안 찍힘). 탐색 중에는 기존처럼
-// Gain 순환만 한다. 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
+// 현재 Gain으로 실패하면 CONTACT→NEAR→FAR 순서로 나머지 Gain을 하나씩 즉시 재시도한다.
+// 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
   if (DetectAndRead(outData)) return true;
-
-  if (gameplay_tag_latched)
-  {
-    ToggleRfField(false);
-    ToggleRfField(true);
-    if (DetectAndRead(outData)) return true;
-  }
 
   static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
   for (int i = 0; i < 3; i++)
@@ -132,12 +121,10 @@ static bool DetectWithGainSwitch(uint8_t outData[32])
     if (DetectAndRead(outData)) return true;
   }
 
-  // 붙잡고 있던 태그였다면 다음 폴링 사이클을 위해 한 번 더 리셋해둔다.
-  if (gameplay_tag_latched)
-  {
-    ToggleRfField(false);
-    ToggleRfField(true);
-  }
+  // 3개 Gain 모두 실패 - 태그가 ACTIVE 상태로 굳어 REQA에 응답 안 하는 상황을 의심하고
+  // 강제로 리셋한다. 다음 폴링 사이클(RFID_DEBOUNCE_MS 뒤)에서 새 REQA가 먹힐 것으로 기대.
+  ToggleRfField(false);
+  ToggleRfField(true);
   return false;
 }
 
