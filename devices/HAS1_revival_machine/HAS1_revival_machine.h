@@ -91,13 +91,7 @@ unsigned long ghost_role_receive_ms = 0;
 #define REVIVAL_APPROVAL_TIMEOUT_MS GHOST_OPEN_TIMEOUT_MS
 #define REVIVAL_APPROVAL_POLL_MS 300
 #define REVIVAL_ADMIN_POLL_MS 1000
-// 600ms는 밀착 유지 중 PN532가 간헐적으로 못 읽는 순간을 "빠졌다"고 오판해 매번 새
-// 사이클(Situation 재전송 포함)을 돌리는 문제가 있었다. 반대로 5000ms는 너무 길어서,
-// 진짜로 태그를 뗐다 5초 안에 다시 대면 "아직 안 뗐다"고 오판해 RfidLoop()이
-// CardChecking() 자체를 건너뛰어 재태그에 완전히 무반응이 되는 문제가 생겼다(현장
-// 리포트). 2초로 절충 - 밀착 중 짧은 미검출은 여전히 흡수하되, 의도적인 재태그는
-// 반응하게 한다.
-#define RFID_REARM_ABSENT_MS 2000
+#define RFID_REARM_ABSENT_MS 400
 bool revival_approval_pending = false;
 bool revival_approval_poll_due = false;
 bool revival_approval_polled_this_loop = false;
