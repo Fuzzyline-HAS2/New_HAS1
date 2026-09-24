@@ -47,7 +47,11 @@ ARDUINO_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+--
 EVENTS = [
     ("mark", re.compile(r"^### MARK ?(?P<text>.*)$")),
     ("tag_read", re.compile(r"^tag_user_data : (?P<user>.*)$")),
-    ("role_known", re.compile(r"^\[RFID\] (?P<user>\S+) is_open=(?P<is_open>-?\d+) role=(?P<role>.*)$")),
+    # role= 뒤에 "(Receive took=Xms)"가 붙는 포맷(v54+)과 안 붙는 옛 포맷(v53 이전) 둘 다 받는다.
+    # role을 non-greedy로 잡아야 접미사를 role 값에 먹지 않는다.
+    ("role_known", re.compile(
+        r"^\[RFID\] (?P<user>\S+) is_open=(?P<is_open>-?\d+) role=(?P<role>.+?)"
+        r"(?: \(Receive took=(?P<receive_ms>\d+)ms\))?$")),
     ("situation_intent", re.compile(r"^\[RFID\] Tag detected - sending situation to server: (?P<user>.*)$")),
     ("situation_done", re.compile(r"^\[RFID\] Situation send (?P<user>\S+) result=(?P<result>OK|FAIL) took=(?P<took>\d+)ms$")),
     ("relay_on", re.compile(
@@ -389,6 +393,11 @@ def analyse_cycle(cycle, gap_ms):
                 info["receive_calls"] += 1
             elif fields.get("row") == "device":
                 info["receivemine_calls"] += 1
+        elif kind == "role_known" and fields.get("receive_ms") is not None:
+            # v54+ 로그는 [RFID] 줄 자체에 Receive() 왕복시간을 남긴다. relay_on(유령 개방)이
+            # 없는 사이클(대부분의 player/revival 거절)도 이 값으로 role_receive_ms를 채울 수 있다.
+            # relay_on이 나중에 나오면 같은 값을 다시 써서 덮어쓰므로 충돌 없다.
+            info["role_receive_ms"] = int(fields["receive_ms"])
         elif kind in ("http_empty_ok", "http_bad_code", "http_failed"):
             # 한 번의 HTTP 호출은 payload 줄 "또는" URL 줄 중 하나만 남긴다
             # (HttpRequest: 본문이 있으면 본문, 비면 URL). 그래서 겹쳐 세지 않는다.
@@ -712,9 +721,11 @@ def selftest():
             "2026-09-19T08:00:15.600000  [GhostTiming] TIMEOUT waiting for open (15000ms)",
             "2026-09-19T08:00:15.601000  [Approval] wait ended: timeout",
         ]
+        # v54+ 포맷: role= 뒤에 "(Receive took=Xms)"가 붙는다. role 파싱이 접미사를
+        # 삼키지 않는지, relay_on 없이도 role_receive_ms가 채워지는지 같이 검증한다.
         nonghost_log = [
             "2026-09-19T08:01:00.000000  tag_user_data : G4P4",
-            "2026-09-19T08:01:00.320000  [RFID] G4P4 is_open=0 role=revival",
+            "2026-09-19T08:01:00.320000  [RFID] G4P4 is_open=0 role=revival (Receive took=320ms)",
             "2026-09-19T08:01:00.330000  [GhostTiming] skip - role=revival (not ghost, open not expected)",
             "2026-09-19T08:01:00.570000  [RFID] Situation send G4P4 result=OK took=240ms",
             "2026-09-19T08:01:00.860000  [Approval] wait ended: role not eligible",
@@ -727,6 +738,12 @@ def selftest():
                 sub_entries, _, _ = parse(handle2.name)
                 sub_cycles = find_cycles(sub_entries)
                 assert len(sub_cycles) == 1, sub_cycles
+                if log_lines is nonghost_log:
+                    role_entry = next(e for e in sub_cycles[0]["entries"] if e.kind == "role_known")
+                    assert role_entry.fields["role"] == "revival", role_entry.fields
+                    assert role_entry.fields["receive_ms"] == "320", role_entry.fields
+                    nonghost_info = analyse_cycle(sub_cycles[0], DEFAULT_GAP_MS)
+                    assert nonghost_info["role_receive_ms"] == 320, nonghost_info["role_receive_ms"]
                 assert expected in sub_cycles[0]["outcome"], sub_cycles[0]["outcome"]
             finally:
                 os.unlink(handle2.name)
