@@ -98,10 +98,6 @@ struct FakeTimer {
 } rfid_timer, nsec_tag_timer, wifi_timer;
 int white[3], red[3], yellow[3], blue[3], purple[3];
 int* displayed_color = nullptr;
-// CardChecking()이 참조하는 파일 스코프 static (sensor.ino) - 함수 본문만 추출되므로
-// 원본의 선언부는 안 딸려온다. 여기서 같은 이름으로 제공해야 컴파일된다.
-#define HELD_TAG_REBLINK_MS 1500
-unsigned long heldTagLastBlinkMs = 0;
 void NeoNo() {}
 void (*NeoFunc)() = NeoNo;
 void NeopixelSet(int* color) { displayed_color = color; delay(10); }

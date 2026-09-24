@@ -229,11 +229,6 @@ void AdminCardPollReady()
   CardChecking(data);
 }
 
-// 거부/사용불가로 끝난 태그를 계속 붙잡고 있을 때, 첫 점멸 뒤로 완전히 무반응이면
-// 사용자가 "고장났다"고 오해한다(현장 리포트) - 이 주기로 다시 점멸해 계속 알려준다.
-#define HELD_TAG_REBLINK_MS 1500
-static unsigned long heldTagLastBlinkMs = 0;
-
 /**
  * @brief RFID에 태그된 NFC의 데이터에 따른 코드 동작
  *
@@ -274,20 +269,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   {
     // 첫 요청의 사용자/계측값을 보존한다. 다른 태그도 승인 대기 중에는 끼어들지 않는다.
     if (revival_approval_pending) return;
-    if (gameplay_tag_latched && gameplay_tag_user == tagUser)
-    {
-      // 이미 결말(거부/사용불가 등)이 난 같은 태그를 계속 붙잡고 있는 경우 - device_state가
-      // "open"이면(승인돼 문이 열린 경우) 이미 파란색으로 보여주고 있으니 건드리지 않는다.
-      // 그 외에는 주기적으로 다시 점멸해 "지금 이 태그로는 안 된다"를 계속 알려준다.
-      if ((String)(const char *)my["device_state"] != "open" &&
-          millis() - heldTagLastBlinkMs >= HELD_TAG_REBLINK_MS)
-      {
-        heldTagLastBlinkMs = millis();
-        NeoBlinkPurple(1);
-        NeopixelSet((String)(const char *)my["device_state"] == "tagger" ? purple : yellow);
-      }
-      return;
-    }
+    if (gameplay_tag_latched && gameplay_tag_user == tagUser) return;
     gameplay_tag_latched = true;
     gameplay_tag_user = tagUser;
     gameplay_tag_missing = false;
@@ -300,7 +282,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   {
     Serial.println("[RFID] Tag while device_state=tagger - blink only, no action");
     NeoBlinkPurple(3);
-    heldTagLastBlinkMs = millis();  // 계속 붙잡고 있으면 이 시점부터 주기적 재점멸 카운트 시작
     return;
   }
 
@@ -358,7 +339,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
     Serial.println("[RFID] iotGlove is_open=true - blink only, no action: " + tagUser);
     NeoBlinkPurple(3);
     NeopixelSet(yellow);  // activate 상태 색으로 복원
-    heldTagLastBlinkMs = millis();  // 계속 붙잡고 있으면 이 시점부터 주기적 재점멸 카운트 시작
     return;
   }
 
@@ -406,7 +386,6 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
       // device_state는 여기까지 오면 "activate"이므로 NeoBlinkPurple이 빨간색으로 점멸한다.
       NeoBlinkPurple(3);
       NeopixelSet(yellow);  // activate 상태 색으로 복원
-      heldTagLastBlinkMs = millis();  // 계속 붙잡고 있으면 이 시점부터 주기적 재점멸 카운트 시작
     }
   }
   else
