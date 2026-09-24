@@ -110,22 +110,27 @@ static bool ToggleRfField(bool on)
 // 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
-  if (DetectAndRead(outData)) return true;
+  bool found = DetectAndRead(outData);
 
-  static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
-  for (int i = 0; i < 3; i++)
+  if (!found)
   {
-    if (kGainOrder[i] == currentGain) continue;  // 이미 위에서 시도한 Gain
-    currentGain = kGainOrder[i];
-    ApplyGain(currentGain);
-    if (DetectAndRead(outData)) return true;
+    static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
+    for (int i = 0; i < 3 && !found; i++)
+    {
+      if (kGainOrder[i] == currentGain) continue;  // 이미 위에서 시도한 Gain
+      currentGain = kGainOrder[i];
+      ApplyGain(currentGain);
+      found = DetectAndRead(outData);
+    }
   }
 
-  // 3개 Gain 모두 실패 - 태그가 ACTIVE 상태로 굳어 REQA에 응답 안 하는 상황을 의심하고
-  // 강제로 리셋한다. 다음 폴링 사이클(RFID_DEBOUNCE_MS 뒤)에서 새 REQA가 먹힐 것으로 기대.
+  // 성공/실패 관계없이 매번 리셋한다. 실패했을 때는 물론이고, 방금 막 성공했을 때도
+  // 리셋해두지 않으면 그 태그가 ACTIVE 상태로 굳어 다음 폴링 사이클이 3개 Gain을
+  // 전부 실패하고서야 리셋되는 헛도는 사이클이 매번 끼어든다. 미리 리셋해두면 다음
+  // 사이클이 곧바로 첫 시도(REQA)부터 성공할 수 있다.
   ToggleRfField(false);
   ToggleRfField(true);
-  return false;
+  return found;
 }
 
 /**
