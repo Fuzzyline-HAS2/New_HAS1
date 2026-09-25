@@ -42,7 +42,21 @@ inline ParseResult parseCommand(const char* text, Command& result) {
 }
 
 inline bool boardName(const char* board) {
-  return board && (!strcmp(board, "iotglove") || !strcmp(board, "iotglove_beetle"));
+  return board && (!strcmp(board, "iotglove") || !strcmp(board, "iotglove_beetle") ||
+                   !strcmp(board, "HAS1_tagmachine_main") ||
+                   !strcmp(board, "HAS1_tagmachine_sub"));
+}
+
+inline const char* partitionScheme(const char* board) {
+  if (!boardName(board)) return nullptr;
+  return !strncmp(board, "HAS1_tagmachine_", 16) ? "default" : "min_spiffs";
+}
+
+// TagMachine uses the archived protocol only for monotonic releases. IoTGlove
+// retains its separate explicit-version rollback policy.
+inline bool monotonicTarget(uint32_t currentVersion, uint32_t targetVersion) {
+  return currentVersion > 0 && targetVersion >= currentVersion &&
+         targetVersion <= INT32_MAX;
 }
 
 inline bool archiveBaseUrl(const char* board, uint32_t version, char* out, size_t size) {
@@ -59,7 +73,7 @@ inline bool archiveBaseUrl(const char* board, uint32_t version, char* out, size_
 // HMAC(ota.txt) authenticates board, version, partition and the image HMAC.
 // Never trust version.txt to select or acknowledge a pinned image.
 struct Metadata {
-  char board[16] = {};
+  char board[24] = {};
   uint32_t version = 0, partition = 0;
   uint8_t imageHmac[32] = {};
 };
@@ -85,9 +99,10 @@ inline bool parseMetadata(const char* bytes, size_t length, Metadata& result) {
     *p = '\0'; fields[count++] = p + 1;
   }
   Metadata next;
-  if (count != 6 || strcmp(fields[0], "IGOTA1") || !boardName(fields[1]) ||
+  const char* expectedScheme = count == 6 ? partitionScheme(fields[1]) : nullptr;
+  if (count != 6 || strcmp(fields[0], "IGOTA1") || !expectedScheme ||
       !parseVersion(fields[2], next.version) || !parseVersion(fields[3], next.partition) ||
-      strcmp(fields[4], "min_spiffs") || strlen(fields[5]) != 64) return false;
+      strcmp(fields[4], expectedScheme) || strlen(fields[5]) != 64) return false;
   strcpy(next.board, fields[1]);
   for (size_t i = 0; i < 32; ++i) {
     const int high = hexDigit(fields[5][2 * i]), low = hexDigit(fields[5][2 * i + 1]);

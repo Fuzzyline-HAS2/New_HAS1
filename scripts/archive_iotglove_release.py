@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Add non-overwriting, version-addressed glove archives after normal deployment.
+"""Add non-overwriting, version-addressed signed firmware archives.
 
 capture runs before compilation. publish runs only after the existing SecureOTA
 publisher has signed the image, committed/pushed the sketch and updated latest.
-No Git commit, push, tag replacement, asset deletion or asset replacement is done
-here. A partial draft may be resumed only when its existing bytes all match.
+No Git commit, push, tag replacement, or immutable archive replacement is done
+here. A partial archive draft may be resumed only when its existing bytes all
+match. TagMachine's two signed fixed-channel pointer assets are replaced only
+after the immutable archive is public and verified.
 """
 
 import argparse
@@ -22,7 +24,13 @@ import urllib.request
 from firmware_targets import ESP32_CORE_VERSION, TARGETS
 from write_firmware_secret import checked_secret
 
-DEVICES = ("iotglove", "iotglove_beetle")
+TARGET_POLICIES = {
+    "iotglove": {"partition_scheme": "min_spiffs", "max_image_bytes": 1966080},
+    "iotglove_beetle": {"partition_scheme": "min_spiffs", "max_image_bytes": 1966080},
+    "HAS1_tagmachine_main": {"partition_scheme": "default", "max_image_bytes": 0x140000},
+    "HAS1_tagmachine_sub": {"partition_scheme": "default", "max_image_bytes": 0x140000},
+}
+DEVICES = tuple(TARGET_POLICIES)
 SOURCE_SUFFIXES = {".ino", ".h", ".hpp", ".c", ".cpp", ".S", ".s", ".tpp", ".inc"}
 MAX_ASSET_BYTES = 8 * 1024 * 1024
 
@@ -58,6 +66,12 @@ def source_paths(root, device):
     if (sketch / "src").exists():
         paths.update(path for path in (sketch / "src").rglob("*") if path.is_file())
     paths.update(path for path in (root / "libraries/IoTGloveProtocol").rglob("*") if path.is_file())
+    if device in ("HAS1_tagmachine_main", "HAS1_tagmachine_sub"):
+        paths.update(path for path in (root / "libraries/TagMachineProtocol").rglob("*")
+                     if path.is_file())
+    if device == "HAS1_tagmachine_main":
+        paths.update(path for path in (root / "libraries/HAS1BleBeacon").rglob("*")
+                     if path.is_file())
     paths.update(root / name for name in (
         "scripts/firmware_targets.py", "scripts/archive_iotglove_release.py",
         "devices/iotglove/tools/has2-wifi-result-api.patch", ".github/workflows/deploy-firmware.yml",
@@ -67,7 +81,7 @@ def source_paths(root, device):
 
 def capture(root, device, dependency_file):
     if device not in DEVICES:
-        raise ValueError("Archive is only supported for the two IoT glove devices")
+        raise ValueError("Archive is not supported for this firmware target")
     tracked = set(git(root, "ls-files", "-z").decode().split("\0"))
     paths = source_paths(root, device)
     if any(path not in tracked for path in paths):
@@ -80,7 +94,8 @@ def capture(root, device, dependency_file):
         "schema": 1, "device": device,
         "firmware_version": macro(sketch, "FIRMWARE_VER"),
         "partition_version": macro(sketch, "PARTITION_VER"),
-        "partition_scheme": "min_spiffs", "fqbn": TARGETS[device][1],
+        "partition_scheme": TARGET_POLICIES[device]["partition_scheme"],
+        "fqbn": TARGETS[device][1],
         "esp32_core": ESP32_CORE_VERSION, "dependencies": dependencies,
         "source_sha256": {path: digest((root / path).read_bytes()) for path in paths},
     }
@@ -90,7 +105,8 @@ def verify_committed_source(root, record, repository, branch):
     device = record["device"]
     if device not in DEVICES or record.get("schema") != 1:
         raise ValueError("Unsupported build capture")
-    if record.get("fqbn") != TARGETS[device][1] or record.get("partition_scheme") != "min_spiffs":
+    if (record.get("fqbn") != TARGETS[device][1] or
+            record.get("partition_scheme") != TARGET_POLICIES[device]["partition_scheme"]):
         raise ValueError("Build target changed after capture")
     if set(source_paths(root, device)) != set(record["source_sha256"]):
         raise ValueError("Build source file set changed after capture")
@@ -116,15 +132,18 @@ def verify_committed_source(root, record, repository, branch):
 
 def signed_assets(record, image, signature, secret, source_commit, partition_image=None, partition_signature=None):
     device = record["device"]
-    if device not in DEVICES or record.get("partition_scheme") != "min_spiffs":
+    if (device not in DEVICES or
+            record.get("partition_scheme") != TARGET_POLICIES[device]["partition_scheme"]):
         raise ValueError("Unsupported archive target or partition scheme")
     version = positive_integer(record["firmware_version"])
     partition = positive_integer(record["partition_version"])
     key = checked_secret(secret).encode("utf-8")
     expected = hmac.new(key, image, hashlib.sha256).digest()
-    if not image or len(image) > 1966080 or not hmac.compare_digest(expected, signature):
+    if (not image or len(image) > TARGET_POLICIES[device]["max_image_bytes"] or
+            not hmac.compare_digest(expected, signature)):
         raise ValueError("Firmware image size/signature does not match the signed build")
-    metadata = f"IGOTA1|{device}|{version}|{partition}|min_spiffs|{expected.hex()}\n".encode("utf-8")
+    scheme = TARGET_POLICIES[device]["partition_scheme"]
+    metadata = f"IGOTA1|{device}|{version}|{partition}|{scheme}|{expected.hex()}\n".encode("utf-8")
     provenance = dict(record, source_commit=source_commit)
     assets = {
         "update.bin": image, "update.sig": signature, "version.txt": str(version).encode(),
@@ -263,6 +282,48 @@ def publish_archive(api, device, version, commit, assets):
     print(f"Archive {tag} published without replacing any prior asset")
 
 
+def publish_channel_manifest(api, device, assets):
+    """Replace only the mutable fixed channel's signed target pointer.
+
+    The immutable version archive is published and verified first. A partial
+    two-asset replacement fails closed because firmware accepts the pointer only
+    when ota.txt and ota.sig authenticate as a pair.
+    """
+    desired = {name: assets[name] for name in ("ota.txt", "ota.sig")}
+    release = api.release_for_tag(device)
+    if release is None or release.get("tag_name") != device or release.get("draft"):
+        raise ValueError("Fixed release channel is missing or not public")
+    matching = [asset for asset in release.get("assets", []) if asset.get("name") in desired]
+    if len({asset["name"] for asset in matching}) != len(matching):
+        raise ValueError("Fixed release channel has duplicate manifest assets")
+    if len(matching) == len(desired) and all(
+            asset.get("state") == "uploaded" and
+            asset.get("size") == len(desired[asset["name"]]) and
+            api.request(f"/releases/assets/{asset['id']}", binary=True) == desired[asset["name"]]
+            for asset in matching):
+        print(f"Signed channel manifest for {device} is already current")
+        return
+
+    for asset in matching:
+        api.request(f"/releases/assets/{asset['id']}", "DELETE")
+    for name in ("ota.txt", "ota.sig"):
+        api.request(
+            f"/releases/{release['id']}/assets?name={urllib.parse.quote(name)}",
+            "POST", desired[name], upload=True,
+        )
+
+    refreshed = api.release_for_tag(device)
+    uploaded = {asset["name"]: asset for asset in refreshed.get("assets", [])
+                if asset.get("name") in desired}
+    if set(uploaded) != set(desired):
+        raise ValueError("Fixed release channel manifest is incomplete")
+    for name, asset in uploaded.items():
+        if (asset.get("state") != "uploaded" or asset.get("size") != len(desired[name]) or
+                api.request(f"/releases/assets/{asset['id']}", binary=True) != desired[name]):
+            raise ValueError(f"Fixed release channel verification failed: {name}")
+    print(f"Signed channel manifest for {device} now points to the verified archive")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("capture", "publish"))
@@ -292,6 +353,8 @@ def main():
                            (sketch / "partitions.bin").read_bytes() if args.with_partitions else None,
                            (sketch / "partitions.sig").read_bytes() if args.with_partitions else None)
     publish_archive(api, args.device, record["firmware_version"], commit, assets)
+    if args.device in ("HAS1_tagmachine_main", "HAS1_tagmachine_sub"):
+        publish_channel_manifest(api, args.device, assets)
 
 
 if __name__ == "__main__":

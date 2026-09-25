@@ -3,24 +3,37 @@
 
 #include "library_and_pin.h"
 #include "recovery_policy.h"
+#include <TagMachineOtaProtocol.h>
 const int rfid_num = 3; // 설치된 pn532의 개수
 
-HardwareSerial fromSubSerial(1);
+extern HardwareSerial fromSubSerial;
 //****************************************SimpleTimer SETUP****************************************************************
-SimpleTimer GameTimer;
+extern SimpleTimer GameTimer;
 void TimerInit();
 void GameTimerFunc();
-int gameTimerId;
+extern int gameTimerId;
 
 //****************************************Pointer System****************************************************************
-void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수
+extern void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수
 
 //****************************************RFID SETUP****************************************************************
-Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
+extern Adafruit_PN532 nfc;
 bool RfidInit(void);
 void RfidLoopMain(void);
 void RequestRfidReinit(bool recoveryAckRequired);
-bool rfid_init_complete = false;
+extern bool rfid_init_complete;
+
+//****************************************Signed OTA SETUP****************************************************************
+extern const uint32_t tagmachineFirmwareVersion;
+extern const uint32_t tagmachinePartitionVersion;
+extern uint32_t tagmachineBootId;
+void OtaInit();
+void OtaPoll();
+void OtaReplayResult();
+void OtaRequest(uint32_t requestId, uint32_t targetVersion);
+void OtaHandleCommand(const tagmachine::ota_wire::Command &command);
+bool OtaBusy();
+bool OtaHealthy(uint32_t now);
 
 // PN532가 없을 때도 한 번의 폴링이 유한 시간 안에 끝나도록 한다.
 #define RFID_ACTIVATION_RETRIES 10
@@ -32,6 +45,7 @@ bool rfid_init_complete = false;
 #define BEETLE_WATCHDOG_TIMEOUT_MS 12000
 #define BEETLE_HELLO_INTERVAL_MS 1000
 #define BEETLE_HEARTBEAT_INTERVAL_MS 2000
+#define BEETLE_OTA_TIMEOUT_MS 180000
 #define RFID_POLL_INTERVAL_MS 50
 
 // 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (rfid.ino 구현).

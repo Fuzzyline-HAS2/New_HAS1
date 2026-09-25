@@ -10,8 +10,19 @@
  */
 
 #define FIRMWARE_VER 3
+#define PARTITION_VER 1
 
 #include "HAS1_tagmachine_sub.h"
+
+const uint32_t tagmachineFirmwareVersion = FIRMWARE_VER;
+const uint32_t tagmachinePartitionVersion = PARTITION_VER;
+uint32_t tagmachineBootId = 0;
+HardwareSerial fromSubSerial(1);
+SimpleTimer GameTimer;
+int gameTimerId = 0;
+void (*ptrCurrentMode)() = nullptr;
+Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
+bool rfid_init_complete = false;
 
 static RfidRecoveryPolicy rfidRecovery;
 static bool linkAcknowledged = false;
@@ -19,6 +30,7 @@ static unsigned long lastHelloMs = 0;
 static unsigned long lastHeartbeatMs = 0;
 static unsigned long nextRfidPollMs = 0;
 static char lastReportedRfidStatus = '\0';
+static bool deferredRfidReinit = false;
 
 #if ESP_IDF_VERSION_MAJOR >= 5
 static esp_task_wdt_user_handle_t loopWatchdog = nullptr;
@@ -115,8 +127,13 @@ static void HandleControlFrame(const char *frame, size_t length) {
             SendHeartbeat();
             break;
         case 'R':
-            Serial.println("TTGO requested PN532 reinitialization");
-            RequestRfidReinit(true);
+            if (OtaBusy()) {
+                deferredRfidReinit = true;
+                Serial.println("TTGO PN532 reinitialization deferred until OTA completes");
+            } else {
+                Serial.println("TTGO requested PN532 reinitialization");
+                RequestRfidReinit(true);
+            }
             break;
         default:
             break;
@@ -124,7 +141,7 @@ static void HandleControlFrame(const char *frame, size_t length) {
 }
 
 static void ServiceSerial(void) {
-    static char frame[8];
+    static char frame[tagmachine::ota_wire::kMaxLine + 1];
     static size_t length = 0;
     static bool droppingOversizedFrame = false;
 
@@ -132,13 +149,23 @@ static void ServiceSerial(void) {
         const char value = static_cast<char>(fromSubSerial.read());
         if (value == '\r') continue;
         if (value == '\n') {
-            if (!droppingOversizedFrame && length > 0) HandleControlFrame(frame, length);
+            if (!droppingOversizedFrame && length > 0) {
+                frame[length] = '\0';
+                tagmachine::ota_wire::Command command;
+                if (tagmachine::ota_wire::parseCommand(frame, length, command)) {
+                    OtaHandleCommand(command);
+                } else if (!(length >= 2 &&
+                             (frame[0] == 'Q' || frame[0] == 'U') &&
+                             frame[1] == ':')) {
+                    HandleControlFrame(frame, length);
+                }
+            }
             length = 0;
             droppingOversizedFrame = false;
             continue;
         }
         if (droppingOversizedFrame) continue;
-        if (length < sizeof(frame)) {
+        if (length < sizeof(frame) - 1) {
             frame[length++] = value;
         } else {
             // 손상되거나 예상보다 긴 프레임은 다음 newline까지 버린다.
@@ -163,10 +190,12 @@ static void ServiceLink(unsigned long now) {
 void setup() {
     Serial.begin(115200);
     fromSubSerial.begin(9600, SERIAL_8N1, HWSERIAL_RX, HWSERIAL_TX);
+    while (tagmachineBootId == 0) tagmachineBootId = esp_random();
     delay(100);
     Serial.println("INIT");
     TimerInit();
     WatchdogInit();
+    OtaInit();
 
     // TTGO 응답과 PN532 초기화를 서로 종속시키지 않는다. 두 서비스 모두 loop에서
     // 진행되므로 한쪽이 늦게 켜지거나 실패해도 UART 복구 명령은 계속 처리할 수 있다.
@@ -177,17 +206,22 @@ void setup() {
 
 void loop() {
     ServiceSerial();
+    OtaPoll();
     const unsigned long now = millis();
-    ServiceRfidInitialization(now);
+    if (!OtaBusy() && deferredRfidReinit) {
+        deferredRfidReinit = false;
+        RequestRfidReinit(true);
+    }
+    if (!OtaBusy()) ServiceRfidInitialization(now);
     // 초기화가 즉시 성공하면 첫 heartbeat부터 A를 보내고, 실패한 경우에만 E를 보낸다.
     ServiceLink(now);
 
-    if (rfid_init_complete &&
+    if (!OtaBusy() && rfid_init_complete &&
         RfidRecoveryPolicy::deadlineReached(now, nextRfidPollMs)) {
         nextRfidPollMs = now + RFID_POLL_INTERVAL_MS;
         RfidLoopMain();
     }
 
-    WatchdogFeed();
+    if (OtaHealthy(now)) WatchdogFeed();
     delay(2); // idle task와 UART driver가 실행될 기회를 보장한다.
 }

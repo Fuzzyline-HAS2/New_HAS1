@@ -9,6 +9,7 @@
 #include <WiFiClientSecure.h>
 #include <mbedtls/md.h>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
 
 namespace iotglove {
 namespace ota {
@@ -67,13 +68,22 @@ bool smallAsset(const char* url, uint8_t* buffer, size_t capacity, size_t& lengt
   return true;
 }
 
-bool metadata(const char* base, const char* secret, Metadata& result) {
+bool metadata(const char* base, const char* secret, Metadata& result,
+              bool cacheBust = false) {
   char url[176];
   uint8_t bytes[kMetadataCapacity], signature[32], calculated[32];
   size_t length = 0, signatureLength = 0;
-  snprintf(url, sizeof(url), "%sota.txt", base);
+  const unsigned long nonce = esp_random();
+  const unsigned long bootTime = millis();
+  if (cacheBust)
+    snprintf(url, sizeof(url), "%sota.txt?r=%08lx%08lx", base, nonce,
+             bootTime);
+  else snprintf(url, sizeof(url), "%sota.txt", base);
   if (!smallAsset(url, bytes, sizeof(bytes) - 1, length)) return false;
-  snprintf(url, sizeof(url), "%sota.sig", base);
+  if (cacheBust)
+    snprintf(url, sizeof(url), "%sota.sig?r=%08lx%08lx", base, nonce,
+             bootTime);
+  else snprintf(url, sizeof(url), "%sota.sig", base);
   if (!smallAsset(url, signature, sizeof(signature), signatureLength) || signatureLength != 32) return false;
   const auto* algorithm = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   if (!algorithm || mbedtls_md_hmac(algorithm, reinterpret_cast<const uint8_t*>(secret),
@@ -135,6 +145,28 @@ bool install(const char* base, const Metadata& release, const char* secret) {
   return ok;
 }
 }  // namespace
+
+bool fetchLatestTarget(const char* board, uint32_t currentPartition,
+                       const char* secret, uint32_t& targetVersion) {
+#if defined(IOTGLOVE_COMPILE_ONLY) && IOTGLOVE_COMPILE_ONLY
+  (void)board; (void)currentPartition; (void)secret;
+  targetVersion = 0;
+  return false;
+#else
+  targetVersion = 0;
+  if (!boardName(board) || !secret || !*secret ||
+      WiFi.status() != WL_CONNECTED) return false;
+  char base[152];
+  const int count = snprintf(base, sizeof(base),
+      "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/%s/", board);
+  if (count < 0 || static_cast<size_t>(count) >= sizeof(base)) return false;
+  Metadata release;
+  if (!metadata(base, secret, release, true) ||
+      !matchesMetadata(release, board, release.version, currentPartition)) return false;
+  targetVersion = release.version;
+  return true;
+#endif
+}
 
 CheckResult checkPinned(const char* board, uint32_t targetVersion, uint32_t currentVersion,
                         uint32_t currentPartition, const char* secret,

@@ -39,11 +39,22 @@ concurrency:
 env:
   ESP32_CORE_VERSION: "3.3.11"
   ESP32_BOARD_INDEX: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+  # This audited revision contains the non-interactive scripts/ci_deploy.py used below.
+  SECUREOTA_REVISION: "162db758e6806895ef10ca39b101f9f8753bdc20"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: 기본 브랜치 배포만 허용
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Firmware releases must run from the default branch ($DEFAULT_BRANCH), not $GITHUB_REF_NAME."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -72,6 +83,12 @@ jobs:
         env:
           HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
         run: python3 scripts/write_firmware_secret.py "$DEVICE_DIR"
+
+      - name: TagMachine 파티션 OTA 차단
+        if: inputs.update_partition && (inputs.device == 'HAS1_tagmachine_main' || inputs.device == 'HAS1_tagmachine_sub')
+        run: |
+          echo "TagMachine은 파티션 OTA를 지원하지 않습니다. 파티션 변경은 USB 설치로 진행하세요."
+          exit 1
 
       - name: arduino-cli 설치
         uses: arduino/setup-arduino-cli@v2
@@ -117,17 +134,33 @@ jobs:
           # 자기 브랜치(New_HAS1=first_store, 다른 저장소=third_store 등)를 갖고 있다.
           # CI는 항상 first_store의 최신 커밋을 새로 받아온다 (로컬 개발용 사본은
           # libraries/HAS2_Wifi에 별도로 있음 - libraries/README.md 참고).
-          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" ]]; then
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" || "$TARGET_DEVICE" == "HAS1_tagmachine_main" || "$TARGET_DEVICE" == "HAS1_tagmachine_sub" ]]; then
+            # TagMachine Beetle OTA also needs the checked TrySetup API: unlike
+            # legacy Setup(), connection failure must return to the OTA worker
+            # instead of rebooting the C3 in a loop.
             python3 devices/iotglove/tools/prepare_libraries.py --libraries-dir "$LIB_DIR"
+            SECUREOTA_ACTUAL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["SecureOTA"]["commit"])' "$LIB_DIR/iotglove-dependencies.json")
           else
-            git clone --depth 1 https://github.com/Fuzzyline-HAS2/SecureOTA "$LIB_DIR/SecureOTA"
+            git init --quiet "$LIB_DIR/SecureOTA"
+            git -C "$LIB_DIR/SecureOTA" remote add origin https://github.com/Fuzzyline-HAS2/SecureOTA
+            git -C "$LIB_DIR/SecureOTA" fetch --quiet --depth 1 --no-tags origin "$SECUREOTA_REVISION"
+            git -C "$LIB_DIR/SecureOTA" checkout --quiet --detach FETCH_HEAD
+            SECUREOTA_ACTUAL=$(git -C "$LIB_DIR/SecureOTA" rev-parse HEAD)
             git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
             cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
             git clone --depth 1 https://github.com/marcelloromani/Arduino-SimpleTimer "$RUNNER_TEMP/simpletimer-src"
             cp -r "$RUNNER_TEMP/simpletimer-src/SimpleTimer" "$LIB_DIR/SimpleTimer"
           fi
-          if [[ "$TARGET_DEVICE" != "iotglove" && "$TARGET_DEVICE" != "iotglove_beetle" ]]; then
-            git -C "$LIB_DIR/SecureOTA" log -1 --format='SecureOTA dependency: %H'
+          if [ "$SECUREOTA_ACTUAL" != "$SECUREOTA_REVISION" ]; then
+            echo "SecureOTA revision mismatch: expected $SECUREOTA_REVISION, got $SECUREOTA_ACTUAL"
+            exit 1
+          fi
+          if [ ! -f "$LIB_DIR/SecureOTA/scripts/ci_deploy.py" ]; then
+            echo "Pinned SecureOTA is missing scripts/ci_deploy.py"
+            exit 1
+          fi
+          echo "SecureOTA dependency: $SECUREOTA_ACTUAL"
+          if [[ "$TARGET_DEVICE" != "iotglove" && "$TARGET_DEVICE" != "iotglove_beetle" && "$TARGET_DEVICE" != "HAS1_tagmachine_main" && "$TARGET_DEVICE" != "HAS1_tagmachine_sub" ]]; then
             git -C "$RUNNER_TEMP/has-libraries" log -1 --format='HAS2_Wifi dependency: %H'
             git -C "$RUNNER_TEMP/simpletimer-src" log -1 --format='SimpleTimer dependency: %H'
           fi
@@ -142,8 +175,8 @@ jobs:
             python "$SECUREOTA_SCRIPTS/ci_deploy.py" bump "$GITHUB_WORKSPACE/$DEVICE_DIR" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: IoT 글러브 빌드 소스 기록
-        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle'
+      - name: 서명 manifest용 빌드 소스 기록
+        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle' || inputs.device == 'HAS1_tagmachine_main' || inputs.device == 'HAS1_tagmachine_sub'
         env:
           TARGET_DEVICE: ${{ inputs.device }}
         run: |
@@ -158,8 +191,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/build-out"
           EXTRA_LIBRARIES=()
-          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" ]]; then
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" || "$TARGET_DEVICE" == "HAS1_tagmachine_main" || "$TARGET_DEVICE" == "HAS1_tagmachine_sub" ]]; then
             EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/IoTGloveProtocol")
+          fi
+          if [[ "$TARGET_DEVICE" == "HAS1_tagmachine_main" || "$TARGET_DEVICE" == "HAS1_tagmachine_sub" ]]; then
+            EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/TagMachineProtocol")
           fi
           case "$TARGET_DEVICE" in
             HAS1_duct|HAS1_generator|HAS1_escape_main|HAS1_tagmachine_main)
@@ -167,6 +203,19 @@ jobs:
               ;;
           esac
           arduino-cli compile --fqbn "$FQBN" "${EXTRA_LIBRARIES[@]}" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
+
+      - name: TagMachine OTA 슬롯 여유 확인
+        if: inputs.device == 'HAS1_tagmachine_main' || inputs.device == 'HAS1_tagmachine_sub'
+        run: |
+          APP_BIN=$(find "$RUNNER_TEMP/build-out" -maxdepth 1 -name '*.ino.bin' -print -quit)
+          APP_SIZE=$(stat -c '%s' "$APP_BIN")
+          SLOT_SIZE=$((0x140000))
+          REQUIRED_MARGIN=$((32 * 1024))
+          echo "TagMachine app image: $APP_SIZE bytes / OTA slot: $SLOT_SIZE bytes"
+          if [ "$APP_SIZE" -gt "$((SLOT_SIZE - REQUIRED_MARGIN))" ]; then
+            echo "OTA slot safety margin is below ${REQUIRED_MARGIN} bytes"
+            exit 1
+          fi
 
       - name: 빌드 산출물 배치
         run: |
@@ -185,10 +234,10 @@ jobs:
             "${{ steps.bump.outputs.NEW_VER }}" \
             "${{ steps.bump.outputs.NEW_PARTITION_VER }}"
 
-      - name: IoT 글러브 버전별 보존 Release 추가
+      - name: 버전별 서명 manifest Release 추가
         # Existing fixed-tag publication above remains unchanged. An archive
         # failure fails this run but does not roll back the already updated tag.
-        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle'
+        if: inputs.device == 'iotglove' || inputs.device == 'iotglove_beetle' || inputs.device == 'HAS1_tagmachine_main' || inputs.device == 'HAS1_tagmachine_sub'
         env:
           TARGET_DEVICE: ${{ inputs.device }}
           WITH_PARTITIONS: ${{ inputs.update_partition }}
