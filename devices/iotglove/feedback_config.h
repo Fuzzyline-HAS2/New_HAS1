@@ -16,7 +16,7 @@ struct Settings {
 
   Pattern onSetting = Pattern::Short1;
   Pattern onReady = Pattern::Short1;
-  Pattern onExploration = Pattern::Short1;
+  Pattern onPhoto = Pattern::Short1;
   Pattern onPlayer = Pattern::Short1;
   Pattern onGhost = Pattern::Long1;
   Pattern onTaggerBlink = Pattern::Short2;
@@ -86,8 +86,8 @@ inline bool motorOn(const Schedule& pattern, uint32_t elapsed) {
 inline Pattern forState(const Feedback& state, const Settings& settings) {
   if (state.phase == Phase::Ended || state.deviceState == DeviceState::Ended)
     return settings.onEnded;
-  if (state.phase == Phase::Exploration || state.deviceState == DeviceState::Exploration)
-    return settings.onExploration;
+  if (state.phase == Phase::Photo || state.deviceState == DeviceState::Photo)
+    return settings.onPhoto;
   if (state.phase == Phase::Unknown) return Pattern::Off;
   if (state.deviceState == DeviceState::Setting) return settings.onSetting;
   if (state.deviceState == DeviceState::Ready) return settings.onReady;

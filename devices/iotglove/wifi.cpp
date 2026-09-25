@@ -233,7 +233,7 @@ void completeOtaCommand(const OtaRequest& request) {
   // Another version may have been requested while this update was running.
   // Only acknowledge the exact original server command; USB requests own none.
   if (request.sourceCommand[0] && refresh() &&
-      latest.phase != Phase::Active && latest.phase != Phase::Exploration &&
+      latest.phase != Phase::Active && latest.phase != Phase::Photo &&
       !strcmp(lastDeviceState, request.sourceCommand)) send("device_state", "setting");
 }
 
@@ -242,7 +242,7 @@ void performOta(const OtaRequest& request) {
   otaState.store(NetworkOtaStatus::Failed);
   return;
 #endif
-  if (!refresh() || latest.phase == Phase::Active || latest.phase == Phase::Exploration ||
+  if (!refresh() || latest.phase == Phase::Active || latest.phase == Phase::Photo ||
       !HMAC_SECRET[0] || !strncmp(HMAC_SECRET, "REPLACE_WITH_", 13) ||
       strstr(HMAC_SECRET, "PLACEHOLDER") || strstr(HMAC_SECRET, "COMPILE_ONLY")) {
     remoteConsoleLogf("[OTA] TTGO preflight failed (server/phase/key configuration)\n");

@@ -127,9 +127,9 @@ class FeedbackEngine {
 
   static bool quiescent(const Feedback& state) {
     return state.phase == Phase::Setting || state.phase == Phase::Ready ||
-        state.phase == Phase::Exploration || state.phase == Phase::Ended ||
+        state.phase == Phase::Photo || state.phase == Phase::Ended ||
         state.deviceState == DeviceState::Setting || state.deviceState == DeviceState::Ready ||
-        state.deviceState == DeviceState::Exploration || state.deviceState == DeviceState::Ended;
+        state.deviceState == DeviceState::Photo || state.deviceState == DeviceState::Ended;
   }
   void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; }
   void start(const feedback_config::Schedule& schedule, Source source, uint32_t now) {
