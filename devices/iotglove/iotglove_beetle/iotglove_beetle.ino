@@ -1,4 +1,4 @@
-#define FIRMWARE_VER 4
+#define FIRMWARE_VER 5
 #define PARTITION_VER 1
 #include "iotglove_beetle.h"
 #include <esp_system.h>
