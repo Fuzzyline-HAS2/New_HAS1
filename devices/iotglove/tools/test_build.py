@@ -36,6 +36,15 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("PartitionScheme=min_spiffs", fqbn)
         self.assertEqual(len({Path(path).name for path, _ in TARGETS.values()}), len(TARGETS))
 
+    def test_tagmachine_sub_uses_beetle_c3_release_target(self):
+        directory, fqbn = TARGETS["HAS1_tagmachine_sub"]
+        self.assertEqual(directory, "devices/HAS1_tagmachine_sub")
+        self.assertEqual(Path(directory).name, "HAS1_tagmachine_sub")
+        self.assertIn(":dfrobot_beetle_esp32c3:", fqbn)
+        self.assertIn("CDCOnBoot=cdc", fqbn)
+        self.assertIn("PartitionScheme=default", fqbn)
+        self.assertEqual(len({Path(path).name for path, _ in TARGETS.values()}), len(TARGETS))
+
     def test_validation_cannot_copy_real_secret_or_beetle_into_ttgo(self):
         with tempfile.TemporaryDirectory() as work:
             source = Path(work) / "source"

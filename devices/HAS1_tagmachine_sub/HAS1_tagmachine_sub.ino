@@ -9,6 +9,8 @@
  *
  */
 
+#define FIRMWARE_VER 2
+
 #include "HAS1_tagmachine_sub.h"
 
 static RfidRecoveryPolicy rfidRecovery;
