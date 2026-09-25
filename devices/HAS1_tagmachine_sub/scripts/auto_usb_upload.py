@@ -91,10 +91,16 @@ PINNED_RELEASES = {
         },
     }
 }
-# DFRobot's Beetle ESP32-C3 board exposes its CH343 USB-UART bridge with this
-# generic WCH identity. It is not globally unique to Beetle hardware, so auto
-# mode still requires the operator to connect exactly one known Beetle.
-SUPPORTED_BEETLE_USB_IDS = frozenset({("0x1a86", "0x55d4")})
+# Beetles can enumerate either through a WCH CH343 bridge or the ESP32-C3
+# native USB Serial/JTAG controller used by CDC-on-boot firmware. Neither ID is
+# globally unique to this board, so the partition/app0 preflight remains the
+# final fail-closed hardware/layout check before any write.
+SUPPORTED_BEETLE_USB_IDS = frozenset(
+    {
+        ("0x1a86", "0x55d4"),  # WCH CH343 USB-UART
+        ("0x303a", "0x1001"),  # Espressif ESP32-C3 native USB Serial/JTAG
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -321,7 +327,7 @@ def wait_for_new_port(
                 f"  - {port.address} ({port.vid}/{port.pid})" for port in unsupported
             )
             raise RuntimeError(
-                "새 USB 직렬 장치가 확인된 Beetle USB ID가 아니어서 "
+                "새 USB 직렬 장치가 지원되는 Beetle USB 연결 ID가 아니어서 "
                 "자동 업로드하지 않았습니다:\n" + details
             )
         candidates = fresh_candidates(ports, ignored, completed_ids)
@@ -857,7 +863,7 @@ def explicit_port(cli: str, address: str) -> UsbPort:
         if port.address == address:
             if (port.vid, port.pid) not in SUPPORTED_BEETLE_USB_IDS:
                 raise RuntimeError(
-                    f"지정한 포트가 확인된 Beetle USB ID가 아닙니다: {address} "
+                    f"지정한 포트가 지원되는 Beetle USB 연결 ID가 아닙니다: {address} "
                     f"({port.vid}/{port.pid})"
                 )
             return port
