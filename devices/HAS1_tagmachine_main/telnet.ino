@@ -105,6 +105,7 @@ void TelnetRun() {
     telnetClient.setNoDelay(true);
     DebugSerial.println("Telnet client connected");
     TelnetReportDiagnostics();
+    PrintBeetleLinkDiagnostics();
   }
 
   if (telnetClient && !telnetClient.connected()) {

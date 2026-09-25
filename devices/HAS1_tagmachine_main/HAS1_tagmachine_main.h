@@ -94,10 +94,59 @@ bool pendingDeviceStateApply = false;
 //Communication*********************************************************
 void CommnunicationBeetle();
 void CommnunicationMainBeetle();
+void BeginBeetleLinkManagement();
+void ServiceBeetleLinks();
+void DispatchBeetleTagsFromWifiTick();
+void PrintBeetleLinkDiagnostics();
 void SubSerialFlush();
 void MainSerialFlush();
 void SendBeetleTag(int idx, const char *field, const String &tagUser);
-enum { BEETLE_SUB = 0, BEETLE_MAIN };
+enum { BEETLE_SUB = 0, BEETLE_MAIN, BEETLE_COUNT };
+
+// Beetle link health is deliberately split into MCU/UART liveness and PN532
+// readiness. A live Beetle can still have a failed or wedged PN532.
+struct BeetleLinkState {
+  HardwareSerial *serial;
+  const char *name;
+
+  char rxLine[16];
+  uint8_t rxLength;
+  bool rxOverflow;
+  char pendingTag[5];
+  bool pendingTagValid;
+  bool pendingRelayPulse;
+
+  bool helloSeen;
+  bool heartbeatCapable;
+  bool transportReady;
+  bool rfidReady;
+  bool rfidError;
+  bool heartbeatStale;
+  bool recoveryPending;
+
+  unsigned long lastRxMs;
+  unsigned long lastHelloMs;
+  unsigned long lastHeartbeatMs;
+  unsigned long lastReadyMs;
+  unsigned long lastErrorMs;
+  unsigned long lastTagMs;
+  unsigned long lastPingMs;
+  unsigned long staleSinceMs;
+  unsigned long statusUnknownSinceMs;
+  unsigned long lastRecoveryMs;
+
+  uint32_t helloCount;
+  uint32_t heartbeatCount;
+  uint32_t readyCount;
+  uint32_t errorCount;
+  uint32_t tagCount;
+  uint32_t droppedInputCount;
+  uint32_t invalidFrameCount;
+  uint32_t pingCount;
+  uint32_t recoveryCount;
+};
+
+extern BeetleLinkState beetleLinks[BEETLE_COUNT];
 unsigned long beetleSendLastMs[2] = {0, 0}; // 채널별 서버 전송 스로틀용 (1초)
 HardwareSerial toSubSerial(1);
 HardwareSerial toMainSerial(2);

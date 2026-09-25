@@ -15,18 +15,27 @@
 
 void setup() {
     Serial.begin(115200);
+    // Establish the relay's safe (locked) output level before Beetle traffic
+    // can deliver a legacy M pulse command.
+    digitalWrite(RELAY_PIN, LOW);
+    pinMode(RELAY_PIN, OUTPUT);
     toSubSerial.begin(9600, SERIAL_8N1, SUB_BEETLE_RX_PIN, SUB_BEETLE_TX_PIN);
     toMainSerial.begin(9600, SERIAL_8N1, MAIN_BEETLE_RX_PIN, MAIN_BEETLE_TX_PIN);
+    // Start Beetle discovery before WiFi setup.  W keeps old firmware working;
+    // H lets new firmware report MCU and PN532 health after a TTGO-only reset.
+    BeginBeetleLinkManagement();
+    ServiceBeetleLinks();
     NeopixelInit();
     TimerInit();
     // Mp3_Setup();  // [DFPlayer 비활성화]
-    pinMode(RELAY_PIN, OUTPUT);
 //  has2wifi.Setup("city");
     // badland 모드: 라이브러리가 주변 badland_* 중 RSSI 센 AP로 자동 연결
     has2wifi.Setup("badland");
+    ServiceBeetleLinks();
     WiFi.setSleep(false);   // 모뎀 슬립 해제: HTTP 응답이 DTIM까지 대기하며 생기는 지연 편차 제거
     // 현재 펌웨어 버전을 서버 device.esp_version 컬럼에 보고 (부팅 시 1회)
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
+    ServiceBeetleLinks();
     TelnetInit();
     ota.setLogStream(Serial);
     ota.setOnSuccess([]() {
@@ -37,25 +46,7 @@ void setup() {
     });
     DataChanged();
     GameSetting();
-
-    // Main Beetle 핸드셰이크 테스트 (최대 10초)
-    Serial.println("=== Main Beetle Handshake Start ===");
-    unsigned long hsStart = millis();
-    bool hsSuccess = false;
-    while(millis() - hsStart < 10000) {
-        // Main Beetle에서 들어오는 'W' 확인 후 응답
-        if(toMainSerial.available() > 0) {
-            String cmd = toMainSerial.readStringUntil('\n');
-            Serial.println("Main Beetle RX: " + cmd);
-            if(cmd[0] == 'W') {
-                toMainSerial.println("W");
-                Serial.println("Main Beetle TX: W sent");
-            }
-            while(toMainSerial.available()) toMainSerial.read();
-        }
-        delay(100);
-    }
-    Serial.println("=== Main Beetle Handshake End ===");
+    ServiceBeetleLinks();
 
     // setup() 완료 시점에도 ptrCurrentMode가 설정되지 않았으면 WaitFunc로 안전하게 초기화
     if (ptrCurrentMode == nullptr) {
@@ -75,8 +66,12 @@ void setup() {
 }
 void loop() {
     // esp_task_wdt_reset();  // [WDT 비활성화]
+    // Always service both UARTs before mode handlers or WiFi timers can block.
+    ServiceBeetleLinks();
     if (ptrCurrentMode != nullptr) ptrCurrentMode();
+    ServiceBeetleLinks();
     TimerRun();
+    ServiceBeetleLinks();
     TelnetRun();
     // 태그/게이지 진행 중에는 BLE 설정 재시도를 미루고 기존 광고는 유지한다.
     Has1BleBeacon::poll(!loginDone);

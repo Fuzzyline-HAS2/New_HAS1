@@ -6,6 +6,8 @@
 #include <Adafruit_PN532.h>
 #include <HardwareSerial.h>
 #include <SimpleTimer.h>
+#include <esp_idf_version.h>
+#include <esp_task_wdt.h>
 
 #define PN532_SCK   4
 #define PN532_MISO  6
