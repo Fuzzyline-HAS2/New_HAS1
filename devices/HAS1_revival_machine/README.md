@@ -2,6 +2,8 @@
 
 ## Telnet card writer
 
+[한국어 사용법: Telnet 생명칩 업로더](CARD_UPLOAD_KO.md)
+
 Set server `device_state` to `card-upload` to enable one-shot NTAG URI/Text
 writing. See [commands, game compatibility, and maintenance exit](CARD_UPLOAD.md).
 The writer supports automatic/manual URI prefixes, templates, preview, saved
