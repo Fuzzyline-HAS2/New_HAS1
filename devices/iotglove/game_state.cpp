@@ -74,6 +74,11 @@ bool GameModel::activeGhost() const {
   return haveServer_ && gameMutationsAllowed(server_) && server_.role == Role::Ghost;
 }
 
+bool GameModel::academyPlayer() const {
+  return synchronized() && server_.valid && server_.phase == Phase::Academy &&
+      server_.deviceState == DeviceState::Player;
+}
+
 void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   if (profile_ == Profile::Training) return;
   if (!snapshot.valid) {
@@ -90,14 +95,31 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   const bool roleChanged = haveServer_ && snapshot.role != server_.role;
   const bool controlChanged = haveServer_ &&
       gameMutationsAllowed(snapshot) != gameMutationsAllowed(server_);
+  const bool academyModeChanged = haveServer_ && snapshot.phase == Phase::Academy &&
+      snapshot.deviceState != server_.deviceState;
   const bool recovering = needsSync_;
-  if (newSession || phaseChanged || controlChanged || roleChanged || recovering) {
+  if (newSession || phaseChanged || controlChanged || roleChanged || academyModeChanged || recovering) {
     resetQueue();
     haptic_ = Haptic::None;
     needsSync_ = overflow_ = false;
   }
   const uint32_t nextInterval = snapshot.stepSeconds <= 86400U ? snapshot.stepSeconds * 1000U : 0;
   const uint8_t receivedCount = snapshot.revivalCount > 4 ? 4 : snapshot.revivalCount;
+  if (snapshot.phase == Phase::Academy) {
+    const bool startPlayer = snapshot.deviceState == DeviceState::Player &&
+        (newSession || phaseChanged || academyModeChanged || recovering);
+    server_ = snapshot;
+    haveServer_ = true;
+    if (startPlayer) {
+      trainingGhost_ = !chipPresent_;
+      trainingStart_ = now;
+      count_ = trainingGhost_ ? 1 : 4;
+    } else if (snapshot.deviceState == DeviceState::Tagger) {
+      trainingGhost_ = false;
+      count_ = 0;
+    }
+    return;
+  }
   // Repeated snapshots do not reset a partly charged step. Remote changes and
   // interval changes deliberately restart only the current step, not the count.
   const bool countAcknowledged = countPending_ && receivedCount == count_;
@@ -118,7 +140,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
 void GameModel::chipChanged(bool present, uint32_t now) {
   if (chipPresent_ == present) return;
   chipPresent_ = present;
-  if (profile_ == Profile::Training) {
+  if (profile_ == Profile::Training || academyPlayer()) {
     if (!present) {
       trainingGhost_ = true;
       trainingStart_ = now;
@@ -132,7 +154,7 @@ void GameModel::chipChanged(bool present, uint32_t now) {
 }
 
 void GameModel::buttonPressed(uint32_t now) {
-  if (profile_ == Profile::Training) {
+  if (profile_ == Profile::Training || academyPlayer()) {
     if (!trainingGhost_) return;
     trainingStart_ = now;
     haptic_ = Haptic::Found;
@@ -148,7 +170,7 @@ void GameModel::buttonPressed(uint32_t now) {
 }
 
 void GameModel::tick(uint32_t now) {
-  if (profile_ == Profile::Training) {
+  if (profile_ == Profile::Training || academyPlayer()) {
     if (trainingGhost_ && chipPresent_ && uint32_t(now - trainingStart_) >= 9000U)
       trainingGhost_ = false;
     count_ = trainingGhost_ ? uint8_t(1 + (uint32_t(now - trainingStart_) >= 9000U ? 3 :
@@ -190,6 +212,17 @@ Feedback GameModel::feedback() {
   out.phase = server_.phase;
   out.stateEpoch = server_.connectionEpoch;
   if (!haveServer_) return out;
+  if (server_.phase == Phase::Academy) {
+    if (server_.deviceState == DeviceState::Player) {
+      out.display = trainingGhost_ ? Display::Ghost : Display::Player;
+      out.lit = trainingGhost_ ? count_ : 4;
+    } else if (server_.deviceState == DeviceState::Tagger) {
+      out.display = Display::Tagger;
+      out.lit = 4;
+      out.haptic = Haptic::None;
+    }
+    return out;
+  }
   // Terminal state remains an explicit override. A synchronization loss keeps
   // rendering the last authoritative state instead of inventing a red warning.
   if (server_.phase == Phase::Ended || server_.deviceState == DeviceState::Ended) { out.display = Display::Ended; return out; }

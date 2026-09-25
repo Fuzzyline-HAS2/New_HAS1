@@ -41,7 +41,7 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 ## 본게임과 훈련
 
-기본 빌드는 Origin, `IOTGLOVE_TRAINING=1`은 서버에 쓰지 않는 독립 훈련이다. 훈련소는 칩 제거 시 파랑 1칸, 3/6/9초에 2/3/4칸, 조기 재장착은 9초 대기, 발각은 1칸부터 재시작한다. 샘플과 달리 **칩 없는 부팅은 유령**으로 시작한다.
+기본 빌드는 Origin이며 서버의 `game_state=academy`로 재컴파일 없이 훈련소를 선택한다. 이때 `device_state=player`는 칩 제거 시 파랑 1칸, 3/6/9초에 2/3/4칸, 조기 재장착은 9초 대기, 발각은 1칸부터 재시작한다. `device_state=tagger`는 입력·진동 없이 보라 4칸을 계속 켠다. 기존 `IOTGLOVE_TRAINING=1` 독립 훈련 빌드도 검증/서버 없는 시연 용도로 유지한다. 두 훈련 모드 모두 칩 없는 시작은 유령이다.
 
 본게임은 등록 MAC으로 서버에서 G1/G2 참가자를 받는다. G9의 서버 훈련 권한과 이 독립 훈련 모드를 섞지 않도록 G9 응답은 본게임에서 수락하지 않는다. 펌웨어는 물리 칩 상태만 보고하고 포획·재장착 취소·소생에 따른 역할 전환은 서버가 처리한다. 서버는 활성 게임과 실제 술래의 `device_state=activate` 등을 확인한 뒤 포획을 허용한다. 활성 생존자 표시는 서버 역할을 기준으로 한다. `role=player`인 동안 칩 제거·재장착에도 초록 4칸을 유지하고, 서버가 `role=ghost`를 확인한 뒤 유령 표시로 바뀐다. 설정·준비·`photo`·종료의 표시 우선순위를 적용하며, 서버 동기화를 잃으면 마지막으로 확인한 색을 유지한다.
 
@@ -69,6 +69,8 @@ TTGO와 Beetle OTA는 `badland_shoot`에 직접 연결한다. `first_store`의 �
 | `role=tagger`, `device_state=activate` | 보라 상시 점등 | 활성 술래 표시 |
 | `device_state=photo`, `role=tagger` | 보라 상시 점등 | 4칸 |
 | `device_state=photo`, 그 외 역할 | 초록 | 유령·neutral도 생존자로 표시, 4칸 |
+| `game_state=academy`, `device_state=player` | 초록/파랑 | 독립 훈련 규칙, 1~4칸 |
+| `game_state=academy`, `device_state=tagger` | 보라 | 진동 없이 4칸 상시 점등 |
 
 준비 상태에서도 GPIO26을 계속 읽고 30ms 안정화 후 점등 수를 갱신한다. 준비 중에도 칩 상태 0/1을 보고하지만 포획·역할 변경 명령을 보내지 않는다. `photo`에서는 역할색을 표시하되 게임 쓰기·BLE 스캔·OTA 제한은 유지한다. `device_state=exploration`은 지원하지 않으며 해당 응답을 무효 처리한다. 서버 무효·단절·15초 만료는 안전 제한과 진동 취소만 적용하고 LED는 마지막 색을 유지한다. `game_state=activate`에서 장치 준비 표시를 하더라도 게임 중 OTA 및 서버 watchdog 리셋 제한은 유지한다. 수동 `b` 리셋 명령은 기존 동작을 유지한다.
 

@@ -138,6 +138,7 @@ const char* phaseName(Phase phase) {
     case Phase::Setting: return "setting";
     case Phase::Ready: return "ready";
     case Phase::Photo: return "photo";
+    case Phase::Academy: return "academy";
     case Phase::Active: return "active";
     case Phase::Ended: return "ended";
     default: return "unknown";
@@ -450,13 +451,17 @@ void sampleBattery(uint32_t now) {
 
 void render(uint32_t now) {
   const Feedback state = game.feedback();
-  const bool fresh = !kTraining && game.synchronized() && serverFresh(now) && peer.locationFresh(now);
+  const bool academy = game.academy();
+  const bool fresh = !kTraining && !academy && game.synchronized() && serverFresh(now) &&
+      peer.locationFresh(now);
+  // FeedbackEngine consumes Academy server vibe values without playing them,
+  // preventing an unchanged command from replaying after Academy ends.
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   // Already raw 0..255 — the network task converted it when the snapshot was parsed.
-  const uint8_t brightness = kTraining ? 255 : game.server().brightness;
+  const uint8_t brightness = (kTraining || academy) ? 255 : game.server().brightness;
   if (!haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
       out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness) {
     pixels.setBrightness(brightness);

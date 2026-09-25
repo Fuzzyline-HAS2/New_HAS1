@@ -73,6 +73,181 @@ static void trainingResetAndBoot() {
   g.tick(19000); assert(g.count() == 2);
 }
 
+static ServerSnapshot academy(DeviceState device) {
+  auto s = snapshot(Role::Neutral);
+  s.phase = Phase::Academy;
+  s.deviceState = device;
+  return s;
+}
+
+static void runtimeAcademyPlayerUsesTrainingRules() {
+  GameModel g(Profile::Origin);
+  FeedbackEngine engine;
+  g.begin(true, 0);
+  g.applyServer(academy(DeviceState::Player), 100);
+  g.tick(100);
+  auto f = g.feedback();
+  assert(f.phase == Phase::Academy && f.deviceState == DeviceState::Player);
+  assert(f.display == Display::Player && f.lit == 4);
+  engine.update(f, 0, false, 100);  // Establish the server-state baseline.
+
+  g.chipChanged(false, 200);
+  f = g.feedback();
+  assert(f.display == Display::Ghost && f.lit == 1 && f.haptic == Haptic::Removed);
+  auto out = engine.update(f, 0, false, 200);
+  assert(out.blue == 64 && out.lit == 1 && out.motor);
+  g.tick(3199); assert(g.count() == 1);
+  g.tick(3200); assert(g.count() == 2);
+  g.buttonPressed(4000);
+  g.tick(4000);
+  f = g.feedback();
+  assert(f.haptic == Haptic::Found && f.lit == 1);
+  g.chipChanged(true, 5000);
+  g.tick(12999); assert(g.feedback().display == Display::Ghost);
+  g.tick(13000); assert(g.feedback().display == Display::Player);
+  noEvent(g);  // Academy never writes revival_count to the server.
+}
+
+static void runtimeAcademyTaggerIsFixedAndSilent() {
+  GameModel g(Profile::Origin);
+  FeedbackEngine engine;
+  g.begin(true, 0);
+  g.applyServer(academy(DeviceState::Player), 10);
+  g.chipChanged(false, 20);  // Queue an explicit training haptic before mode change.
+  g.applyServer(academy(DeviceState::Tagger), 30);
+  auto f = g.feedback();
+  assert(f.phase == Phase::Academy && f.deviceState == DeviceState::Tagger);
+  assert(f.display == Display::Tagger && f.lit == 4 && f.haptic == Haptic::None);
+  auto out = engine.update(f, feedback_config::kVibeOn, true, 30);
+  assert(out.red == 48 && out.green == 0 && out.blue == 64 && out.lit == 4);
+  assert(!out.motor);
+
+  g.chipChanged(true, 40);
+  g.chipChanged(false, 50);
+  g.buttonPressed(60);
+  g.tick(10000);
+  f = g.feedback();
+  out = engine.update(f, feedback_config::kVibeCommandLast, true, 10000);
+  assert(f.display == Display::Tagger && f.lit == 4 && f.haptic == Haptic::None);
+  assert(!out.motor);
+  noEvent(g);
+}
+
+static void runtimeAcademyTransitionsResetLocalTrainingState() {
+  GameModel g(Profile::Origin);
+  FeedbackEngine engine;
+  g.begin(true, 0);
+  auto livePlayer = snapshot(Role::Player);
+  livePlayer.deviceState = DeviceState::Activate;
+  g.applyServer(livePlayer, 1);
+  engine.update(g.feedback(), 0, false, 1);
+  auto originOut = engine.update(g.feedback(), feedback_config::kVibeCommandFirst, false, 2);
+  assert(originOut.motor);
+
+  g.applyServer(academy(DeviceState::Player), 10);
+  auto academyOut = engine.update(g.feedback(), 0, false, 10);
+  assert(!academyOut.motor);  // An Origin operator pattern cannot leak into Academy.
+  g.chipChanged(false, 20);
+  auto removed = g.feedback();
+  assert(removed.haptic == Haptic::Removed);
+  academyOut = engine.update(removed, 0, false, 20);
+  assert(academyOut.motor);  // Local Academy input haptics still run.
+  academyOut = engine.update(g.feedback(), 0, false, 21);
+  assert(academyOut.motor);  // The explicit pattern is not cancelled by the next poll.
+  g.tick(9020);
+  assert(g.count() == 4 && g.feedback().display == Display::Ghost);
+
+  // Changing Academy device type clears the player's timer and any event.
+  g.applyServer(academy(DeviceState::Tagger), 9030);
+  assert(g.count() == 0 && g.feedback().haptic == Haptic::None);
+  g.tick(20000);
+  assert(g.feedback().display == Display::Tagger && g.count() == 0);
+
+  // Re-entering player starts from the current physical chip, not stale time.
+  g.applyServer(academy(DeviceState::Player), 20010);
+  assert(g.count() == 1 && g.feedback().display == Display::Ghost);
+  g.tick(23009); assert(g.count() == 1);
+  g.tick(23010); assert(g.count() == 2);
+
+  // Leaving Academy clears local haptics/timers and restores authoritative data.
+  auto live = snapshot(Role::Ghost);
+  live.deviceState = DeviceState::Activate;
+  live.revivalCount = 3;
+  g.buttonPressed(23020);
+  g.applyServer(live, 23030);
+  auto f = g.feedback();
+  assert(f.phase == Phase::Active && f.display == Display::Ghost && f.lit == 3);
+  assert(f.haptic == Haptic::None && g.count() == 3);
+}
+
+static void runtimeAcademyConsumesVibeAndCancelsExitHaptic() {
+  {
+    GameModel g(Profile::Origin);
+    FeedbackEngine engine;
+    g.begin(true, 0);
+    auto academyPlayer = academy(DeviceState::Player);
+    academyPlayer.vibe = feedback_config::kVibeCommandFirst;
+    g.applyServer(academyPlayer, 10);
+    auto out = engine.update(g.feedback(), academyPlayer.vibe, false, 10);
+    assert(!out.motor);  // Academy consumes, but never executes, operator commands.
+
+    g.chipChanged(false, 20);
+    out = engine.update(g.feedback(), academyPlayer.vibe, false, 20);
+    assert(out.motor);  // The local Removed event is still allowed.
+
+    auto live = snapshot(Role::Player);
+    live.deviceState = DeviceState::Activate;
+    live.vibe = academyPlayer.vibe;
+    g.applyServer(live, 21);
+    out = engine.update(g.feedback(), live.vibe, false, 21);
+    assert(!out.motor);  // Event pattern and unchanged command both stop at exit.
+    out = engine.update(g.feedback(), live.vibe, false, 22);
+    assert(!out.motor);
+
+    out = engine.update(g.feedback(), 0, false, 30);
+    assert(!out.motor);
+    out = engine.update(g.feedback(), feedback_config::kVibeCommandFirst, false, 31);
+    assert(out.motor);  // A real post-Academy edge remains usable.
+  }
+
+  {
+    GameModel g(Profile::Origin);
+    FeedbackEngine engine;
+    g.begin(true, 0);
+    auto academyPlayer = academy(DeviceState::Player);
+    academyPlayer.vibe = feedback_config::kVibeOn;
+    g.applyServer(academyPlayer, 10);
+    assert(!engine.update(g.feedback(), academyPlayer.vibe, false, 10).motor);
+
+    auto live = snapshot(Role::Player);
+    live.deviceState = DeviceState::Activate;
+    live.vibe = feedback_config::kVibeOn;
+    g.applyServer(live, 20);
+    // Vibe 11 is a live ON level, so it takes effect immediately in Origin.
+    assert(engine.update(g.feedback(), live.vibe, false, 20).motor);
+    assert(engine.update(g.feedback(), live.vibe, false, 21).motor);
+    engine.update(g.feedback(), 0, false, 30);
+    assert(engine.update(g.feedback(), feedback_config::kVibeOn, false, 31).motor);
+  }
+
+  for (uint8_t proximity : {uint8_t(1), uint8_t(3)}) {
+    GameModel g(Profile::Origin);
+    FeedbackEngine engine;
+    g.begin(true, 0);
+    auto academyPlayer = academy(DeviceState::Player);
+    academyPlayer.vibe = proximity;
+    g.applyServer(academyPlayer, 10);
+    assert(!engine.update(g.feedback(), proximity, true, 10).motor);
+
+    auto live = snapshot(Role::Player);
+    live.deviceState = DeviceState::Activate;
+    live.vibe = proximity;
+    g.applyServer(live, 20);
+    // Proximity is a live level, not an operator command to suppress after Academy.
+    assert(engine.update(g.feedback(), proximity, true, 20).motor);
+  }
+}
+
 static void chipChangesNeverRequestRolesOrLife() {
   for (Role role : {Role::Neutral, Role::Player, Role::Ghost, Role::Tagger}) {
     for (DeviceState device : {DeviceState::Other, DeviceState::Setting, DeviceState::Ready,
@@ -400,6 +575,10 @@ static void taggerBlinkContinuesWhileInvalid() {
 int main() {
   trainingBoundaries();
   trainingResetAndBoot();
+  runtimeAcademyPlayerUsesTrainingRules();
+  runtimeAcademyTaggerIsFixedAndSilent();
+  runtimeAcademyTransitionsResetLocalTrainingState();
+  runtimeAcademyConsumesVibeAndCancelsExitHaptic();
   chipChangesNeverRequestRolesOrLife();
   playerColorWaitsForAuthoritativeRole();
   countAndServerRevival();

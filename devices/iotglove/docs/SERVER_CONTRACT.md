@@ -129,6 +129,7 @@ New_HAS1 `b43a316`의 로컬 first_store 사본 기준이다. CI가 가져오는
 - `role=tagger` + `device_state=blink`: 술래 결정 전 보라 점멸. `activate`: 보라 상시 점등. 포획 허용은 서버에서 실제 술래의 activate 조건을 검사한다.
 - `device_state=setting/ready`: 기존 하양/빨강 색상에서 실제 칩 장착이면 4칸, 미장착이면 3칸. 준비 중에도 칩 상태 0/1을 보고하되 포획·역할 변경은 수행하지 않는다.
 - `device_state=photo`는 생존자·유령·neutral을 초록 4칸, 술래를 보라 4칸으로 표시한다. `exploration` 값은 지원하지 않고 무효 응답으로 처리한다. Photo 중 게임 쓰기·BLE 스캔·OTA 제한은 유지한다.
+- `game_state=academy`는 `device_state=player|tagger`만 허용한다. `player`는 펌웨어의 로컬 3/6/9초 훈련 규칙을 실행하고 `revival_count`를 쓰지 않는다. `tagger`는 센서·버튼·서버 vibe에 반응하지 않고 보라 4칸을 상시 점등하며 모터를 항상 끈다. 다른 조합은 무효 응답으로 처리한다.
 - 서버 응답 무효, Wi-Fi 단절, 15초 만료 때는 적색으로 바꾸지 않고 마지막으로 확인한 색을 유지한다. 게임 쓰기 차단과 진동 취소는 그대로 적용한다.
 - 장치가 setting/ready 표시를 하더라도 원래 game_state가 activate이면 OTA 및 서버 watchdog 리셋의 게임 중 제한을 해제하지 않는다. 수동 `b` 리셋 명령은 기존 동작을 유지한다.
 - 상태별 진동 패턴은 펌웨어에 설정한다. 새로운 서버 필드나 대시보드 동작을 요구하지 않는다.

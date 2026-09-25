@@ -20,6 +20,8 @@ inline const char* deviceStateName(DeviceState state) {
     case DeviceState::Blink: return "blink";
     case DeviceState::Activate: return "activate";
     case DeviceState::Photo: return "photo";
+    case DeviceState::Player: return "player";
+    case DeviceState::Tagger: return "tagger";
     case DeviceState::Ended: return "ended";
     default: return "other";
   }
@@ -32,6 +34,8 @@ inline DeviceState decodeDeviceState(const char* state) {
   if (!strcmp(state, "blink")) return DeviceState::Blink;
   if (!strcmp(state, "activate")) return DeviceState::Activate;
   if (!strcmp(state, "photo")) return DeviceState::Photo;
+  if (!strcmp(state, "player")) return DeviceState::Player;
+  if (!strcmp(state, "tagger")) return DeviceState::Tagger;
   if (!strcmp(state, "win") || !strcmp(state, "lose") || !strcmp(state, "stop")) return DeviceState::Ended;
   return DeviceState::Other;
 }
@@ -45,10 +49,14 @@ inline bool decodeServerStates(const char* game, const char* device, ServerSnaps
   if (!strcmp(device, "exploration")) return false;
   if (!strcmp(game, "setting")) out.phase = Phase::Setting;
   else if (!strcmp(game, "ready")) out.phase = Phase::Ready;
+  else if (!strcmp(game, "academy")) out.phase = Phase::Academy;
   else if (!strcmp(game, "activate")) out.phase = Phase::Active;
   else if (!strcmp(game, "stop") || !strcmp(game, "end")) out.phase = Phase::Ended;
   else return false;
   out.deviceState = decodeDeviceState(device);
+  const bool academyDevice = out.deviceState == DeviceState::Player ||
+      out.deviceState == DeviceState::Tagger;
+  if ((out.phase == Phase::Academy) != academyDevice) return false;
   if (out.deviceState == DeviceState::Photo) out.phase = Phase::Photo;
   if (out.deviceState == DeviceState::Ended) out.phase = Phase::Ended;
   return true;

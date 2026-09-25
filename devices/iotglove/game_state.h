@@ -11,9 +11,9 @@ namespace iotglove {
 constexpr uint8_t kDefaultBrightness = 50;
 
 enum class Profile : uint8_t { Origin, Training };
-enum class Phase : uint8_t { Unknown, Setting, Ready, Photo, Active, Ended };
+enum class Phase : uint8_t { Unknown, Setting, Ready, Photo, Academy, Active, Ended };
 enum class Role : uint8_t { Neutral, Player, Tagger, Ghost };
-enum class DeviceState : uint8_t { Other, Setting, Ready, Blink, Activate, Photo, Ended };
+enum class DeviceState : uint8_t { Other, Setting, Ready, Blink, Activate, Photo, Player, Tagger, Ended };
 enum class Display : uint8_t { Setting, Ready, Player, Ghost, Tagger, TaggerActive, TaggerBlink, Ended };
 enum class Haptic : uint8_t { None, Removed, Found };
 
@@ -100,6 +100,10 @@ class GameModel {
   bool canUseLifeDevice() const;
   uint8_t count() const { return count_; }
   const ServerSnapshot& server() const { return server_; }
+  bool academy() const { return haveServer_ && server_.phase == Phase::Academy; }
+  bool academyTagger() const {
+    return academy() && server_.deviceState == DeviceState::Tagger;
+  }
  private:
   static constexpr size_t kCapacity = 12;
   Profile profile_;
@@ -123,6 +127,7 @@ class GameModel {
   bool emit(GameEvent::Kind kind, uint8_t value = 0);
   void resetQueue();
   bool activeGhost() const;
+  bool academyPlayer() const;
 };
 
 }  // namespace iotglove

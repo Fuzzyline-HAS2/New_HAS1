@@ -27,6 +27,14 @@ int main() {
   assert(s.deviceState == DeviceState::Blink && gameMutationsAllowed(s));
   assert(decodeServerStates("activate", "activate", s));
   assert(s.deviceState == DeviceState::Activate && commandAllowed(event, s));
+  for (const char* device : {"player", "tagger"}) {
+    assert(decodeServerStates("academy", device, s));
+    assert(s.phase == Phase::Academy && !gameMutationsAllowed(s));
+    assert(!commandAllowed(event, s) && !commandApplied(event, s));
+  }
+  assert(!decodeServerStates("academy", "activate", s));
+  assert(!decodeServerStates("activate", "player", s));
+  assert(!decodeServerStates("ready", "tagger", s));
   for (const char* game : {"setting", "ready", "activate", "stop", "end"}) {
     assert(decodeServerStates(game, "photo", s));
     assert(s.phase == Phase::Photo && s.deviceState == DeviceState::Photo);
@@ -51,5 +59,7 @@ int main() {
   assert(s.phase == Phase::Ended);
   assert(!strcmp(deviceStateName(DeviceState::Blink), "blink"));
   assert(!strcmp(deviceStateName(DeviceState::Photo), "photo"));
+  assert(!strcmp(deviceStateName(DeviceState::Player), "player"));
+  assert(!strcmp(deviceStateName(DeviceState::Tagger), "tagger"));
   puts("PASS: production state decoding, preparation mutation gates and OTA phase isolation");
 }

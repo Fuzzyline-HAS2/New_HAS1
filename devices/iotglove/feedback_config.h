@@ -84,6 +84,9 @@ inline bool motorOn(const Schedule& pattern, uint32_t elapsed) {
 }
 
 inline Pattern forState(const Feedback& state, const Settings& settings) {
+  // Academy has only explicit chip/button haptics. Entering it must not create
+  // an ordinary server-state transition vibration.
+  if (state.phase == Phase::Academy) return Pattern::Off;
   if (state.phase == Phase::Ended || state.deviceState == DeviceState::Ended)
     return settings.onEnded;
   if (state.phase == Phase::Photo || state.deviceState == DeviceState::Photo)
