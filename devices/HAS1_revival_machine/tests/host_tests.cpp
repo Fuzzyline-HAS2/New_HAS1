@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 #include "production_constants.inc"
+#include "rfid_types.inc"
+#include "card_upload.h"
 
 class String : public std::string {
  public:
@@ -48,7 +50,10 @@ struct SerialStub {
 } Serial;
 struct WifiStub { int RSSI() { return -50; } } WiFi;
 struct EspStub { uint32_t getFreeHeap() { return 100000; } } ESP;
-struct OtaStub { void check() {} } ota;
+struct OtaStub {
+  unsigned check_calls = 0;
+  void check() { ++check_calls; }
+} ota;
 
 bool activate_bool = false, ghost_open_pending = false;
 unsigned long ghost_tag_start_ms = 0, ghost_situation_ms = 0, ghost_role_receive_ms = 0;
@@ -119,8 +124,15 @@ void BleAdvertiserMaintain() {}
 void TelnetRun() {}
 unsigned normal_reader_calls = 0, admin_reader_calls = 0;
 bool reader_present = true;
+bool reader_transport_available = true;
+RfidReadOutcome reader_override = RfidReadOutcome::Read;
+RfidReadOutcome rfid_last_outcome = RfidReadOutcome::Unavailable;
+bool RfidEnsureReady(bool) { return reader_transport_available; }
+void RfidFlushHealthLog() {}
 std::string reader_tag = "G1P1";
 bool fake_read(uint8_t data[32]) {
+  if (reader_override != RfidReadOutcome::Read) { rfid_last_outcome = reader_override; return false; }
+  rfid_last_outcome = reader_present ? RfidReadOutcome::Read : RfidReadOutcome::NoTarget;
   if (!reader_present) return false;
   std::memset(data, 0, 32);
   std::memcpy(data, reader_tag.c_str(), 4);
@@ -138,12 +150,39 @@ unsigned long SolenoidPulse(unsigned long);
 void NeoBlinkPurple(int);
 void DataChange();
 
+// Focused component mock: these tests exercise the real loop, DataChange,
+// approval and relay wiring. The separate card_upload suite runs the production
+// session engine, including UID binding and clean-removal/exit-gate decisions.
+// Tests release exit_gate explicitly; this mock never pretends a read failure
+// proves removal or reimplements the production removal algorithm.
+struct CardUploadMock {
+  bool active = false, exit_gate = false;
+  bool release_exit_gate_on_loop = false;
+  unsigned loop_calls = 0;
+} card_upload;
+bool CardUploadSyncMode(const char* state) {
+  const bool next_active = state && std::strcmp(state, "card-upload") == 0;
+  if (card_upload.active && !next_active) card_upload.exit_gate = true;
+  card_upload.active = next_active;
+  return next_active;
+}
+bool CardUploadBlocksGameplay() { return card_upload.active || card_upload.exit_gate; }
+bool CardUploadBlocksOpen() { return CardUploadBlocksGameplay(); }
+void CardUploadLoop() {
+  ++card_upload.loop_calls;
+  if (card_upload.release_exit_gate_on_loop) {
+    card_upload.exit_gate = false;
+    card_upload.release_exit_gate_on_loop = false;
+  }
+}
+
 struct Has2WifiStub {
   unsigned receive_calls = 0, situation_calls = 0, mine_calls = 0, send_calls = 0, loop_calls = 0;
   std::vector<std::string> received_tags, situation_tags, marked_tags;
   unsigned long role_delay_ms = 300, situation_delay_ms = 200, approval_delay_ms = 400;
   bool situation_ok = true, approve = true;
   std::string role = "ghost";
+  std::string next_device_state;
   int already_open = 0;
   void Receive(const String& user) {
     ++receive_calls; received_tags.push_back(user);
@@ -164,13 +203,23 @@ struct Has2WifiStub {
   void ReceiveMine() {
     ++mine_calls;
     fake_ms += approval_delay_ms;
-    if (approve) my["device_state"] = "open";
+    if (!next_device_state.empty()) {
+      my["device_state"] = next_device_state.c_str();
+      next_device_state.clear();
+    } else if (approve) my["device_state"] = "open";
   }
   void Send(const String& user, const String& field, const String& value) {
     assert(field == "is_open" && value == "1");
     ++send_calls; marked_tags.push_back(user);
   }
-  void Loop(void (*)()) { ++loop_calls; }
+  void Loop(void (*changed)()) {
+    ++loop_calls;
+    if (!next_device_state.empty()) {
+      my["device_state"] = next_device_state.c_str();
+      next_device_state.clear();
+      changed();
+    }
+  }
 } has2wifi;
 
 #define _HAS1_REVIVAL_MACHINE_H_
@@ -232,6 +281,28 @@ unsigned long assert_pulse(unsigned long duration = 5000) {
 void assert_no_game_request() {
   assert(has2wifi.receive_calls == 0 && has2wifi.situation_calls == 0 &&
          has2wifi.mine_calls == 0 && has2wifi.send_calls == 0);
+}
+void enter_card_upload() {
+  my["device_state"] = "card-upload";
+  DataChange();
+  assert(card_upload.active && CardUploadBlocksGameplay() && CardUploadBlocksOpen());
+  assert(!activate_bool && displayed_color == purple);
+  assert(!gameplay_tag_latched && gameplay_tag_user.empty());
+  assert(!gameplay_tag_missing && gameplay_tag_miss_count == 0);
+  assert(wifi_period() == WIFI_POLL_INTERVAL_DEFAULT_MS);
+}
+void assert_upload_loop_blocks_readers() {
+  const auto normal_before = normal_reader_calls;
+  const auto admin_before = admin_reader_calls;
+  const auto upload_before = card_upload.loop_calls;
+  for (const char* payload : {"G9P2", "MMMM"}) {
+    reader_tag = payload;
+    RfidTagTimerFunc();
+    loop();
+  }
+  assert(card_upload.loop_calls == upload_before + 2);
+  assert(normal_reader_calls == normal_before && admin_reader_calls == admin_before);
+  assert(on_count() == 0);
 }
 std::string unique_log(const std::string& prefix) {
   std::string result;
@@ -446,6 +517,35 @@ int main(int argc, char** argv) {
     delay(REVIVAL_APPROVAL_TIMEOUT_MS + 1);
     TimerRun();
     assert(!revival_approval_pending && on_count() == 0 && last_open_tag_user == "G1P1");
+  } else if (scenario == "unknown_scan_preserves_latch") {
+    prepare(); has2wifi.situation_ok = false; card();
+    for (auto outcome : {RfidReadOutcome::TagReadFailed, RfidReadOutcome::TransportFault,
+                        RfidReadOutcome::BudgetExceeded, RfidReadOutcome::Unavailable}) {
+      reader_override = RfidReadOutcome::Read; scan(false);
+      delay(RFID_REARM_ABSENT_MS + 1);
+      reader_override = outcome; scan(false);
+      assert(gameplay_tag_latched && !gameplay_tag_missing && gameplay_tag_miss_count == 0);
+      reader_override = RfidReadOutcome::Read; scan(false);
+      assert(gameplay_tag_latched && gameplay_tag_miss_count == 1);
+      scan(true);
+      assert(gameplay_tag_latched && !gameplay_tag_missing);
+      assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+    }
+    remove_tag(); scan(true);
+    assert(has2wifi.receive_calls == 2 && has2wifi.situation_calls == 2);
+  } else if (scenario == "pending_unavailable_reader") {
+    prepare(); has2wifi.approve = false; card();
+    reader_transport_available = false; reader_tag = "MMMM";
+    delay(REVIVAL_ADMIN_POLL_MS + 1);
+    TimerRun(); const auto polls = has2wifi.mine_calls;
+    loop();
+    assert(revival_approval_pending && on_count() == 0);
+    assert(normal_reader_calls == 0 && admin_reader_calls == 0);
+    delay(REVIVAL_APPROVAL_POLL_MS); loop();
+    assert(has2wifi.mine_calls == polls + 1 && normal_reader_calls == 0 && admin_reader_calls == 0);
+    reader_transport_available = true; loop();
+    assert(admin_reader_calls == 1 && on_count() == 1);
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
   } else if (scenario == "mode_ready_to_activate_device_static") {
     // 서버가 game_state만 ready -> activate 로 바꾸고 device_state는 내내 "activate"인 경우.
     // 예전 코드는 device_state 전이에만 노란색/activate 폴링을 걸어 ready의 빨간색에 머물렀다.
@@ -476,6 +576,131 @@ int main(int argc, char** argv) {
     my["game_state"] = "activate"; DataChange();
     assert(displayed_color == yellow && activate_bool);
     assert(wifi_period() == WIFI_POLL_INTERVAL_ACTIVATE_MS);
+  } else if (scenario == "card_upload_setting" || scenario == "card_upload_ready" ||
+             scenario == "card_upload_activate") {
+    const std::string game = scenario.substr(std::strlen("card_upload_"));
+    prepare(game.c_str());
+    enter_card_upload();
+    assert_upload_loop_blocks_readers();
+    card("G9P2"); card("MMMM"); // Defense if another caller bypasses loop().
+    assert(on_count() == 0);
+    assert_no_game_request();
+    assert(ota.check_calls == 0);
+  } else if (scenario == "card_upload_cancels_approval" ||
+             scenario == "card_upload_clears_failed_user") {
+    prepare(); has2wifi.approve = false;
+    has2wifi.situation_ok = scenario != "card_upload_clears_failed_user";
+    card();
+    assert(last_open_tag_user == "G1P1");
+    assert(revival_approval_pending == has2wifi.situation_ok);
+    assert(gameplay_tag_latched && gameplay_tag_user == "G1P1");
+    const auto received = has2wifi.receive_calls;
+    const auto situations = has2wifi.situation_calls;
+    const auto polls = has2wifi.mine_calls;
+    enter_card_upload();
+    assert(!revival_approval_pending && !revival_approval_poll_due && !ghost_open_pending);
+    assert(last_open_tag_user.empty());
+    delay(REVIVAL_ADMIN_POLL_MS + REVIVAL_APPROVAL_POLL_MS + 1);
+    assert_upload_loop_blocks_readers();
+    assert(has2wifi.receive_calls == received && has2wifi.situation_calls == situations);
+    assert(has2wifi.mine_calls == polls && has2wifi.send_calls == 0);
+  } else if (scenario == "card_upload_during_approval_poll") {
+    prepare(); has2wifi.approve = false; card();
+    assert(revival_approval_pending);
+    const auto polls = has2wifi.mine_calls;
+    has2wifi.next_device_state = "card-upload";
+    delay(REVIVAL_APPROVAL_POLL_MS);
+    loop();
+    assert(has2wifi.mine_calls == polls + 1 && has2wifi.next_device_state.empty());
+    assert(card_upload.active && !revival_approval_pending && !revival_approval_poll_due);
+    assert(last_open_tag_user.empty() && !ghost_open_pending);
+    assert(normal_reader_calls == 0 && admin_reader_calls == 0);
+    assert(on_count() == 0 && has2wifi.send_calls == 0);
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
+  } else if (scenario == "card_upload_late_open" || scenario == "card_upload_late_github") {
+    prepare(); enter_card_upload();
+    // The ordinary server timer runs before CardUploadLoop and the gameplay
+    // gate. Exercise that real ordering instead of calling the gate in isolation.
+    has2wifi.next_device_state = scenario == "card_upload_late_open" ? "open" : "github";
+    delay(WIFI_POLL_INTERVAL_DEFAULT_MS);
+    reader_tag = "MMMM";
+    loop();
+    assert(has2wifi.mine_calls == 1 && has2wifi.loop_calls == 0 && has2wifi.next_device_state.empty());
+    assert(!card_upload.active && card_upload.exit_gate);
+    assert(CardUploadBlocksOpen() && CardUploadBlocksGameplay());
+    assert_upload_loop_blocks_readers();
+    DataChange(); // A repeated blocked state must not replay its side effect.
+    assert(on_count() == 0 && ota.check_calls == 0);
+    assert(has2wifi.receive_calls == 0 && has2wifi.situation_calls == 0 && has2wifi.send_calls == 0);
+  } else if (scenario == "card_upload_maintenance_poll") {
+    prepare(); enter_card_upload(); has2wifi.approve = false;
+    for (unsigned i = 1; i <= 3; ++i) {
+      delay(WIFI_POLL_INTERVAL_DEFAULT_MS); loop();
+      assert(has2wifi.mine_calls == i && has2wifi.loop_calls == 0);
+      assert(card_upload.active && CardUploadBlocksGameplay());
+    }
+    my["device_state"] = "activate"; DataChange();
+    delay(WIFI_POLL_INTERVAL_ACTIVATE_MS); loop();
+    assert(has2wifi.mine_calls == 4 && has2wifi.loop_calls == 0 && card_upload.exit_gate);
+    assert(normal_reader_calls == 0 && admin_reader_calls == 0);
+    assert(on_count() == 0 && ota.check_calls == 0);
+    assert(has2wifi.receive_calls == 0 && has2wifi.situation_calls == 0 && has2wifi.send_calls == 0);
+    card_upload.exit_gate = false;
+    delay(WIFI_POLL_INTERVAL_ACTIVATE_MS); TimerRun();
+    assert(has2wifi.mine_calls == 4 && has2wifi.loop_calls == 1);
+  } else if (scenario == "card_upload_exit_setting" || scenario == "card_upload_exit_ready" ||
+             scenario == "card_upload_exit_activate") {
+    const std::string game = scenario.substr(std::strlen("card_upload_exit_"));
+    prepare(game.c_str()); enter_card_upload();
+    my["device_state"] = "activate"; DataChange();
+    assert(!card_upload.active && card_upload.exit_gate);
+    assert_upload_loop_blocks_readers();
+    card("G9P2"); card("MMMM");
+    assert(on_count() == 0);
+    assert_no_game_request();
+    // Production engine tests own the evidence required to release this gate.
+    // Here check that the caller resumes its appropriate mode on that signal.
+    card_upload.exit_gate = false;
+    reader_tag = "MMMM"; RfidTagTimerFunc(); loop();
+    assert_pulse();
+    assert(normal_reader_calls == 1 && admin_reader_calls == 0);
+    assert_no_game_request();
+    assert(activate_bool == (game != "ready"));
+  } else if (scenario == "card_upload_exit_defers_gameplay") {
+    prepare(); enter_card_upload();
+    my["device_state"] = "activate"; DataChange();
+    assert(card_upload.exit_gate);
+    card_upload.release_exit_gate_on_loop = true;
+    reader_tag = "MMMM"; RfidTagTimerFunc();
+    loop(); // Removal selection already used this loop's PN532 scan budget.
+    assert(!CardUploadBlocksGameplay());
+    assert(normal_reader_calls == 0 && admin_reader_calls == 0 && on_count() == 0);
+    loop();
+    assert(normal_reader_calls == 1 && admin_reader_calls == 0);
+    assert_pulse();
+    assert_no_game_request();
+  } else if (scenario == "card_upload_exit_new_open" || scenario == "card_upload_exit_new_github") {
+    prepare(); enter_card_upload();
+    const char* action = scenario == "card_upload_exit_new_open" ? "open" : "github";
+    my["device_state"] = action; DataChange();
+    assert(on_count() == 0 && ota.check_calls == 0 && card_upload.exit_gate);
+    my["device_state"] = "activate"; DataChange();
+    assert_upload_loop_blocks_readers();
+    card_upload.exit_gate = false;
+    DataChange(); // Releasing the gate does not itself replay a stale action.
+    assert(on_count() == 0 && ota.check_calls == 0 && has2wifi.send_calls == 0);
+    my["device_state"] = action; DataChange();
+    if (scenario == "card_upload_exit_new_open") assert_pulse();
+    else assert(ota.check_calls == 1 && on_count() == 0);
+    assert(has2wifi.send_calls == 0 && last_open_tag_user.empty());
+  } else if (scenario == "normal_ota_once") {
+    prepare();
+    my["device_state"] = "github"; DataChange();
+    assert(ota.check_calls == 1);
+    DataChange();
+    my["game_state"] = "ready"; DataChange();
+    assert(ota.check_calls == 1 && on_count() == 0);
+    assert_no_game_request();
   } else assert(false && "Unknown test case");
   std::cout << "PASS " << scenario << '\n';
 }

@@ -1,0 +1,35 @@
+name: Revival machine tests
+
+on:
+  pull_request:
+    paths:
+      - devices/HAS1_revival_machine/**
+      - .github/workflows/revival-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Gameplay and maintenance control
+        run: python devices/HAS1_revival_machine/tests/run_host_tests.py
+      - name: PN532 transport and recovery with sanitizers
+        run: |
+          python devices/HAS1_revival_machine/tests/run_pn532_transport_tests.py
+          python devices/HAS1_revival_machine/tests/run_rfid_recovery_tests.py
+      - name: Runtime and diagnostic paths
+        run: |
+          python devices/HAS1_revival_machine/tests/run_rfid_runtime_trace_tests.py
+          python devices/HAS1_revival_machine/tests/run_rfid_diagnostic_tests.py
+          python devices/HAS1_revival_machine/scripts/test_rfid_bench.py
+      - name: NDEF encoding and card writer with sanitizers
+        run: |
+          python devices/HAS1_revival_machine/tests/run_card_ndef_tests.py
+          python devices/HAS1_revival_machine/tests/run_card_upload_tests.py

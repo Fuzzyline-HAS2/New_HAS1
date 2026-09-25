@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+from sensor_test_support import write_sensor_types
 
 TESTS = Path(__file__).resolve().parent
 DEVICE = TESTS.parent
@@ -52,10 +53,20 @@ def main() -> None:
         "different_tag", "reset_ready", "reset_setting", "reset_tagger",
         "non_ghost_then_ghost", "reopen_after_removal", "timeout_clock_wrap",
         "normal_poll_resume", "late_approval_identity", "late_failure_identity", "cancelled_late_approval",
+        "unknown_scan_preserves_latch", "pending_unavailable_reader",
         "mode_ready_to_activate_device_static", "mode_game_change_keeps_relay_quiet", "mode_ready_ignores_device_rearm",
+        "card_upload_setting", "card_upload_ready", "card_upload_activate",
+        "card_upload_cancels_approval", "card_upload_clears_failed_user",
+        "card_upload_during_approval_poll",
+        "card_upload_late_open", "card_upload_late_github",
+        "card_upload_maintenance_poll",
+        "card_upload_exit_setting", "card_upload_exit_ready", "card_upload_exit_activate",
+        "card_upload_exit_defers_gameplay",
+        "card_upload_exit_new_open", "card_upload_exit_new_github", "normal_ota_once",
     ]
     with tempfile.TemporaryDirectory(prefix="revival-host-tests-") as directory:
         build = Path(directory)
+        write_sensor_types(build)
         names = {"CardChecking", "SolenoidInit", "SolenoidOn", "SolenoidOff", "SolenoidPulse", "NeoBlinkPurple",
                  "RfidLoop", "AdminCardPollReady", "AdminCardPollPending"}
         (build / "sensor_under_test.inc").write_text(extract_functions(DEVICE / "sensor.ino", names))
@@ -75,7 +86,7 @@ def main() -> None:
         (build / "production_constants.inc").write_text("\n".join(defines) + "\n")
         binary = build / "revival_host_tests"
         subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                        "-I", str(build), "-I", str(DEVICE), str(TESTS / "host_tests.cpp"),
+                        "-I", str(build), "-I", str(DEVICE / "tests" / "fakes"), "-I", str(DEVICE), str(TESTS / "host_tests.cpp"),
                         "-o", str(binary)], check=True)
         for case in cases:
             subprocess.run([str(binary), case], check=True)
