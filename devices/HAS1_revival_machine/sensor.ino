@@ -26,127 +26,351 @@ void SensorInit()
 }
 
 //********************************************* Rfid *********************************************
-// ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (HAS1_generator/HAS1_itembox와 동일 대응) ──
-// 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
-// 약 2cm 이하 근거리에서 인식이 안 되는 특성이 실측으로 확인됨(로트별 RF 편차,
-// MCU/통신 문제 아님). RxGain을 낮추면(23dB) 근거리(~2cm)가, 기본보다 높이면(33dB)
-// 중거리(2~4cm)가 각각 커버되나, 완전 밀착(0mm)은 신호가 과도하게 강해 이 두 단계로도
-// 안 잡히는 경우가 현장에서 확인됨(밀착 상태로 몇 초씩 붙잡아야 겨우 읽힘). GAIN_CONTACT를
-// 추가해 NEAR보다 한 단계 더 낮춘 Gain(약 20dB, 추정치 — 실기 튜닝 필요)으로 밀착 구간을
-// 커버한다. 감지 실패 시 나머지 두 Gain을 순서대로 즉시 재시도해 밀착~4cm 전 구간을 잇는다.
-// TX 출력(GsNOn/CWGsP)은 실측상 기여가 낮아 기본값 유지.
+// Requested gain settings retained for field comparison; these values alone do
+// not establish the cause of a distance-dependent failure. Configuration is only
+// committed after a complete, validated PN532 response.
 static GainMode currentGain = GAIN_NEAR;
+static Pn532Deadline rfidOperationDeadline = {0, 0};
+static bool rfidSweepActive = false;
+static bool rfidPinsReady = false;
+static const char *rfidHealthLogPending = nullptr;
+static bool rfidUploadUidOnly = false;
+static uint8_t rfidUploadUid[10];
+static uint8_t rfidUploadUidLength = 0;
 
-// RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
-// PN532는 이 설정을 내부에 영구 저장하지 않으므로 초기화 때마다(RfidInit) 다시 적용해야 한다.
+static uint8_t RfidGainCfg(int mode)
+{
+#if REVIVAL_RFID_DIAGNOSTICS
+  if (mode == GAIN_DIAGNOSTIC_DEFAULT) return 0x59;
+#endif
+  return mode == GAIN_CONTACT ? 0x09 : mode == GAIN_NEAR ? 0x19 : 0x49;
+}
+#if REVIVAL_RFID_RUNTIME_TRACE
+static uint8_t RfidRuntimeRequestedGainCfg() { return RfidGainCfg(currentGain); }
+#endif
+
+static void RfidClearMissingWindow()
+{
+  gameplay_tag_missing = false;
+  gameplay_tag_miss_count = 0;
+  gameplay_tag_missing_since_ms = 0;
+}
+
+static void RfidReportHealth(const char *state)
+{
+  rfidHealthLogPending = state; // Constants only; emitted after the scan/loop.
+}
+
+void RfidFlushHealthLog()
+{
+  if (!rfidHealthLogPending) return;
+  char line[200];
+  int length = snprintf(line, sizeof(line),
+      "[RFID_HEALTH] state=%s phase=%s fault=%s status=0x%02X attempt=%u gain_known=%u\n",
+      rfidHealthLogPending, pn532.phaseName(), pn532.faultName(), pn532.lastStatus(),
+      rfid_recovery_attempts, rfid_gain_known ? 1 : 0);
+  rfidHealthLogPending = nullptr;
+  if (length > 0 && (size_t)length < sizeof(line))
+    HardwareDebugSerial.write((const uint8_t *)line, (size_t)length);
+}
+
+static void RfidFault(Pn532Result result)
+{
+  rfid_last_outcome = result == Pn532Result::Deadline ? RfidReadOutcome::BudgetExceeded : RfidReadOutcome::TransportFault;
+  bool newIncident = !rfid_recovery_required;
+  rfid_recovery_required = true;
+  rfid_gain_known = false;
+  RfidClearMissingWindow();
+  if (newIncident) {
+    rfid_recovery_attempts = 0;
+    rfid_recovery_locked = false;
+    rfid_next_recovery_ms = (uint32_t)millis() + 1000;
+    RfidReportHealth("fault");
+  }
+}
+
 static bool ApplyGain(int mode)
 {
-  // 0x09(약 20dB, 추정) / 0x19(23dB, 근거리) / 0x49(33dB, 중거리). 0x09는 기존 두 값의
-  // 비트 패턴(RxGain 필드만 한 단계 낮춤)에서 유추한 추정치라 실기에서 재보정이 필요하다.
-  uint8_t rfCfg = (mode == GAIN_CONTACT) ? 0x09 : (mode == GAIN_NEAR) ? 0x19 : 0x49;
-  uint8_t cmd[] = {
-      0x32,       // RFConfiguration
-      0x0A,       // Type A 106kbps Analog Setting
-      rfCfg,      // RFCfg — RxGain (아래 TX 관련 값들은 실측상 기본값 유지가 최선이었음)
-      0xF4,       // GsNOn
-      0x3F,       // CWGsP
-      0x11,       // ModGsP
-      0x4D,       // Demod RF ON
-      0x85,       // RxThreshold
-      0x61,       // Demod RF OFF
-      0x6F,       // GsNOff
-      0x26,       // ModWidth
-      0x62,       // MifNFC
-      0x87        // TxBitPhase
-  };
-  return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+  const uint32_t started = micros();
+  Pn532Deadline deadline = rfidSweepActive ? rfidOperationDeadline : Pn532Deadline{(uint32_t)millis(), 100};
+  Pn532Result result = pn532.setGain(RfidGainCfg(mode), deadline);
+  bool ok = result == Pn532Result::Ok;
+#if REVIVAL_RFID_DIAGNOSTICS
+  int db = mode == GAIN_CONTACT ? 18 : mode == GAIN_NEAR ? 23 : mode == GAIN_DIAGNOSTIC_DEFAULT ? 38 : 33;
+  RfidDiagnosticRecord(RFID_DIAG_GAIN, db, started, ok, nullptr, 0);
+#elif REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceRecord(RFID_TRACE_GAIN, RfidGainCfg(mode), started, ok, nullptr);
+#else
+  (void)started;
+#endif
+  if (!ok) { RfidFault(result); return false; }
+  currentGain = (GainMode)mode;
+  return true;
 }
 
-// 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
-//
-// 예전 시퀀스(0x00 명령 -> startPassiveTargetIDDetection -> ntag2xx_ReadPage)는 PN532 호스트
-// 프로토콜에 맞지 않았다(Adafruit PN532 1.3.4 소스로 확인):
-//  - sendCommandCheckAck()는 응답이 "준비될 때까지" 기다리기만 하고 읽지 않는다. 그래서
-//    InListPassiveTarget 응답을 읽지 않은 채 InDataExchange를 보내면 프레임 위상이 어긋나
-//    (다음 명령의 ACK 자리에서 이전 응답을 읽음) 읽기가 실패하거나 이전 데이터가 재사용된다.
-//    HAS1_escape_sub d3f0495가 같은 문제를 "응답 drain"으로 고쳤다.
-//  - 정의되지 않은 0x00 명령은 에러 프레임(0x7F)만 남긴다. 통신 확인 용도였지만
-//    readPassiveTargetID()가 실패로 알려주므로 필요 없다.
-//  - 카드가 없을 때 InListPassiveTarget은 기본 재시도(0xFF = 무한)로 끝나지 않는다. 그 상태로
-//    다음 명령(ApplyGain)을 보내면 응답을 못 받아 1000ms 타임아웃을 친다(PR #28 실측
-//    lastApplyGain=1002ms). RfidInit()의 setPassiveActivationRetries()가 이걸 유한하게 만든다.
-// 위상이 어긋난 채 돌다가 우연히 맞을 때만 읽히는 구조라, 카드가 응답하는 타이밍(=거리, 커플링)에
-// 따라 성패가 갈렸다 - "밀착하면 안 읽히고 2~3cm 띄우면 읽힌다"가 그 증상이다.
-static bool DetectAndRead(uint8_t outData[32])
-{
-  uint8_t uid[7];
-  uint8_t uidLength = 0;
-  // InListPassiveTarget을 보내고 응답을 끝까지 읽는다(drain). 카드가 없으면 PN532가
-  // RFID_ACTIVATION_RETRIES 회 시도 후 "0 targets"로 스스로 끝내므로 false가 깨끗하게 돌아오고,
-  // PN532는 다음 명령을 받을 수 있는 상태로 남는다. timeout은 그 자체 종료가 늦어질 때의 상한이다.
-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, RFID_DETECT_TIMEOUT_MS))
-    return false;
-  return nfc.ntag2xx_ReadPage(7, outData) != 0;
-}
-
-// RFConfiguration(0x32) CfgItem 0x01(RF field)로 필드를 껐다/켠다. ISO14443A 태그는 한 번
-// 교신(anti-collision+SELECT)에 성공하면 ACTIVE 상태로 넘어가 이후 REQA(일반 폴링)에
-// 응답하지 않는다 - 필드를 벗어나 전원이 끊겨야(또는 명시적 Release/Deselect) 리셋된다.
-// 태그를 리더에 계속 붙여둔 채로는 "우연히 리셋될 때"까지 기다리는 수밖에 없었던 게
-// 현장 증상(밀착 유지 시 미인식, 짧게 뗐다 대면 즉시 인식)과 들어맞는다. 필드를 잠깐
-// 껐다 켜서 강제로 전원을 끊으면, 태그가 실제로 필드를 벗어났다 재진입한 것과 같은
-// 효과로 ACTIVE 상태가 풀린다.
 static bool ToggleRfField(bool on)
 {
-  uint8_t cmd[] = {
-      0x32,                    // RFConfiguration
-      0x01,                    // CfgItem: RF field
-      (uint8_t)(on ? 0x01 : 0x00)  // bit0: RF field ON(1)/OFF(0)
-  };
-  return nfc.sendCommandCheckAck(cmd, sizeof(cmd), 1000);
+  const uint32_t started = micros();
+  Pn532Deadline deadline = rfidSweepActive ? rfidOperationDeadline : Pn532Deadline{(uint32_t)millis(), 100};
+  Pn532Result result = pn532.setRfField(on, deadline);
+  bool ok = result == Pn532Result::Ok;
+#if REVIVAL_RFID_DIAGNOSTICS
+  RfidDiagnosticRecord(on ? RFID_DIAG_RF_ON : RFID_DIAG_RF_OFF,
+                       RfidDiagnosticSoftwareGainDb(), started, ok, nullptr, 0);
+#elif REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceRecord(on ? RFID_TRACE_RF_ON : RFID_TRACE_RF_OFF,
+                  RfidRuntimeRequestedGainCfg(), started, ok, nullptr);
+#else
+  (void)started;
+#endif
+  if (!ok) RfidFault(result);
+  return ok;
 }
 
-// 현재 Gain으로 실패하면 CONTACT→NEAR→FAR 순서로 나머지 Gain을 하나씩 즉시 재시도한다.
-// 성공한 Gain은 currentGain에 남아 다음 호출도 그 Gain부터 시도한다.
+static bool DetectAndRead(uint8_t outData[32])
+{
+  if (rfid_recovery_required || !rfid_gain_known) {
+    rfid_last_outcome = RfidReadOutcome::Unavailable;
+    RfidClearMissingWindow();
+    return false;
+  }
+  Pn532Deadline deadline = rfidSweepActive ? rfidOperationDeadline : Pn532Deadline{(uint32_t)millis(), RFID_SCAN_BUDGET_MS};
+  uint8_t uid[10];
+  uint8_t uidLength = 0;
+  uint32_t started = micros();
+#if REVIVAL_RFID_DIAGNOSTICS
+  Pn532Result result = pn532.readTarget(uid, uidLength, deadline.limited(rfid_diag_timeout_ms));
+#else
+  Pn532Result result = pn532.readTarget(uid, uidLength, deadline.limited(RFID_DETECT_TIMEOUT_MS));
+#endif
+  bool uidOk = result == Pn532Result::Ok;
+#if REVIVAL_RFID_DIAGNOSTICS
+  RfidDiagnosticRecord(RFID_DIAG_UID, RfidDiagnosticSoftwareGainDb(), started,
+                       uidOk, uidOk ? uid : nullptr, uidOk ? uidLength : 0);
+#elif REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceRecord(RFID_TRACE_UID, RfidRuntimeRequestedGainCfg(), started, uidOk, nullptr);
+#endif
+  if (result == Pn532Result::NoTarget) { rfid_last_outcome = RfidReadOutcome::NoTarget; return false; }
+  if (!uidOk) { RfidFault(result); return false; }
+  if (rfidUploadUidOnly) {
+    memcpy(rfidUploadUid, uid, uidLength);
+    rfidUploadUidLength = uidLength;
+    rfid_last_outcome = RfidReadOutcome::Read;
+    return true;
+  }
+  started = micros();
+  result = pn532.readPage7(outData, deadline);
+  bool readOk = result == Pn532Result::Ok;
+#if REVIVAL_RFID_DIAGNOSTICS
+  RfidDiagnosticRecord(RFID_DIAG_READ, RfidDiagnosticSoftwareGainDb(), started,
+                       readOk, readOk ? outData : nullptr, readOk ? 4 : 0);
+#elif REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceRecord(RFID_TRACE_PAGE7, RfidRuntimeRequestedGainCfg(), started, readOk, readOk ? outData : nullptr);
+#else
+  (void)started;
+#endif
+  if (readOk) rfid_last_outcome = RfidReadOutcome::Read;
+  else if (result == Pn532Result::TagError) { rfid_last_outcome = RfidReadOutcome::TagReadFailed; RfidClearMissingWindow(); }
+  else RfidFault(result);
+  return readOk;
+}
+
 static bool DetectWithGainSwitch(uint8_t outData[32])
 {
-  if (DetectAndRead(outData)) return true;
-
-  static const GainMode kGainOrder[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
-  for (int i = 0; i < 3; i++)
-  {
-    if (kGainOrder[i] == currentGain) continue;  // 이미 위에서 시도한 Gain
-    currentGain = kGainOrder[i];
-    ApplyGain(currentGain);
-    if (DetectAndRead(outData)) return true;
+  rfidOperationDeadline = {(uint32_t)millis(), RFID_SCAN_BUDGET_MS};
+  rfidSweepActive = true;
+  const GainMode initialGain = currentGain;
+  bool detected = DetectAndRead(outData);
+  static const GainMode order[] = {GAIN_CONTACT, GAIN_NEAR, GAIN_FAR};
+  for (uint8_t i = 0; !detected && rfid_last_outcome == RfidReadOutcome::NoTarget && i < 3; ++i) {
+    if (order[i] == initialGain) continue; // Each requested gain is attempted once.
+    if (!ApplyGain(order[i])) break;
+    detected = DetectAndRead(outData);
   }
+  // Re-selecting a stationary tag may require an RF field cycle. Only do so
+  // after a fully validated no-target sweep, never after transport corruption.
+  if (!detected && rfid_last_outcome == RfidReadOutcome::NoTarget) {
+    // The three validated no-target responses remain valid absence evidence if
+    // no room remains to start this optional cycle. Reserve only settle time;
+    // command waits consume their remaining share of the same scan deadline.
+    const Pn532Deadline sweepDeadline = rfidOperationDeadline;
+    uint32_t remaining = sweepDeadline.remaining();
+    if (remaining >= 20) {
+      rfidOperationDeadline = sweepDeadline.limited(remaining - 12);
+      bool offOk = ToggleRfField(false);
+      rfidOperationDeadline = sweepDeadline;
+      if (offOk) {
+        delayMicroseconds(6000); // Full RF settling minimum, independent of RTOS tick phase.
+        remaining = sweepDeadline.remaining();
+        if (remaining <= 6) RfidFault(Pn532Result::Deadline);
+        else {
+          rfidOperationDeadline = sweepDeadline.limited(remaining - 6);
+          bool onOk = ToggleRfField(true);
+          rfidOperationDeadline = sweepDeadline;
+          if (onOk) delayMicroseconds(6000);
+        }
+      }
+    }
+  }
+  rfidSweepActive = false;
+  return detected;
+}
 
-  // 3개 Gain 모두 실패 - 태그가 ACTIVE 상태로 굳어 REQA에 응답 안 하는 상황을 의심하고
-  // 강제로 리셋한다. 다음 폴링 사이클(RFID_DEBOUNCE_MS 뒤)에서 새 REQA가 먹힐 것으로 기대.
-  ToggleRfField(false);
-  ToggleRfField(true);
+bool RfidInitializeHardware(bool recovery)
+{
+  rfid_recovery_required = true;
+  rfid_gain_known = false;
+  rfid_last_outcome = RfidReadOutcome::Unavailable;
+  RfidClearMissingWindow();
+  if (!rfidPinsReady) rfidPinsReady = pn532.beginPins();
+  if (!rfidPinsReady) return false;
+  const Pn532Deadline deadline = {(uint32_t)millis(), RFID_RECOVERY_BUDGET_MS};
+  Pn532Result result = recovery ? pn532.abort(deadline) : Pn532Result::Ok;
+  if (result == Pn532Result::Ok) result = pn532.wake(deadline);
+  // SAM is the first command after the same-CS wake interval; no reset pin exists.
+  if (result == Pn532Result::Ok) result = pn532.configureSam(deadline);
+  const bool samConfigured = result == Pn532Result::Ok;
+  (void)samConfigured;
+  uint32_t version = 0;
+  if (result == Pn532Result::Ok) result = pn532.getFirmwareVersion(version, deadline);
+#if REVIVAL_RFID_DIAGNOSTICS
+  rfid_diag_chip_firmware = version;
+  rfid_diag_sam_ok = samConfigured;
+  rfid_diag_retries_ok = false;
+  rfid_diag_gain_ok = false;
+  uint8_t retries = rfid_diag_retries;
+#else
+  const uint8_t retries = RFID_ACTIVATION_RETRIES;
+#endif
+  if (result == Pn532Result::Ok) result = pn532.setRetries(retries, deadline);
+#if REVIVAL_RFID_DIAGNOSTICS
+  rfid_diag_retries_ok = result == Pn532Result::Ok;
+#endif
+  if (result == Pn532Result::Ok) result = pn532.setGain(0x19, deadline);
+#if REVIVAL_RFID_DIAGNOSTICS
+  rfid_diag_gain_ok = result == Pn532Result::Ok;
+#endif
+  if (result == Pn532Result::Ok) {
+    if (deadline.remaining() <= 6) result = Pn532Result::Deadline;
+    else {
+      result = pn532.setRfField(true, deadline.limited(deadline.remaining() - 6));
+      if (result == Pn532Result::Ok) delayMicroseconds(6000);
+    }
+  }
+  if (result != Pn532Result::Ok) { RfidFault(result); return false; }
+  currentGain = GAIN_NEAR;
+  rfid_gain_known = true;
+  rfid_recovery_required = false;
+  rfid_recovery_locked = false;
+  return true;
+}
+
+bool RfidEnsureReady(bool allowRecovery)
+{
+  if (!rfid_recovery_required && rfid_gain_known) return true;
+  rfid_last_outcome = RfidReadOutcome::Unavailable;
+  RfidClearMissingWindow();
+  if (!allowRecovery || revival_approval_pending || rfid_recovery_locked ||
+      (int32_t)((uint32_t)millis() - rfid_next_recovery_ms) < 0) return false;
+  ++rfid_recovery_attempts;
+  if (RfidInitializeHardware(true)) { RfidReportHealth("recovered"); return false; } // Scan next loop, never a second 450ms budget here.
+  if (rfid_recovery_attempts >= RFID_RECOVERY_MAX_ATTEMPTS) {
+    rfid_recovery_locked = true;
+    RfidReportHealth("locked");
+  } else {
+    const uint32_t backoff[] = {1000, 5000, 30000};
+    rfid_next_recovery_ms = (uint32_t)millis() + backoff[rfid_recovery_attempts];
+    RfidReportHealth("cooldown");
+  }
   return false;
 }
+
+// Maintenance selects a card without requiring an existing G#P# payload.
+// It shares the bounded gain sweep and recovery policy with gameplay.
+Pn532Result RfidUploadSelect(uint8_t *uid, uint8_t &length)
+{
+  length = 0;
+  if (!RfidEnsureReady(true)) return Pn532Result::Deadline;
+  rfidUploadUidOnly = true;
+  uint8_t unused[32];
+  bool found = DetectWithGainSwitch(unused);
+  rfidUploadUidOnly = false;
+  if (found) {
+    length = rfidUploadUidLength;
+    memcpy(uid, rfidUploadUid, length);
+    return Pn532Result::Ok;
+  }
+  if (rfid_last_outcome == RfidReadOutcome::NoTarget) return Pn532Result::NoTarget;
+  if (rfid_last_outcome == RfidReadOutcome::TagReadFailed) return Pn532Result::TagError;
+  if (rfid_last_outcome == RfidReadOutcome::TransportFault) return Pn532Result::TransportFault;
+  return Pn532Result::Deadline;
+}
+
+void RfidUploadObserve(Pn532Result result)
+{
+  if (result == Pn532Result::TransportFault || result == Pn532Result::Deadline)
+    RfidFault(result);
+}
+
+#if REVIVAL_RFID_DIAGNOSTICS
+int RfidDiagnosticSoftwareGainDb()
+{
+  return currentGain == GAIN_CONTACT ? 18 : currentGain == GAIN_NEAR ? 23 :
+         currentGain == GAIN_DIAGNOSTIC_DEFAULT ? 38 : 33;
+}
+
+bool RfidDiagnosticSetGainDb(int gainDb)
+{
+  if (rfid_recovery_required || !rfid_gain_known) return false;
+  int mode;
+  if (gainDb == 18) mode = GAIN_CONTACT;
+  else if (gainDb == 23) mode = GAIN_NEAR;
+  else if (gainDb == 33) mode = GAIN_FAR;
+  else if (gainDb == 38) mode = GAIN_DIAGNOSTIC_DEFAULT;
+  else return false;
+  return ApplyGain(mode);
+}
+
+bool RfidDiagnosticRead(bool autoGain, uint8_t *data)
+{
+  return autoGain ? DetectWithGainSwitch(data) : DetectAndRead(data);
+}
+
+bool RfidDiagnosticSetRetries(uint8_t retries)
+{
+  if (rfid_recovery_required || !rfid_gain_known) return false;
+  Pn532Result result = pn532.setRetries(retries, {(uint32_t)millis(), 100});
+  if (result != Pn532Result::Ok) RfidFault(result);
+  return result == Pn532Result::Ok;
+}
+
+bool RfidDiagnosticHardwareInit()
+{
+  rfid_recovery_attempts = 0;
+  rfid_recovery_locked = false;
+  // First diagnostic boot uses the same SAM-first startup as normal firmware.
+  // Later explicit resets can abort an outstanding host transaction first.
+  bool ok = RfidInitializeHardware(rfidPinsReady);
+  if (!ok) { rfid_next_recovery_ms = (uint32_t)millis() + 1000; RfidReportHealth("diagnostic_fault"); }
+  return ok;
+}
+#endif
 
 /**
  * @brief RFID(=PN532) 세팅
  */
 void RfidInit(void)
 {
-  nfc.begin(); // nfc 함수 시작
-  if (!(nfc.getFirmwareVersion()))
-  {
-    Serial.println("!!!RFID 연결실패!!! - 계속 진행");
+  if (RfidInitializeHardware(false)) {
+    Serial.println("RFID 연결성공");
+  } else {
+    rfid_next_recovery_ms = (uint32_t)millis() + 1000;
+    RfidReportHealth("startup_fault");
+    Serial.println("!!!RFID 연결실패!!! - 승인/게임 루프는 계속 진행");
+    // Existing startup-only notification; its HTTP time is outside the PN532
+    // deadline. Runtime faults/recovery never send device or game state.
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
-    return;
   }
-  nfc.SAMConfig(); // configure board to read RFID tags
-  // 카드가 없을 때 InListPassiveTarget이 스스로 끝나게 한다(기본 0xFF는 카드가 올 때까지 무한 대기).
-  // 이게 없으면 DetectAndRead()가 실패한 뒤의 다음 명령이 바쁜 PN532에 막혀 타임아웃을 친다.
-  nfc.setPassiveActivationRetries(RFID_ACTIVATION_RETRIES);
-  currentGain = GAIN_NEAR;
-  ApplyGain(currentGain);  // PN532는 RF 설정을 저장하지 않으므로 초기화 때마다 재적용
-  Serial.println("RFID 연결성공");
 }
 
 /**
@@ -170,9 +394,16 @@ void RfidLoop()
     return;
   }
 
+  if (!RfidEnsureReady(true)) return;
   uint8_t data[32];
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanBegin("gameplay");
+#endif
   bool detected = DetectWithGainSwitch(data);
-  ObserveGameplayTag(detected);
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanEnd(detected, detected ? data : nullptr);
+#endif
+  ObserveGameplayTagOutcome(rfid_last_outcome);
   // tag_user_data 로그를 매번 남겨야 "읽히는데 무시되는 것"과 "아예 안 읽히는 것"을
   // 로그로 구분할 수 있다 - 둘 다 조용하면 디버깅이 안 된다.
   if (detected) CardChecking(data);
@@ -185,8 +416,15 @@ void AdminCardPollPending()
   if (revival_approval_polled_this_loop ||
       millis() - revival_approval_last_admin_poll_ms < REVIVAL_ADMIN_POLL_MS) return;
 
+  if (!RfidEnsureReady(false)) return;
   uint8_t data[32];
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanBegin("admin_pending");
+#endif
   bool detected = DetectAndRead(data);
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanEnd(detected, detected ? data : nullptr);
+#endif
   revival_approval_last_admin_poll_ms = millis();
   if (!detected) return;
   String tagUser = "";
@@ -214,8 +452,16 @@ void AdminCardPollReady()
     return;
   }
 
+  if (!RfidEnsureReady(true)) return;
   uint8_t data[32];
-  if (!DetectWithGainSwitch(data)) return;
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanBegin("admin_ready");
+#endif
+  bool detected = DetectWithGainSwitch(data);
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceScanEnd(detected, detected ? data : nullptr);
+#endif
+  if (!detected) return;
 
   String tagUser = "";
   for (int i = 0; i < 4; i++) tagUser += (char)data[i];
@@ -231,12 +477,13 @@ void AdminCardPollReady()
  */
 void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확인용
 {
+  if (CardUploadBlocksGameplay()) return;
   String tagUser = "";
   for (int i = 0; i < 4; i++) // GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
   Serial.println("tag_user_data : " + tagUser);
 
-  // MMMM 관리자 카드: game_state/device_state(tagger 봉쇄 포함)와 무관하게 최우선으로 항상 연다.
+  // Outside maintenance, MMMM overrides ordinary game/device states.
   if (tagUser == "MMMM")
   {
     Serial.println("[RFID] admin card - opening (state-independent)");

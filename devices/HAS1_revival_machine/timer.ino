@@ -43,6 +43,14 @@ void RfidTagTimerFunc()
 
 void WifiTimerFunc()
 {
+  if (CardUploadBlocksGameplay())
+  {
+    // HAS2_Wifi::Loop also starts legacy HTTP OTA and watchdog restarts.
+    // Poll state directly until maintenance and its removal gate have ended.
+    has2wifi.ReceiveMine();
+    DataChange();
+    return;
+  }
   has2wifi.Loop(DataChange);
 }
 

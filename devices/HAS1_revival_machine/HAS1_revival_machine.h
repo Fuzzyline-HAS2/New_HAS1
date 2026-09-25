@@ -3,6 +3,26 @@
 
 #include "library_and_pin.h"
 #include "location_protocol.h"
+#include "pn532_transport.h"
+#include "card_ndef.h" // Visible before Arduino's generated .ino prototypes.
+#include "card_upload.h"
+
+// Opt-in bench firmware only. The normal build keeps the production setup/loop.
+#ifndef REVIVAL_RFID_DIAGNOSTICS
+#define REVIVAL_RFID_DIAGNOSTICS 0
+#endif
+#ifndef REVIVAL_RFID_RUNTIME_TRACE
+#define REVIVAL_RFID_RUNTIME_TRACE 0
+#endif
+#if REVIVAL_RFID_DIAGNOSTICS && REVIVAL_RFID_RUNTIME_TRACE
+#error "Select bench diagnostics OR production runtime trace, not both"
+#endif
+#if REVIVAL_RFID_DIAGNOSTICS
+#include "rfid_diagnostics.h"
+#endif
+#if REVIVAL_RFID_RUNTIME_TRACE
+#include "rfid_runtime_trace.h"
+#endif
 
 // Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
 // 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로
@@ -57,17 +77,32 @@ void BleAdvertiserMaintain();
 void LogMemoryStats(const char *stage);
 
 //================================ RFID ==================================
-Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
+RevivalPn532 pn532(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
+
+enum class RfidReadOutcome { Read, NoTarget, TagReadFailed, TransportFault, BudgetExceeded, Unavailable };
+RfidReadOutcome rfid_last_outcome = RfidReadOutcome::Unavailable;
+bool rfid_recovery_required = true;
+bool rfid_gain_known = false;
+bool rfid_recovery_locked = false;
+uint8_t rfid_recovery_attempts = 0;
+uint32_t rfid_next_recovery_ms = 0;
+#define RFID_SCAN_BUDGET_MS 450
+#define RFID_RECOVERY_BUDGET_MS 450
+#define RFID_RECOVERY_MAX_ATTEMPTS 3
+bool RfidEnsureReady(bool allowRecovery);
+bool RfidInitializeHardware(bool recovery);
+void ObserveGameplayTagOutcome(RfidReadOutcome outcome);
+void RfidFlushHealthLog();
+Pn532Result RfidUploadSelect(uint8_t *uid, uint8_t &length);
+void RfidUploadObserve(Pn532Result result);
 
 // RFID 재판독 디바운스. 1000ms에서는 초당 1회만 폴링해 1초보다 짧은 태그를 놓쳤다
 // (현장: "태그 인식 느림"). itembox와 동일한 300ms로 맞춤 (커밋 8dc9450 참고).
 #define RFID_DEBOUNCE_MS 300
-// 카드가 없을 때 InListPassiveTarget이 스스로 끝나기까지의 활성화 재시도 횟수(RFConfiguration
-// item 5, MxRtyPassiveActivation). 기본 0xFF는 카드가 올 때까지 무한 대기라 다음 명령을 막는다.
-// 한 번에 수 ms라 10회면 카드 없는 폴링 1회가 수십 ms 안에 끝난다.
+// 정상 no-target 응답을 받을 수 있도록 활성화 재시도를 유한하게 설정한다.
+// 실제 소요시간은 태그/장비 상태에 따라 달라지며 전체 스캔 예산도 별도로 적용한다.
 #define RFID_ACTIVATION_RETRIES 10
-// readPassiveTargetID()가 응답을 기다리는 상한(ms). 위 재시도가 끝나는 시간보다 넉넉하면 되고,
-// PN532가 멈췄을 때 루프가 1000ms(라이브러리 기본)씩 묶이지 않게 하는 안전장치다.
+// UID 명령의 ACK와 응답을 합친 상한. RF 설정/page7 명령은 100ms 상한이다.
 #define RFID_DETECT_TIMEOUT_MS 250
 bool rfid_tag = false;
 byte rfid_tag_count = 0; // 몇번 태그 됐는지 (= 덕트를 몇 번 사용했는지) 확인하는 변수
@@ -101,7 +136,8 @@ unsigned long revival_approval_last_admin_poll_ms = 0;
 String revival_request_device_state = "";
 
 // 계속 붙어 있는 게임 태그는 결과가 나온 뒤에도 재전송하지 않는다.
-// 양쪽 Gain에서 읽기 실패가 2회 이상, 600ms 이상 이어져야 같은 태그를 재무장한다.
+// 세 Gain의 정상 no-target 스캔이 2회 이상, 400ms 이상 이어져야 같은 태그를 재무장한다.
+// 통신/태그 읽기 오류나 복구 대기는 이 부재 구간을 끊고 기존 래치를 유지한다.
 bool gameplay_tag_latched = false;
 String gameplay_tag_user = "";
 bool gameplay_tag_missing = false;
@@ -121,7 +157,11 @@ bool send_nfc_err = false;
 // 내부 상태 변수 타입으로만 쓰이고 함수 매개변수 타입으로는 쓰이지 않는다(ApplyGain은 int를 받음).
 // Arduino가 .ino 탭들을 병합할 때 자동 생성하는 함수 프로토타입이 실제 코드보다도 앞에
 // 삽입돼서, 커스텀 enum을 매개변수로 쓰면 "타입을 아직 모른다"는 컴파일 에러가 나기 때문.
-enum GainMode { GAIN_CONTACT, GAIN_NEAR, GAIN_FAR };
+enum GainMode { GAIN_CONTACT, GAIN_NEAR, GAIN_FAR
+#if REVIVAL_RFID_DIAGNOSTICS
+  , GAIN_DIAGNOSTIC_DEFAULT
+#endif
+};
 
 void RfidInit(void);
 void RfidLoop(void);

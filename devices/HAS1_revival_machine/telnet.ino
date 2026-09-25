@@ -2,6 +2,11 @@ WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 HardwareSerial HardwareDebugSerial(0);
 TelnetDebugConsole DebugSerial;
+static bool cardUploadTelnetConnected = false;
+
+void CardUploadOutput(const char *line) {
+  if (telnetClient && telnetClient.connected()) telnetClient.println(line);
+}
 
 void TelnetDebugConsole::begin(unsigned long baud) {
   HardwareDebugSerial.begin(baud);
@@ -48,6 +53,11 @@ void TelnetInit() {
 }
 
 void TelnetRun() {
+  if (cardUploadTelnetConnected && !telnetClient.connected()) {
+    CardUploadDisconnected();
+    cardUploadTelnetConnected = false;
+    telnetClient.stop();
+  }
   if (telnetServer.hasClient()) {
     WiFiClient newClient = telnetServer.available();
 
@@ -59,6 +69,8 @@ void TelnetRun() {
 
     telnetClient = newClient;
     telnetClient.setNoDelay(true);
+    cardUploadTelnetConnected = true;
+    CardUploadConnected();
     DebugSerial.println("Telnet client connected");
   }
 
@@ -67,8 +79,8 @@ void TelnetRun() {
     DebugSerial.println("Telnet client disconnected");
   }
 
-  while (telnetClient && telnetClient.connected() && telnetClient.available()) {
-    char c = telnetClient.read();
-    HardwareDebugSerial.write(c);
+  // A pasted line or Telnet negotiation must not starve server/state handling.
+  for (uint8_t count = 0; count < 64 && telnetClient && telnetClient.connected() && telnetClient.available(); ++count) {
+    CardUploadInput((uint8_t)telnetClient.read());
   }
 }

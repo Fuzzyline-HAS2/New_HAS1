@@ -20,6 +20,7 @@ void TempleInit()
 {
   has2wifi.Setup("badland");
   has2wifi.Send((String)(const char *)my["device_name"], "esp_version", String(FIRMWARE_VER));
+  CardUploadInit();
   TelnetInit(); // Telnet 서버 시작 (WiFi 연결 완료 후) — 이후 Serial.* 출력은 telnet.ino로 미러링됨
   LogMemoryStats("Wi-Fi connected");
   BleAdvertiserInit();
@@ -46,11 +47,22 @@ void TempleInit()
  */
 void setup()
 {
+#if REVIVAL_RFID_DIAGNOSTICS
+  // Keep the actuator off before any serial/PN532 initialization or wait.
+  pinMode(SOLENOID_PIN, OUTPUT);
+  digitalWrite(SOLENOID_PIN, LOW);
+  Serial.begin(115200);
+  RfidDiagnosticSetup();
+#else
   delay(1000);
   Serial.begin(115200);
   LogMemoryStats("boot");
   TempleInit();
   DataChange();
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceStartup(FIRMWARE_VER, (const char *)my["game_state"], (const char *)my["device_state"]);
+#endif
+#endif
 }
 
 /**
@@ -58,10 +70,36 @@ void setup()
  */
 void loop()
 {
+#if REVIVAL_RFID_DIAGNOSTICS
+  RfidDiagnosticLoop();
+#else
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceLoopBegin();
+  uint32_t tracePhaseStarted = micros();
+#endif
   TelnetRun(); // Telnet 클라이언트 접속/데이터 처리
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceLoopStage(RFID_TRACE_TELNET, tracePhaseStarted);
+  tracePhaseStarted = micros();
+#endif
   TimerRun();
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceLoopStage(RFID_TRACE_TIMER, tracePhaseStarted);
+  tracePhaseStarted = micros();
+#endif
   NeoFunc();
-  if (activate_bool)
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceLoopStage(RFID_TRACE_NEO, tracePhaseStarted);
+  tracePhaseStarted = micros();
+#endif
+  const bool maintenanceAtLoopStart = CardUploadBlocksGameplay();
+  CardUploadLoop();
+  if (maintenanceAtLoopStart || CardUploadBlocksGameplay())
+  {
+    // If removal completes now, defer gameplay to the next loop: no second scan.
+    SolenoidOff();
+  }
+  else if (activate_bool)
   {
     ActivateFunc();
   }
@@ -69,4 +107,10 @@ void loop()
   {
     AdminCardPollReady();  // ready 등 태그 비활성 상태에서도 MMMM 관리자 카드는 열려야 함
   }
+#if REVIVAL_RFID_RUNTIME_TRACE
+  RfidTraceLoopStage(RFID_TRACE_GAME, tracePhaseStarted);
+  RfidTraceLoopEnd((const char *)my["game_state"], (const char *)my["device_state"]);
+#endif
+#endif
+  RfidFlushHealthLog();
 }

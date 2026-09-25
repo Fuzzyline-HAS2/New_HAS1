@@ -54,6 +54,26 @@ void DataChange()
         return;
     }
 
+    static JsonDocument cur;
+    if (CardUploadSyncMode((const char *)my["device_state"]))
+    {
+        if (revival_approval_pending) EndRevivalApproval("card upload");
+        last_open_tag_user = "";
+        ghost_open_pending = false;
+        gameplay_tag_latched = false;
+        gameplay_tag_user = "";
+        gameplay_tag_missing = false;
+        gameplay_tag_miss_count = 0;
+        activate_bool = false;
+        SolenoidOff();
+        NeoFunc = NeoNo;
+        SetBrightness((int)my["brightness"]);
+        NeopixelSet(purple);
+        SetWifiPollInterval(WIFI_POLL_INTERVAL_DEFAULT_MS);
+        cur = my;
+        return;
+    }
+
     UpdateRevivalApprovalState();
     // 시간초과/HTTP 실패 뒤 보존한 사용자도 게임 종료나 기기 취소 상태에서 정리한다.
     // open은 늦은 승인일 수 있으므로 아래의 기존 is_open 기록까지 보존한다.
@@ -70,7 +90,6 @@ void DataChange()
     // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
     // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다(HAS1_itembox와 동일 이슈).
     // JsonDocument는 크기에 상관없이 대입/set()이 되므로 어떤 환경에서도 안전하다.
-    static JsonDocument cur;
 
     // 밝기 먼저 반영 — 이어지는 상태 전환이 새 밝기로 칠해지도록. 변경 감지는 SetBrightness() 내부.
     SetBrightness((int)my["brightness"]);
@@ -133,7 +152,7 @@ void DataChange()
     // 전이에만 묶는다. game_state가 바뀌었다고 문을 다시 열거나 OTA를 다시 확인하면 안 된다.
     if (device_changed)
     {
-        if (device_state_now == "open")
+        if (device_state_now == "open" && !CardUploadBlocksOpen())
         {
             NeopixelSet(blue);   // 서버가 태그를 승인 - 네오픽셀 전체 파란색(고정)
             int rssiOpen = WiFi.RSSI();
@@ -163,7 +182,7 @@ void DataChange()
                 last_open_tag_user = "";
             }
         }
-        else if (device_state_now == "github")
+        else if (device_state_now == "github" && !CardUploadBlocksGameplay())
         {
             ota.check();
         }

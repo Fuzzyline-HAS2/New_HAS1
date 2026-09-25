@@ -95,3 +95,14 @@ void ObserveGameplayTag(bool detected)
     gameplay_tag_miss_count = 0;
   }
 }
+
+// An unknown read is not evidence that a held tag was removed. Interrupt any
+// absence streak on target/payload errors, transport faults, budget or cooldown.
+void ObserveGameplayTagOutcome(RfidReadOutcome outcome)
+{
+  if (outcome == RfidReadOutcome::NoTarget) { ObserveGameplayTag(false); return; }
+  if (outcome == RfidReadOutcome::Read) { ObserveGameplayTag(true); return; }
+  gameplay_tag_missing = false;
+  gameplay_tag_miss_count = 0;
+  gameplay_tag_missing_since_ms = 0;
+}

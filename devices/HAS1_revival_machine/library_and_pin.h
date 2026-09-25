@@ -10,7 +10,7 @@
 #include <HAS2_Wifi.h>
 
 #include <Adafruit_NeoPixel.h>
-#include <Adafruit_PN532.h>
+#include <Adafruit_SPIDevice.h>
 
 #include <SimpleTimer.h>
 #include <esp_bt.h>
@@ -44,8 +44,7 @@
 //  - 300 -> 2000 (v51): "글러브를 PN532에 밀착 유지하면 activate에서만 판독이 늦고 open에서는
 //    거리와 무관하다"의 원인이 activate/open 간 유일한 코드 차이인 이 폴링 주기인지 실험.
 //    현장 결과 밀착 판독은 그대로였다 -> 기각. tagger 봉쇄 인지가 최대 2초 늦어지는 비용만
-//    남으므로 300으로 되돌린다. 실제 원인은 PN532 판독 시퀀스의 프로토콜 위상 어긋남이었다
-//    (sensor.ino DetectAndRead 주석).
+//    남으므로 300으로 되돌린다. 이 실험만으로 RF/전송 계층 원인을 확정할 수는 없다.
 #define WIFI_POLL_INTERVAL_ACTIVATE_MS 300
 
 #define PN532_SCK                       (18)
