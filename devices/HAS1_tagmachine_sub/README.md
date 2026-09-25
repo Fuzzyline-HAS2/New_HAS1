@@ -78,8 +78,11 @@ It does not independently recompute the two HMACs because the Actions signing
 secret is deliberately unavailable to this host. No local `secrets.h`, source
 build, or dependency download is used.
 
-Because the Beetle's USB-UART adapter has a generic WCH identity, disconnect all
-target Beetles before starting and connect exactly one when prompted.
+The Beetle can appear either as WCH `1a86:55d4` or, with CDC-on-boot firmware,
+as Espressif native USB `303a:1001`. Both identities are shared by other boards,
+so disconnect all target Beetles before starting and connect exactly one known
+Beetle when prompted. The partition/app0 preflight is still required before any
+write.
 
 To program Main and Sub sequentially with the same image:
 

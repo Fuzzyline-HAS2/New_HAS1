@@ -165,6 +165,18 @@ class AutoUsbUploadTests(unittest.TestCase):
             uploader.fresh_candidates([other, beetle], set(), set()), [beetle]
         )
 
+    def test_auto_candidates_accept_beetle_native_usb_cdc(self):
+        native = uploader.UsbPort(
+            "/dev/cu.usbmodem1101",
+            "Serial Port (USB)",
+            "0x303a",
+            "0x1001",
+            "10:B4:1D:23:8E:DC",
+        )
+        self.assertEqual(
+            uploader.fresh_candidates([native], set(), set()), [native]
+        )
+
     def test_legacy_board_list_and_existing_port_suppression(self):
         payload = [
             {
