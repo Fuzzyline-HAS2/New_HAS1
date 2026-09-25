@@ -1,8 +1,11 @@
+import hashlib
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -10,13 +13,102 @@ sys.path.insert(0, str(SCRIPTS))
 import auto_usb_upload as uploader  # noqa: E402
 
 
+COMMIT = "05ad44710616cf9c642c858c1567f56cbee4159f"
+
+
+def release_fixture(version=4, *, provenance_updates=None):
+    image = bytearray(64)
+    image[0] = 0xE9
+    image[1] = 1
+    image[3] = 0x20  # 4 MB flash-size ID in the image header.
+    image[12:14] = (5).to_bytes(2, "little")  # ESP32-C3 chip ID.
+    update_signature = bytes(range(32))
+    provenance = {
+        "schema": 1,
+        "device": uploader.DEVICE,
+        "firmware_version": version,
+        "partition_version": uploader.PARTITION_VERSION,
+        "partition_scheme": uploader.PARTITION_SCHEME,
+        "fqbn": uploader.RELEASE_FQBN,
+        "esp32_core": uploader.CORE_VERSION,
+        "source_commit": COMMIT,
+        "dependencies": {
+            "SecureOTA": {
+                "commit": uploader.SECUREOTA_REVISION,
+                "revision": uploader.SECUREOTA_REVISION,
+            }
+        },
+        "source_sha256": {
+            f"devices/{uploader.DEVICE}/{uploader.DEVICE}.ino": "0" * 64
+        },
+    }
+    if provenance_updates:
+        provenance.update(provenance_updates)
+    downloaded = {
+        "update.bin": bytes(image),
+        "update.sig": update_signature,
+        "ota.txt": (
+            f"IGOTA1|{uploader.DEVICE}|{version}|1|default|"
+            f"{update_signature.hex()}\n"
+        ).encode(),
+        "ota.sig": b"s" * 32,
+        "version.txt": str(version).encode(),
+        "partition_version.txt": b"1",
+        "build-provenance.json": (
+            json.dumps(provenance, sort_keys=True) + "\n"
+        ).encode(),
+    }
+    tag = uploader.release_tag(version)
+    release = {
+        "id": 100,
+        "tag_name": tag,
+        "target_commitish": COMMIT,
+        "draft": False,
+        "prerelease": False,
+        "published_at": "2026-09-25T00:00:00Z",
+        "html_url": f"https://github.com/{uploader.REPOSITORY}/releases/tag/{tag}",
+        "assets": [],
+    }
+    for asset_id, name in enumerate(uploader.EXPECTED_ASSETS, 1):
+        data = downloaded[name]
+        release["assets"].append(
+            {
+                "id": asset_id,
+                "name": name,
+                "state": "uploaded",
+                "size": len(data),
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                "browser_download_url": uploader.expected_asset_url(tag, name),
+            }
+        )
+    return release, downloaded
+
+
+def pin_for_release(release):
+    return {
+        "source_commit": release["target_commitish"],
+        "assets": {
+            asset["name"]: asset["digest"].removeprefix("sha256:")
+            for asset in release["assets"]
+        },
+    }
+
+
 class AutoUsbUploadTests(unittest.TestCase):
-    def test_exact_usb_fqbn_uses_460800_and_ota_partition(self):
-        self.assertIn("dfrobot_beetle_esp32c3", uploader.FQBN)
-        self.assertIn("UploadSpeed=460800", uploader.FQBN)
-        self.assertIn("CDCOnBoot=cdc", uploader.FQBN)
-        self.assertIn("PartitionScheme=default", uploader.FQBN)
-        self.assertIn("EraseFlash=none", uploader.FQBN)
+    def setUp(self):
+        self.production_pins = uploader.PINNED_RELEASES
+        release, _ = release_fixture()
+        uploader.PINNED_RELEASES = {4: pin_for_release(release)}
+
+    def tearDown(self):
+        uploader.PINNED_RELEASES = self.production_pins
+
+    def test_exact_usb_fqbn_uses_460800_and_default_partition(self):
+        self.assertIn("dfrobot_beetle_esp32c3", uploader.UPLOAD_FQBN)
+        self.assertIn("UploadSpeed=460800", uploader.UPLOAD_FQBN)
+        self.assertIn("CDCOnBoot=cdc", uploader.UPLOAD_FQBN)
+        self.assertIn("PartitionScheme=default", uploader.UPLOAD_FQBN)
+        self.assertIn("EraseFlash=none", uploader.UPLOAD_FQBN)
 
     def test_modern_board_list_keeps_only_physical_usb_serial(self):
         payload = {
@@ -91,12 +183,10 @@ class AutoUsbUploadTests(unittest.TestCase):
         ports = uploader.parse_usb_ports(payload)
         self.assertEqual(len(ports), 2)
         self.assertEqual(
-            uploader.fresh_candidates(ports, {"/dev/ttyUSB0"}, set()),
-            [],
+            uploader.fresh_candidates(ports, {"/dev/ttyUSB0"}, set()), []
         )
         self.assertEqual(
-            uploader.fresh_candidates(ports, set(), {"second"}),
-            [ports[0]],
+            uploader.fresh_candidates(ports, set(), {"second"}), [ports[0]]
         )
 
     def test_multi_board_mode_requires_stable_usb_serial(self):
@@ -111,74 +201,152 @@ class AutoUsbUploadTests(unittest.TestCase):
             2,
         )
 
-    def test_secret_must_be_real_and_is_never_returned_separately(self):
-        with tempfile.TemporaryDirectory() as work:
-            path = Path(work) / "secrets.h"
-            path.write_text('#pragma once\n#define HMAC_SECRET "field-key-123"\n')
-            self.assertEqual(uploader.validated_secret_header(path), path.read_text())
-            for value in (
-                "",
-                "CHANGE_THIS_TO_YOUR_SECRET",
-                "__COMPILE_ONLY_DO_NOT_DEPLOY__",
-                "TAGMACHINE_CI_LINK_VALIDATION_PUBLIC_KEY_NEVER_RELEASE",
-            ):
-                path.write_text(
-                    "#pragma once\n#define HMAC_SECRET " + json.dumps(value) + "\n"
-                )
-                with self.subTest(value=value), self.assertRaises(RuntimeError):
-                    uploader.validated_secret_header(path)
+    def test_valid_release_payload_returns_exact_image_digest(self):
+        release, downloaded = release_fixture()
+        verified = uploader.validate_release_payload(
+            release, COMMIT, downloaded, version=4
+        )
+        self.assertEqual(verified.image, downloaded["update.bin"])
+        self.assertEqual(
+            verified.image_sha256,
+            hashlib.sha256(downloaded["update.bin"]).hexdigest(),
+        )
+        self.assertEqual(verified.source_commit, COMMIT)
 
-    def test_upload_command_uses_full_image_directory_and_verify(self):
+    def test_tampered_image_is_rejected_by_github_digest(self):
+        release, downloaded = release_fixture()
+        downloaded["update.bin"] += b"tampered"
+        with self.assertRaisesRegex(RuntimeError, "크기|SHA-256"):
+            uploader.validate_release_payload(release, COMMIT, downloaded, version=4)
+
+    def test_wrong_provenance_is_rejected_after_matching_asset_digest(self):
+        release, downloaded = release_fixture(
+            provenance_updates={"device": "HAS1_escape_main"}
+        )
+        uploader.PINNED_RELEASES = {4: pin_for_release(release)}
+        with self.assertRaisesRegex(RuntimeError, "provenance"):
+            uploader.validate_release_payload(release, COMMIT, downloaded, version=4)
+
+    def test_release_commit_must_match_git_tag_commit(self):
+        release, downloaded = release_fixture()
+        with self.assertRaisesRegex(RuntimeError, "commit"):
+            uploader.validate_release_payload(release, "f" * 40, downloaded, version=4)
+
+    def test_missing_or_extra_release_assets_are_rejected(self):
+        release, _ = release_fixture()
+        release["assets"].pop()
+        with self.assertRaisesRegex(RuntimeError, "asset 구성"):
+            uploader.validate_release_metadata(release, version=4)
+
+        release, _ = release_fixture()
+        extra = dict(release["assets"][0])
+        extra["id"] = 999
+        extra["name"] = "unexpected.bin"
+        release["assets"].append(extra)
+        with self.assertRaisesRegex(RuntimeError, "asset 구성"):
+            uploader.validate_release_metadata(release, version=4)
+
+    def test_ota_manifest_must_match_update_signature(self):
+        release, downloaded = release_fixture()
+        downloaded["ota.txt"] = downloaded["ota.txt"].replace(b"00", b"ff", 1)
+        ota_asset = next(
+            asset for asset in release["assets"] if asset["name"] == "ota.txt"
+        )
+        ota_asset["size"] = len(downloaded["ota.txt"])
+        ota_asset["digest"] = (
+            "sha256:" + hashlib.sha256(downloaded["ota.txt"]).hexdigest()
+        )
+        uploader.PINNED_RELEASES = {4: pin_for_release(release)}
+        with self.assertRaisesRegex(RuntimeError, "canonical"):
+            uploader.validate_release_payload(release, COMMIT, downloaded, version=4)
+
+    def test_unpinned_version_or_changed_release_digest_is_rejected(self):
+        release, _ = release_fixture()
+        uploader.PINNED_RELEASES = {}
+        with self.assertRaisesRegex(RuntimeError, "allowlist"):
+            uploader.validate_release_metadata(release, version=4)
+
+        uploader.PINNED_RELEASES = {4: pin_for_release(release)}
+        update = next(
+            asset for asset in release["assets"] if asset["name"] == "update.bin"
+        )
+        update["digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(RuntimeError, "고정값"):
+            uploader.validate_release_metadata(release, version=4)
+
+    def test_upload_command_is_app_only_and_uses_release_file(self):
         command = uploader.upload_command(
-            "arduino-cli", None, "/dev/ttyUSB0", Path("/tmp/build")
+            "arduino-cli", "/dev/ttyUSB0", Path("/tmp/board-1/update.bin")
         )
         self.assertEqual(command[1], "upload")
         self.assertIn("UploadSpeed=460800", command[command.index("--fqbn") + 1])
         self.assertEqual(command[command.index("--port") + 1], "/dev/ttyUSB0")
-        self.assertEqual(command[command.index("--input-dir") + 1], "/tmp/build")
         self.assertEqual(
-            command[command.index("--upload-property") + 1],
-            "upload.extra_flags=--no-fast-flash",
+            command[command.index("--input-file") + 1],
+            "/tmp/board-1/update.bin",
         )
+        self.assertEqual(command[command.index("--programmer") + 1], "esptool")
+        self.assertNotIn("--input-dir", command)
         self.assertIn("--verify", command)
 
-    def test_dependency_provenance_detects_modified_cached_library(self):
+    def test_each_board_gets_a_byte_identical_fresh_image(self):
+        release, downloaded = release_fixture()
+        verified = uploader.validate_release_payload(
+            release, COMMIT, downloaded, version=4
+        )
         with tempfile.TemporaryDirectory() as work:
-            libraries = Path(work)
-            for name in uploader.REQUIRED_LIBRARY_DIRS:
-                (libraries / name).mkdir()
-                (libraries / name / "marker.txt").write_text(name)
-            for name, version in uploader.REGISTRY_LIBRARY_VERSIONS.items():
-                (libraries / name / "library.properties").write_text(
-                    f"name={name}\nversion={version}\n"
-                )
-            patch_hash = uploader.hashlib.sha256(
-                uploader.PREPARE_LIBRARIES.with_name(
-                    "has2-wifi-result-api.patch"
-                ).read_bytes()
-            ).hexdigest()
-            provenance = {
-                "SecureOTA": {
-                    "commit": uploader.SECUREOTA_REVISION,
-                    "revision": uploader.SECUREOTA_REVISION,
-                },
-                "HAS2_Wifi": {
-                    "branch": "first_store",
-                    "patch_sha256": patch_hash,
-                },
-                "SimpleTimer": {},
-            }
-            for name in uploader.CUSTOM_LIBRARY_DIRS:
-                provenance[name]["tree_sha256"] = uploader.directory_sha256(
-                    libraries / name
-                )
-            (libraries / "iotglove-dependencies.json").write_text(
-                json.dumps(provenance)
+            first = uploader.materialize_image(verified, Path(work) / "board-1")
+            second = uploader.materialize_image(verified, Path(work) / "board-2")
+            self.assertEqual(first.read_bytes(), verified.image)
+            self.assertEqual(second.read_bytes(), verified.image)
+            self.assertNotEqual(first.parent, second.parent)
+
+    def test_device_baseline_must_match_default_partition_and_app0(self):
+        tools = uploader.FlashTools(Path("/tmp/esptool"), b"partition", b"app0")
+        uploader.validate_device_baseline(b"partition", b"app0", tools)
+        with self.assertRaisesRegex(RuntimeError, "파티션"):
+            uploader.validate_device_baseline(b"other", b"app0", tools)
+        with self.assertRaisesRegex(RuntimeError, "app0"):
+            uploader.validate_device_baseline(b"partition", b"ota1", tools)
+
+    def test_baseline_read_command_is_read_only_at_460800(self):
+        tools = uploader.FlashTools(Path("/tmp/esptool"), b"partition", b"app0")
+        command = uploader.read_flash_command(
+            tools,
+            "/dev/ttyUSB0",
+            uploader.OTA_DATA_OFFSET,
+            uploader.OTA_DATA_SIZE,
+            Path("/tmp/otadata.bin"),
+        )
+        self.assertIn("read-flash", command)
+        self.assertNotIn("write-flash", command)
+        self.assertEqual(command[command.index("--baud") + 1], "460800")
+        self.assertIn(hex(uploader.OTA_DATA_OFFSET), command)
+
+    def test_cli_requires_version_and_has_no_local_build_or_secret_options(self):
+        args = uploader.parse_args(["--expected-version", "4", "--dry-run"])
+        self.assertEqual(args.expected_version, 4)
+        self.assertFalse(hasattr(args, "secret_file"))
+        self.assertFalse(hasattr(args, "libraries_dir"))
+        self.assertFalse(hasattr(args, "refresh_dependencies"))
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                uploader.parse_args(["--dry-run"])
+            with self.assertRaises(SystemExit):
+                uploader.parse_args(["--expected-version", "04", "--dry-run"])
+
+    def test_download_hosts_are_restricted_to_https_github(self):
+        self.assertTrue(
+            uploader.trusted_download_url(
+                "https://release-assets.githubusercontent.com/example"
             )
-            self.assertEqual(uploader.validate_library_collection(libraries), libraries)
-            (libraries / "SecureOTA" / "marker.txt").write_text("tampered")
-            with self.assertRaises(RuntimeError):
-                uploader.validate_library_collection(libraries)
+        )
+        self.assertFalse(
+            uploader.trusted_download_url("http://github.com/example")
+        )
+        self.assertFalse(
+            uploader.trusted_download_url("https://githubusercontent.com.evil.test/x")
+        )
 
 
 if __name__ == "__main__":

@@ -64,10 +64,22 @@ Sub Beetle run this same sketch and release target.
 
 ## USB baseline auto-upload
 
-The helper performs one clean build with the production HMAC key, waits for a
-new physical USB serial port, and uploads at 460800 bps. Because the Beetle's
-USB-UART adapter has a generic identity, disconnect all target Beetles before
-starting and connect exactly one when prompted.
+The helper does not rebuild firmware. It downloads the exact `update.bin` from
+the requested versioned GitHub Release (`HAS1_tagmachine_sub-vN`), verifies all
+seven Release assets against both repository-pinned and GitHub API SHA-256
+digests, and checks the pinned tag commit, build provenance, version, partition
+schema, canonical OTA metadata, signature-file consistency, ESP32-C3 image
+header, and OTA-slot margin. It then writes those unchanged `update.bin` bytes
+at 460800 bps. This explicit pin is required because GitHub currently reports
+the v4 Release itself as mutable.
+
+The check proves which bytes GitHub currently publishes for the versioned tag.
+It does not independently recompute the two HMACs because the Actions signing
+secret is deliberately unavailable to this host. No local `secrets.h`, source
+build, or dependency download is used.
+
+Because the Beetle's USB-UART adapter has a generic WCH identity, disconnect all
+target Beetles before starting and connect exactly one when prompted.
 
 To program Main and Sub sequentially with the same image:
 
@@ -78,8 +90,7 @@ python3 devices/HAS1_tagmachine_sub/scripts/auto_usb_upload.py \
 ```
 
 Version 4 is the first OTA-capable Beetle baseline. This guard intentionally
-refuses the current version-3 source until the release workflow has bumped and
-published version 4, avoiding a different binary under the immutable v3 label.
+selects the already-published v4 artifact instead of compiling the checkout.
 
 After the first upload, physically disconnect that Beetle. The helper waits for
 the disconnection before accepting the second one, preventing a reset or USB
@@ -93,22 +104,31 @@ python3 devices/HAS1_tagmachine_sub/scripts/auto_usb_upload.py \
   --expected-version 4
 ```
 
-`secrets.h` must contain the same real `HMAC_SECRET` configured for release
-publishing. The value is validated but never printed. When the key lives
-outside this checkout, pass it without copying it into the repository:
+To validate the download without inspecting or writing any USB device:
 
 ```sh
 python3 devices/HAS1_tagmachine_sub/scripts/auto_usb_upload.py \
-  --count 2 \
-  --expected-version 4 \
-  --secret-file /absolute/path/to/secrets.h
+  --dry-run \
+  --expected-version 4
 ```
 
-The first run prepares pinned libraries in the ignored
-`build/tagmachine-beetle-usb` cache. Use `--refresh-dependencies` to rebuild
-that cache, `--expected-version N` to guard against flashing the wrong release,
-or `--dry-run` to compile and check the OTA-slot margin without touching USB.
-Actual uploads require `--expected-version`; update its value for later releases.
+The script requires `arduino-cli` and ESP32 core 3.3.11. It uses that core's
+app-only `esptool` programmer recipe: only the Release app at `0x10000` is
+written, while the existing bootloader, `default` partition table, NVS, and OTA
+selection data are preserved. Before writing, it reads the device's partition
+table and OTA selection data and requires exact ESP32 core 3.3.11 `default` /
+initial-app0 baseline bytes. A board that has already switched to the second OTA
+slot is rejected instead of reporting a misleading successful upgrade. A fresh
+temporary directory is used for every board so differential-flash state cannot
+leak from Main to Sub. This path is intended for the existing v3 baseline
+Beetles; use OTA or a separate full recovery procedure for other states.
+
+`--expected-version` is always required. A later Release is rejected until its
+commit, seven asset hashes, toolchain and dependency policy have been reviewed
+and added to the uploader allowlist. The helper snapshots already-connected
+ports before the network download, validates the Release before waiting for a
+board, and never retries a failed read or flash silently.
+
 If automatic reset into the bootloader fails, hold BOOT, press and release RST,
 release BOOT, then rerun the command; failed uploads are never retried silently.
 
