@@ -19,9 +19,11 @@ void TimerRun(){
  * @brief WIFI read 타이머 주기별로 받는 함수
  */
 void WifiIntervalFunc(){
+    // Preserve Beetle control/status frames before an HTTP request can block.
+    ServiceBeetleLinks();
     has2wifi.Loop(DataChanged);
-    CommnunicationBeetle();         // Sub Beetle
-    CommnunicationMainBeetle();     // Main Beetle
+    ServiceBeetleLinks();
+    DispatchBeetleTagsFromWifiTick();
 }
 
 /**
@@ -39,10 +41,9 @@ void SubSerialTimerFunc(){
     SubSerialTimer.deleteTimer(subSerialTimerId);
     SubSerialTimerStart = false;
     if (ptrRfidFail != nullptr) ptrRfidFail();
-    while(toSubSerial.available())
-      toSubSerial.read();
-    while(toMainSerial.available())
-      toMainSerial.read();
+    // Parse queued control/status frames; discard only obsolete tag events.
+    SubSerialFlush();
+    MainSerialFlush();
 }
 void DebuffTimerFunc(){
     DebuffTimer.deleteTimer(debuffTimerId);

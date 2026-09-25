@@ -2,6 +2,7 @@
 #define _HAS1_TAGMACHINE_SUB_
 
 #include "library_and_pin.h"
+#include "recovery_policy.h"
 const int rfid_num = 3; // 설치된 pn532의 개수
 
 HardwareSerial fromSubSerial(1);
@@ -16,9 +17,22 @@ void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수
 
 //****************************************RFID SETUP****************************************************************
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
-void RfidInit(void);
+bool RfidInit(void);
 void RfidLoopMain(void);
+void RequestRfidReinit(bool recoveryAckRequired);
 bool rfid_init_complete = false;
+
+// PN532가 없을 때도 한 번의 폴링이 유한 시간 안에 끝나도록 한다.
+#define RFID_ACTIVATION_RETRIES 10
+#define RFID_DETECT_TIMEOUT_MS 250
+#define RFID_TAG_DATA_LENGTH 4
+
+// 정상 PN532 명령은 최악에도 5~8초 안에 반환한다. 12초 WDT는 소프트웨어 복구마저
+// 실행할 수 없는 진짜 교착만 재부팅하며, 평상시 카드 탐색에는 개입하지 않는다.
+#define BEETLE_WATCHDOG_TIMEOUT_MS 12000
+#define BEETLE_HELLO_INTERVAL_MS 1000
+#define BEETLE_HEARTBEAT_INTERVAL_MS 2000
+#define RFID_POLL_INTERVAL_MS 50
 
 // 근접 인식 Dead Zone 대응 — RxGain 동적 전환 (rfid.ino 구현).
 // GainMode는 반드시 여기(헤더)서 정의해야 한다 — Arduino가 .ino 탭들을 병합할 때 자동
@@ -31,5 +45,3 @@ enum GainMode { GAIN_NEAR, GAIN_FAR };
 // (단 한 번의 Read 실패로 바로 태그 제거 처리하지 않기 위한 디바운스 — 500~1000ms 범위에서 조정 가능)
 #define TAG_REMOVE_TIME_MS 500
 #endif
-
-

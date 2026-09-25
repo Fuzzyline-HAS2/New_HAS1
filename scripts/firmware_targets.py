@@ -24,6 +24,12 @@ TARGETS.update({
     for name in ("HAS1_revival_machine", "HAS1_escape_main", "HAS1_tagmachine_main")
 })
 TARGETS.update({
+    "HAS1_tagmachine_sub": (
+        "devices/HAS1_tagmachine_sub",
+        "esp32:esp32:dfrobot_beetle_esp32c3:UploadSpeed=115200,CDCOnBoot=cdc,CPUFreq=160,"
+        "FlashFreq=80,FlashMode=qio,FlashSize=4M,PartitionScheme=default,"
+        "DebugLevel=none,EraseFlash=none",
+    ),
     "iotglove": ("devices/iotglove", ttgo_fqbn(115200, "min_spiffs")),
     "iotglove_beetle": (
         "devices/iotglove/iotglove_beetle",

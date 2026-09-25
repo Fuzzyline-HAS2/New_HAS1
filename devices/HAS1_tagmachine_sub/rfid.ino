@@ -10,7 +10,7 @@
 
 static GainMode      currentGain    = GAIN_NEAR;
 static bool          tagLocked      = false;   // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
-static uint8_t       lockedData[32];            // 유지 중인 태그의 page7 데이터 — 동일 태그 판별 기준
+static uint8_t       lockedData[RFID_TAG_DATA_LENGTH]; // page7의 실제 4바이트 — 동일 태그 판별 기준
 static unsigned long lastSeenMs     = 0;         // 유지 중 태그를 마지막으로 확인한 시각
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
@@ -37,43 +37,66 @@ static bool ApplyGain(int mode) {
 }
 
 // 현재 칩에 적용된 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
-static bool DetectAndRead(uint8_t outData[32]) {
-    byte buf[64] = {0};
-    if (!nfc.sendCommandCheckAck(buf, 1)) return false;               // rfid 통신 가능한 상태인지 확인
-    if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
-    return nfc.ntag2xx_ReadPage(7, outData);
+static bool DetectAndRead(uint8_t outData[RFID_TAG_DATA_LENGTH]) {
+    uint8_t uid[7];
+    uint8_t uidLength = 0;
+
+    // readPassiveTargetID()는 InListPassiveTarget의 ACK와 결과 프레임을 모두 소비한다.
+    // 기존 0x00(정의되지 않은 명령) + startPassiveTargetIDDetection() 조합은 결과를
+    // 읽지 않은 채 다음 명령을 보내 PN532 프레임 위상을 깨뜨릴 수 있었다.
+    if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength,
+                                 RFID_DETECT_TIMEOUT_MS)) {
+        return false;
+    }
+    return nfc.ntag2xx_ReadPage(7, outData) != 0;
 }
 
 // page7 데이터 앞 4바이트를 태그 문자열로 뽑아 기존 프로토콜 그대로 전송한다
 // (main 보드의 CommnunicationBeetle/CommnunicationMainBeetle이 이 포맷을 기대함).
-static void SendTagData(uint8_t data[32]) {
+static void SendTagData(const uint8_t data[RFID_TAG_DATA_LENGTH]) {
     String tagData = "";
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < RFID_TAG_DATA_LENGTH; i++)
         tagData += (char)data[i];
     Serial.println(tagData);
     fromSubSerial.println(tagData);
 }
 
-void RfidInit()
+bool RfidInit()
 {
-    RestartPn532:
     nfc.begin();
     if (!(nfc.getFirmwareVersion()))
     {
-        Serial.print("PN532 연결실패");
+        Serial.println("PN532 firmware query failed");
         rfid_init_complete = false;
-        goto RestartPn532;
+        return false;
     }
-    else
-    {
-        nfc.SAMConfig();
-        Serial.print("PN532 연결성공");
-        rfid_init_complete = true;
+
+    if (!nfc.SAMConfig()) {
+        Serial.println("PN532 SAMConfig failed");
+        rfid_init_complete = false;
+        return false;
     }
+
+    // 기본 0xFF는 카드가 올 때까지 InListPassiveTarget을 무한 수행한다. 유한 재시도를
+    // 설정해야 readPassiveTargetID의 timeout 뒤에도 PN532가 다음 명령을 받을 수 있다.
+    if (!nfc.setPassiveActivationRetries(RFID_ACTIVATION_RETRIES)) {
+        Serial.println("PN532 activation retry setup failed");
+        rfid_init_complete = false;
+        return false;
+    }
+
     // PN532는 RF 설정을 저장하지 않으므로 초기화(전원 재투입/모듈 교체 포함)마다 재적용한다.
     currentGain = GAIN_NEAR;
-    ApplyGain(currentGain);
+    if (!ApplyGain(currentGain)) {
+        Serial.println("PN532 gain setup failed");
+        rfid_init_complete = false;
+        return false;
+    }
+
     tagLocked = false;
+    rfid_init_complete = true;
+    Serial.println("PN532 connected");
+    return true;
 }
 
 // 탐색 모드(태그 미보유): 현재 Gain으로 1회 시도 → 실패하면 반대 Gain으로 즉시 재시도
@@ -83,31 +106,48 @@ void RfidInit()
 //   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
 void RfidLoopMain(void)
 {
-    uint8_t data[32];
+    uint8_t data[RFID_TAG_DATA_LENGTH];
 
     if (!tagLocked) {
         if (!DetectAndRead(data)) {
-            currentGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-            ApplyGain(currentGain);
+            GainMode otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+            if (!ApplyGain(otherGain)) {
+                Serial.println("PN532 gain command failed; scheduling recovery");
+                RequestRfidReinit(false);
+                return;
+            }
+            currentGain = otherGain;
             if (!DetectAndRead(data)) return;   // 두 Gain 모두 미검출 — 이번 tick 스킵
         }
         // 태그 발견 — 지금 이 Gain을 유지하며 락온
         tagLocked = true;
-        memcpy(lockedData, data, 32);
+        memcpy(lockedData, data, RFID_TAG_DATA_LENGTH);
         lastSeenMs = millis();
         SendTagData(lockedData);
         return;
     }
 
-    bool found = DetectAndRead(data) && memcmp(data, lockedData, 32) == 0;
+    bool found = DetectAndRead(data) &&
+                 memcmp(data, lockedData, RFID_TAG_DATA_LENGTH) == 0;
     if (!found) {
+        GainMode previousGain = currentGain;
         GainMode otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-        ApplyGain(otherGain);
-        if (DetectAndRead(data) && memcmp(data, lockedData, 32) == 0) {
+        if (!ApplyGain(otherGain)) {
+            Serial.println("PN532 gain command failed; scheduling recovery");
+            RequestRfidReinit(false);
+            return;
+        }
+        if (DetectAndRead(data) &&
+            memcmp(data, lockedData, RFID_TAG_DATA_LENGTH) == 0) {
             currentGain = otherGain;  // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
             found = true;
         } else {
-            ApplyGain(currentGain);   // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
+            if (!ApplyGain(previousGain)) {
+                Serial.println("PN532 gain restore failed; scheduling recovery");
+                RequestRfidReinit(false);
+                return;
+            }
+            currentGain = previousGain;
         }
     }
 
@@ -123,6 +163,10 @@ void RfidLoopMain(void)
 
     // 유예시간 초과 — 태그 제거 확정, 탐색 모드로 복귀
     tagLocked = false;
+    if (!ApplyGain(GAIN_NEAR)) {
+        Serial.println("PN532 gain reset failed; scheduling recovery");
+        RequestRfidReinit(false);
+        return;
+    }
     currentGain = GAIN_NEAR;
-    ApplyGain(currentGain);
 }

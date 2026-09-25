@@ -17,6 +17,7 @@ on:
           - HAS1_duct
           - HAS1_escape_main
           - HAS1_tagmachine_main
+          - HAS1_tagmachine_sub
           - iotglove
           - iotglove_beetle
         default: HAS1_itembox
