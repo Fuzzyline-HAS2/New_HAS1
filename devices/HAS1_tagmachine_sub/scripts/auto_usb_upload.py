@@ -12,6 +12,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -48,8 +49,14 @@ PARTITION_TABLE_OFFSET = 0x8000
 PARTITION_TABLE_SIZE = 0xC00
 OTA_DATA_OFFSET = 0xE000
 OTA_DATA_SIZE = 0x2000
-DEFAULT_PARTITION_SHA256 = (
-    "53b91dac6e7a4dc14ab69656f0cc13902a1526f5a19d171ba9a526c005200899"
+# ESP32 core 3.3.11 regenerates the build partition table from default.csv.
+# Its packaged default.bin is a stale legacy layout and is not used by the
+# build recipe, so pin both the CSV input and the binary it actually generates.
+DEFAULT_PARTITION_CSV_SHA256 = (
+    "2683fd26b661bc909dcb8a9f05723d36c4000f9396995941a278fda409b753f7"
+)
+DEFAULT_PARTITION_TABLE_SHA256 = (
+    "148b959cbff1c38aa8e1d5c0ba9d612c54997b945e56a63f41223eef650653a1"
 )
 BOOT_APP0_SHA256 = (
     "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
@@ -132,7 +139,7 @@ class VerifiedRelease:
 @dataclass(frozen=True)
 class FlashTools:
     esptool: Path
-    partition_table: bytes
+    partition_table_sha256: str
     boot_app0: bytes
 
 
@@ -418,7 +425,7 @@ def load_flash_tools(cli: str) -> FlashTools:
         / "tools"
         / "partitions"
     )
-    default_partition = partitions / "default.bin"
+    default_partition_csv = partitions / "default.csv"
     boot_app0 = partitions / "boot_app0.bin"
     esptool_dir = packages / "tools" / "esptool_py" / ESPTOOL_VERSION
     esptool = next(
@@ -426,13 +433,13 @@ def load_flash_tools(cli: str) -> FlashTools:
         None,
     )
     try:
-        partition_bytes = default_partition.read_bytes()
+        partition_csv_bytes = default_partition_csv.read_bytes()
         boot_app0_bytes = boot_app0.read_bytes()
     except OSError as error:
         raise RuntimeError("ESP32 core의 default 파티션 자료를 읽을 수 없습니다.") from error
     if (
-        len(partition_bytes) != PARTITION_TABLE_SIZE
-        or hashlib.sha256(partition_bytes).hexdigest() != DEFAULT_PARTITION_SHA256
+        hashlib.sha256(partition_csv_bytes).hexdigest()
+        != DEFAULT_PARTITION_CSV_SHA256
         or len(boot_app0_bytes) != OTA_DATA_SIZE
         or hashlib.sha256(boot_app0_bytes).hexdigest() != BOOT_APP0_SHA256
     ):
@@ -441,7 +448,7 @@ def load_flash_tools(cli: str) -> FlashTools:
         raise RuntimeError(
             f"ESP32 core용 esptool {ESPTOOL_VERSION}을 찾을 수 없습니다: {esptool_dir}"
         )
-    return FlashTools(esptool, partition_bytes, boot_app0_bytes)
+    return FlashTools(esptool, DEFAULT_PARTITION_TABLE_SHA256, boot_app0_bytes)
 
 
 def trusted_download_url(url: str) -> bool:
@@ -460,19 +467,39 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
             raise urllib.error.HTTPError(
                 newurl, code, "신뢰하지 않는 GitHub 다운로드 redirect", headers, fp
             )
-        return super().redirect_request(request, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(
+            request, fp, code, msg, headers, newurl
+        )
+        old_host = (urllib.parse.urlsplit(request.full_url).hostname or "").lower()
+        new_host = (urllib.parse.urlsplit(newurl).hostname or "").lower()
+        if redirected is not None and old_host != new_host:
+            redirected.remove_header("Authorization")
+        return redirected
 
 
 OPENER = urllib.request.build_opener(SafeRedirect())
 
 
-def read_url(url: str, limit: int, *, api: bool = False) -> bytes:
+def github_request_headers(*, api: bool) -> dict[str, str]:
     headers = {
         "User-Agent": "New_HAS1-TagMachine-Release-USB-Uploader",
         "Accept": "application/vnd.github+json" if api else "application/octet-stream",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    request = urllib.request.Request(url, headers=headers)
+    # Public API calls work without authentication, but GitHub limits them to
+    # 60 requests/hour per source IP. Use the standard CLI/Actions token
+    # variables when present, and never forward credentials to asset hosts.
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if api and token:
+        token = token.strip()
+        if not token or "\r" in token or "\n" in token:
+            raise RuntimeError("GitHub token 환경 변수 형식이 잘못되었습니다.")
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def read_url(url: str, limit: int, *, api: bool = False) -> bytes:
+    request = urllib.request.Request(url, headers=github_request_headers(api=api))
     try:
         with OPENER.open(request, timeout=60) as response:
             final_url = response.geturl()
@@ -487,6 +514,15 @@ def read_url(url: str, limit: int, *, api: bool = False) -> bytes:
                 raise RuntimeError("GitHub 응답이 허용 크기를 초과합니다.")
             data = response.read(limit + 1)
     except urllib.error.HTTPError as error:
+        if (
+            api
+            and error.code == 403
+            and error.headers.get("X-RateLimit-Remaining") == "0"
+        ):
+            raise RuntimeError(
+                "GitHub API 호출 한도를 소진했습니다. GH_TOKEN 또는 "
+                "GITHUB_TOKEN을 설정한 뒤 다시 실행하세요."
+            ) from None
         raise RuntimeError(f"GitHub 요청 실패(HTTP {error.code}): {url}") from None
     except urllib.error.URLError as error:
         raise RuntimeError(f"GitHub 요청 실패: {error.reason}") from None
@@ -802,7 +838,11 @@ def read_flash_command(
 def validate_device_baseline(
     partition_table: bytes, ota_data: bytes, tools: FlashTools
 ) -> None:
-    if partition_table != tools.partition_table:
+    if (
+        len(partition_table) != PARTITION_TABLE_SIZE
+        or hashlib.sha256(partition_table).hexdigest()
+        != tools.partition_table_sha256
+    ):
         raise RuntimeError(
             "보드의 파티션 테이블이 ESP32 core 3.3.11 default와 다릅니다. "
             "앱 영역만 덮어쓰면 안전하지 않아 중단했습니다."
