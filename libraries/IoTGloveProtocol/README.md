@@ -15,7 +15,7 @@ There is no escaped token syntax. UART is the local wired trust boundary.
 | `PING` | None | Beetle replies HELLO, HEART and its last OTA result. |
 | `MODE` | enabled (`0`/`1`), profile (`live`/`training`) | Idempotent scan command. Replies HEART with the same request ID. |
 | `HEART` | uptime ms, scan enabled, OTA busy | Sent every second. Unsolicited messages use ID 0. |
-| `LOC` | room, RSSI dBm, age ms, valid (`0`/`1`) | Sent every 500 ms. ID increments per boot. Invalid room is `unknown`. |
+| `LOC` | room, RSSI dBm, age ms, valid (`0`/`1`) | Sent on room/validity changes and repeated every 1 s. ID increments per boot. Invalid room is `unknown`. |
 | `OTA` | `check` | Nonzero unique request ID required. No keys/credentials cross UART. |
 | `OTA` | `version`, positive firmware integer | Install/skip exactly this archived Beetle version; downgrades allowed. |
 | `OTA_RESULT` | status, firmware | Echoes OTA request ID; statuses below. |
@@ -31,8 +31,12 @@ lost reboot frame does not falsely time out or trigger a second flash. TTGO must
 use fresh request IDs across its own reboots and allow 180 s worker timeout plus
 30 s WDT recovery. Two boards must initially receive protocol v1 over USB.
 
-`IoTGloveLocation.h` provides the actual fixed-size (24-entry) candidate tracker
-and reset-input latch used by Beetle. Both are also compiled by the host tests.
+`IoTGloveLocation.h` provides the fixed-size tracker (24 devices, 96 samples)
+and reset-input latch used by Beetle. The tracker follows updated_IoTglove room
+scoring: 1.5 s sample window, device median/EMA, room top-two mean, 5 dB/1.2 s
+switching, and a global 5 s observation-loss timeout. LOC age measures time since
+the latest accepted HAS3 observation while retaining the stable room. Both the
+tracker and reset latch are compiled by the host tests.
 
 ## Optional Beetle diagnostics
 

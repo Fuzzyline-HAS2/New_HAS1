@@ -17,11 +17,11 @@ static wire::Frame frame(const char* type, uint32_t id, const char* a, const cha
 
 int main() {
   PeerState peer;
-  auto loc = frame("LOC", 1, "livingRoom", "-60", "100", "1");
+  auto loc = frame("LOC", 1, "living", "-60", "100", "1");
   peer.receive(loc, 100); assert(!peer.locationFresh(100));
   assert(peer.receive(frame("HELLO", 0, "beetle", "1", "1", "10"), 200));
   peer.receive(loc, 300);
-  assert(peer.locationFresh(300) && strcmp(peer.room(300), "livingRoom") == 0);
+  assert(peer.locationFresh(300) && strcmp(peer.room(300), "living") == 0);
   assert(peer.locationFresh(5199));
   peer.receive(loc, 5199);  // duplicates must not extend location lifetime
   assert(!peer.locationFresh(5200));

@@ -15,13 +15,13 @@ int main() {
   Frame input;
   strcpy(input.type, "LOC");
   input.id = UINT32_MAX;
-  assert(put(input, "bambooForest"));
+  assert(put(input, "bamboo"));
   assert(put(input, "-68"));
   assert(put(input, "250"));
   assert(put(input, "1"));
   char line[kMaxLine + 1];
   const size_t length = format(line, sizeof(line), input);
-  assert(length && strcmp(line, "IG1|LOC|4294967295|bambooForest|-68|250|1\n") == 0);
+  assert(length && strcmp(line, "IG1|LOC|4294967295|bamboo|-68|250|1\n") == 0);
   Decoder decoder;
   Frame output;
   for (size_t i = 0; i < length - 1; ++i) assert(!decoder.feed(line[i], 100, output));

@@ -23,7 +23,8 @@ int gapEvent(ble_gap_event* event, void*) {
   } else if (event->type == BLE_GAP_EVENT_DISC) {
     ble_hs_adv_fields fields = {};
     if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) != 0 ||
-        !fields.name || fields.name_len < 6 || fields.name_len >= sizeof(Observation::name))
+        !fields.name || !fields.name_is_complete || fields.name_len < 7 ||
+        fields.name_len >= sizeof(Observation::name))
       return 0;
     Observation observation = {};
     memcpy(observation.name, fields.name, fields.name_len);
@@ -48,7 +49,7 @@ void bleInit() {
 void blePoll(uint32_t now, bool enabled) {
   if (enabled != active) {
     active = enabled;
-    tracker.clear();
+    tracker.clear(now);
     xQueueReset(observations);
     if (!active && scanning.load()) {
       ble_gap_disc_cancel();
@@ -57,15 +58,15 @@ void blePoll(uint32_t now, bool enabled) {
   }
   Observation observation;
   for (size_t budget = 0; budget < 24 && xQueueReceive(observations, &observation, 0); ++budget) {
-    if (active && now - observation.at < iotglove::LocationTracker::kTtlMs)
+    if (active && now - observation.at <= iotglove::LocationTracker::kSampleWindowMs)
       tracker.observe(observation.name, observation.rssi, observation.at);
   }
   if (active && !scanning.load() && now - scanAttempted >= 100) {
     scanAttempted = now;
     ble_gap_disc_params params = {};
     params.itvl = 160;    // 100 ms (0.625 ms units).
-    params.window = 128;  // 80 ms; active scan includes name in scan responses.
-    params.passive = 0;
+    params.window = 160;  // Match the reference's 100 ms passive scan window.
+    params.passive = 1;
     params.filter_duplicates = 0;
     scanning.store(true);
     scanStarted = now;
