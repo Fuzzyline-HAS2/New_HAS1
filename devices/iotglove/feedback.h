@@ -33,6 +33,20 @@ class FeedbackEngine {
         break;
     }
 
+    // Academy taggers are a fixed visual marker. Ignore state transitions,
+    // proximity levels, operator vibe commands and pending event patterns.
+    if (state.phase == Phase::Academy && state.deviceState == DeviceState::Tagger) {
+      cancel();
+      pendingGhostAck_ = false;
+      known_ = state.stateValid;
+      remember(state);
+      if (state.stateValid) {
+        lastVibe_ = vibe;
+        haveVibe_ = true;
+      }
+      return out;
+    }
+
     if (!state.stateValid || suppressed) {
       cancel();
       pendingGhostAck_ = false;
@@ -40,12 +54,17 @@ class FeedbackEngine {
       remember(state);
       // Suppressed (OTA/reset) polls consume a held command so it never plays late. Invalid polls
       // carry a forced vibe of 0 and leave lastVibe_ alone, so the next valid poll is not an edge.
-      if (state.stateValid) { lastVibe_ = vibe; haveVibe_ = true; }
+      if (state.stateValid) {
+        lastVibe_ = vibe;
+        haveVibe_ = true;
+      }
       return out;
     }
     const bool baseline = !known_ || state.stateEpoch != epoch_;
     const bool changed = !baseline && (state.role != role_ ||
         state.deviceState != deviceState_ || state.phase != phase_);
+    const bool academyBoundary = (phase_ == Phase::Academy) !=
+        (state.phase == Phase::Academy);
     const bool removedAcknowledged = changed && pendingGhostAck_ &&
         role_ == Role::Player && state.role == Role::Ghost &&
         state.deviceState == deviceState_ && state.phase == phase_;
@@ -58,7 +77,27 @@ class FeedbackEngine {
       if (!haveVibe_ || state.stateEpoch != epoch_) lastVibe_ = vibe;
       haveVibe_ = true;
     }
+    // No event, command or state pattern may cross the Academy boundary in
+    // either direction. Repeated Academy player polls still leave their local
+    // Removed/Found pattern running.
+    if (academyBoundary) cancel();
     if (pattern_.total && uint32_t(now - patternStart_) >= pattern_.total) cancel();
+
+    if (state.phase == Phase::Academy) {
+      // Consume actual server values so commands held through Academy cannot
+      // appear as a late edge after exit. Only local chip/button events play.
+      lastVibe_ = vibe;
+      haveVibe_ = true;
+      if (state.haptic != Haptic::None) {
+        const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
+        start(choice, Source::Event, now);
+      }
+      known_ = true;
+      remember(state);
+      if (pattern_.total)
+        out.motor = feedback_config::motorOn(pattern_, uint32_t(now - patternStart_));
+      return out;
+    }
     // Stop any preceding activity before a new setting/ready/end notification.
     // This is an edge, not a per-poll cancellation of the new notification.
     // Operator commands are not state feedback and outlive these transitions.
@@ -88,7 +127,7 @@ class FeedbackEngine {
       // A capture's later server acknowledgement must not repeat its vibration.
       if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
           state.phase == Phase::Active) pendingGhostAck_ = true;
-    } else if (changed && !removedAcknowledged && source_ != Source::Event &&
+    } else if (changed && !academyBoundary && !removedAcknowledged && source_ != Source::Event &&
                source_ != Source::Command) {
       // Consume transitions during explicit events or commands; never queue a stale replay.
       start(feedback_config::forState(state, settings_), Source::State, now);
