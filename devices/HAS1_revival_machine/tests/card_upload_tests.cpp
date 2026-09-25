@@ -236,7 +236,8 @@ int main(int argc, char** argv) {
   } else if (scenario == "exit_safe_then_unsafe") {
     CardUploadSyncMode("activate"); present=true; tick();
     CardUploadSyncMode("open"); present=false;
-    for(int i=0;i<5;++i) tick(); assert(CardUploadBlocksOpen());
+    for(int i=0;i<5;++i) { tick(); }
+    assert(CardUploadBlocksOpen());
     CardUploadSyncMode("github"); assert(CardUploadBlocksOpen());
     CardUploadSyncMode("activate"); assert(!CardUploadBlocksOpen());
   } else if (scenario == "exit_deferred_recovery") {

@@ -268,7 +268,7 @@ void CardUploadInput(uint8_t byte)
   }
   if (byte == 8 || byte == 127) { if (uploadLineLength && !uploadLineInvalid) --uploadLineLength; return; }
   if ((byte < 32 && byte != '\t') || byte == 0) { uploadLineInvalid = true; return; }
-  if (uploadLineLength + 1 >= sizeof(uploadLine)) { uploadLineInvalid = true; return; }
+  if (uploadLineLength + 1U >= sizeof(uploadLine)) { uploadLineInvalid = true; return; }
   uploadLine[uploadLineLength++] = (char)byte;
 }
 
@@ -312,7 +312,7 @@ static bool UploadWritableTlv()
     if (type == 0) continue;
     if (type == 0xFE) return true;
     if (type == 1 && uploadLockPage == 40 && !ndefSeen && !factoryLockSeen &&
-        offset + 4 <= sizeof(uploadMemory)) {
+        offset + 4U <= sizeof(uploadMemory)) {
       const uint8_t factoryLock[] = {3, 0xA0, 0x0C, 0x34};
       if (memcmp(uploadMemory + offset, factoryLock, sizeof(factoryLock))) return false;
       offset += sizeof(factoryLock); factoryLockSeen = true; continue;
@@ -321,7 +321,7 @@ static bool UploadWritableTlv()
     ndefSeen = true;
     uint16_t length = uploadMemory[offset++];
     if (length == 255) {
-      if (offset + 2 > sizeof(uploadMemory)) return false;
+      if (offset + 2U > sizeof(uploadMemory)) return false;
       length = (uint16_t)((uploadMemory[offset] << 8) | uploadMemory[offset + 1]); offset += 2;
     }
     if (length > sizeof(uploadMemory) - offset) return false;
