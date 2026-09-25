@@ -190,11 +190,14 @@ Feedback GameModel::feedback() {
   out.phase = server_.phase;
   out.stateEpoch = server_.connectionEpoch;
   if (!haveServer_) return out;
-  // Terminal/exploration and stale-state displays cannot be overridden by roles.
+  // Terminal state remains an explicit override. A synchronization loss keeps
+  // rendering the last authoritative state instead of inventing a red warning.
   if (server_.phase == Phase::Ended || server_.deviceState == DeviceState::Ended) { out.display = Display::Ended; return out; }
-  if (needsSync_ || server_.phase == Phase::Exploration || server_.deviceState == DeviceState::Exploration) {
-    out.display = server_.phase == Phase::Setting || server_.phase == Phase::Unknown ?
-        Display::Setting : Display::Ready;
+  if (server_.phase == Phase::Photo || server_.deviceState == DeviceState::Photo) {
+    // Photo mode exposes only tagger versus survivor. Ghost and neutral are
+    // intentionally rendered as survivors so photo can never fall back to red.
+    out.display = server_.role == Role::Tagger ? Display::Tagger : Display::Player;
+    out.lit = 4;
     return out;
   }
   if (server_.phase == Phase::Unknown) return out;

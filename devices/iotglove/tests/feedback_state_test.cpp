@@ -56,8 +56,8 @@ static void patternsAndConfiguration() {
   assert(feedback_config::forState(f, config) == config.onSetting);
   f.deviceState = DeviceState::Ready;
   assert(feedback_config::forState(f, config) == config.onReady);
-  f.phase = Phase::Exploration;
-  assert(feedback_config::forState(f, config) == config.onExploration);
+  f.phase = Phase::Photo;
+  assert(feedback_config::forState(f, config) == config.onPhoto);
   f.phase = Phase::Ended;
   assert(feedback_config::forState(f, config) == config.onEnded);
   f = state(Role::Ghost, DeviceState::Other, Phase::Active, Display::Ghost);

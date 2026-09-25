@@ -11,9 +11,9 @@ namespace iotglove {
 constexpr uint8_t kDefaultBrightness = 50;
 
 enum class Profile : uint8_t { Origin, Training };
-enum class Phase : uint8_t { Unknown, Setting, Ready, Exploration, Active, Ended };
+enum class Phase : uint8_t { Unknown, Setting, Ready, Photo, Active, Ended };
 enum class Role : uint8_t { Neutral, Player, Tagger, Ghost };
-enum class DeviceState : uint8_t { Other, Setting, Ready, Blink, Activate, Exploration, Ended };
+enum class DeviceState : uint8_t { Other, Setting, Ready, Blink, Activate, Photo, Ended };
 enum class Display : uint8_t { Setting, Ready, Player, Ghost, Tagger, TaggerActive, TaggerBlink, Ended };
 enum class Haptic : uint8_t { None, Removed, Found };
 

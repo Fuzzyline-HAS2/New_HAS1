@@ -1,9 +1,14 @@
 #pragma once
 #include "game_state.h"
+#include "library_and_pin.h"
 #include "state_policy.h"
 #include <string.h>
 
 namespace iotglove {
+inline bool serverSnapshotFresh(const ServerSnapshot& snapshot, uint32_t now) {
+  return snapshot.valid && uint32_t(now - snapshot.receivedAtMs) < kServerFreshMs;
+}
+
 inline bool sameEventSession(const GameEvent& e, const ServerSnapshot& s) {
   return s.valid && gameMutationsAllowed(s) &&
          strcmp(e.session, s.session) == 0 && strcmp(e.deviceName, s.deviceName) == 0;

@@ -8,6 +8,7 @@
 #include "battery.h"
 #include "sensor.h"
 #include "feedback.h"
+#include "network_policy.h"
 #include "state_policy.h"
 #include "library_and_pin.h"
 #include "wifi_client.h"
@@ -94,7 +95,7 @@ void hello(uint32_t id) {
 }
 
 bool serverFresh(uint32_t now) {
-  return game.server().valid && uint32_t(now - game.server().receivedAtMs) < kServerFreshMs;
+  return serverSnapshotFresh(game.server(), now);
 }
 
 bool updatePhase() {
@@ -136,7 +137,7 @@ const char* phaseName(Phase phase) {
   switch (phase) {
     case Phase::Setting: return "setting";
     case Phase::Ready: return "ready";
-    case Phase::Exploration: return "exploration";
+    case Phase::Photo: return "photo";
     case Phase::Active: return "active";
     case Phase::Ended: return "ended";
     default: return "unknown";

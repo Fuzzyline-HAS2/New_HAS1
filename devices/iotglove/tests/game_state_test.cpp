@@ -76,7 +76,7 @@ static void trainingResetAndBoot() {
 static void chipChangesNeverRequestRolesOrLife() {
   for (Role role : {Role::Neutral, Role::Player, Role::Ghost, Role::Tagger}) {
     for (DeviceState device : {DeviceState::Other, DeviceState::Setting, DeviceState::Ready,
-         DeviceState::Blink, DeviceState::Activate, DeviceState::Exploration, DeviceState::Ended}) {
+         DeviceState::Blink, DeviceState::Activate, DeviceState::Photo, DeviceState::Ended}) {
       GameModel g(Profile::Origin);
       g.begin(true, 0);
       auto s = snapshot(role); s.deviceState = device; s.lifeChip = 1;
@@ -219,13 +219,15 @@ static void remoteChangesAndFailures() {
   g.tick(3500); auto event = pop(g, GameEvent::Kind::SetCount, 2);
   g.commandUncertain(event.sequence);
   assert(!g.synchronized());
+  assert(g.feedback().display == Display::Ghost);  // Loss of sync preserves the last color.
   g.buttonPressed(3600); noEvent(g);
   g.applyServer(s, 3700); assert(g.count() == 1 && g.synchronized());
   g.buttonPressed(3800);
   strcpy(s.session, "G1:run2");
-  s.phase = Phase::Exploration;
+  s.phase = Phase::Photo;
+  s.deviceState = DeviceState::Photo;
   g.applyServer(s, 3900);
-  noEvent(g); assert(g.feedback().display == Display::Ready);
+  noEvent(g); assert(g.feedback().display == Display::Player);  // Photo treats ghosts as survivors.
   g.chipChanged(true, 4000); noEvent(g);
   s.phase = Phase::Ended; s.role = Role::Tagger;
   g.applyServer(s, 4100); assert(g.feedback().display == Display::Ended);
@@ -309,15 +311,90 @@ static void taggerDisplayAndSafety() {
   s.connectionEpoch = 9;
   g.applyServer(s, 0); assert(g.feedback().display == Display::TaggerBlink);
   s.valid = false; g.applyServer(s, 10);
-  auto f = g.feedback(); assert(!f.stateValid && f.display == Display::Ready);
+  auto f = g.feedback(); assert(!f.stateValid && f.display == Display::TaggerBlink);
   s.valid = true; s.connectionEpoch = 10; g.applyServer(s, 20);
   f = g.feedback(); assert(f.stateValid && f.stateEpoch == 10);
-  for (Phase phase : {Phase::Exploration, Phase::Ended}) {
-    s.phase = phase; g.applyServer(s, 30);
-    f = g.feedback();
-    assert(f.display == (phase == Phase::Ended ? Display::Ended : Display::Ready));
-    g.chipChanged(false, 40); g.buttonPressed(50); g.tick(10000); noEvent(g);
+  s.phase = Phase::Ended; g.applyServer(s, 30);
+  f = g.feedback(); assert(f.display == Display::Ended);
+  g.chipChanged(false, 40); g.buttonPressed(50); g.tick(10000); noEvent(g);
+}
+
+static void invalidStateKeepsLastColor() {
+  for (Role role : {Role::Player, Role::Ghost, Role::Tagger}) {
+    GameModel g(Profile::Origin);
+    FeedbackEngine engine;
+    g.begin(true, 0);
+    auto s = snapshot(role);
+    s.deviceState = DeviceState::Activate;
+    if (role == Role::Ghost) s.revivalCount = 2;
+    g.applyServer(s, 10);
+    auto before = engine.update(g.feedback(), 0, false, 10);
+    if (role == Role::Player)
+      assert(before.red == 0 && before.green == 64 && before.blue == 0 && before.lit == 4);
+    else if (role == Role::Ghost)
+      assert(before.red == 0 && before.green == 0 && before.blue == 64 && before.lit == 2);
+    else
+      assert(before.red == 48 && before.green == 0 && before.blue == 64 && before.lit == 4);
+
+    auto invalid = s;
+    invalid.valid = false;
+    g.applyServer(invalid, 20);
+    auto feedback = g.feedback();
+    auto after = engine.update(feedback, 0, false, 20);
+    assert(!feedback.stateValid);
+    assert(after.red == before.red && after.green == before.green && after.blue == before.blue);
+    assert(after.lit == before.lit);
+
+    s.connectionEpoch++;
+    g.applyServer(s, 30);
+    before = engine.update(g.feedback(), 0, false, 30);
+    g.commandUncertain(0);  // Same path used by the 15-second freshness timeout.
+    feedback = g.feedback();
+    after = engine.update(feedback, 0, false, 40);
+    assert(!feedback.stateValid);
+    assert(after.red == before.red && after.green == before.green && after.blue == before.blue);
+    assert(after.lit == before.lit);
   }
+}
+
+static void photoUsesRoleColors() {
+  for (Role role : {Role::Neutral, Role::Player, Role::Ghost, Role::Tagger}) {
+    GameModel g(Profile::Origin);
+    FeedbackEngine engine;
+    g.begin(false, 0);
+    auto s = snapshot(role);
+    s.phase = Phase::Photo;
+    s.deviceState = DeviceState::Photo;
+    if (role == Role::Ghost) s.revivalCount = 2;
+    g.applyServer(s, 10);
+    auto feedback = g.feedback();
+    auto out = engine.update(feedback, 0, false, 10);
+    assert(feedback.display == (role == Role::Tagger ? Display::Tagger : Display::Player));
+    assert(out.lit == 4);
+    if (role == Role::Tagger) assert(out.red == 48 && out.green == 0 && out.blue == 64);
+    else assert(out.red == 0 && out.green == 64 && out.blue == 0);
+    g.buttonPressed(20); g.tick(10000); noEvent(g);  // Photo remains mutation-safe.
+  }
+}
+
+static void taggerBlinkContinuesWhileInvalid() {
+  GameModel g(Profile::Origin);
+  FeedbackEngine engine;
+  g.begin(true, 0);
+  auto s = snapshot(Role::Tagger);
+  s.deviceState = DeviceState::Blink;
+  g.applyServer(s, 0);
+  auto out = engine.update(g.feedback(), 0, false, 0);
+  assert(out.red == 48 && out.blue == 64);
+
+  s.valid = false;
+  g.applyServer(s, 10);
+  out = engine.update(g.feedback(), 0, false, 10);
+  assert(out.red == 48 && out.blue == 64);
+  out = engine.update(g.feedback(), 0, false, 500);
+  assert(out.red == 0 && out.green == 0 && out.blue == 0);
+  out = engine.update(g.feedback(), 0, false, 1000);
+  assert(out.red == 48 && out.blue == 64);
 }
 
 int main() {
@@ -333,5 +410,8 @@ int main() {
   debounceAndOverflow();
   explicitPreparationStates();
   taggerDisplayAndSafety();
+  invalidStateKeepsLastColor();
+  photoUsesRoleColors();
+  taggerBlinkContinuesWhileInvalid();
   puts("PASS: production game model, debounce, training, count, reconciliation and rollover");
 }

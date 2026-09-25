@@ -64,7 +64,7 @@ int main() {
   assert(!phaseChange.hasActive());
   phaseChange.observe(first); assert(!phaseChange.hasPending());  // no automatic retry
   phaseChange.observe(second); assert(phaseChange.startPending(200));
-  assert(phaseChange.abortReadyPair(201, true, false, true, Phase::Exploration));
+  assert(phaseChange.abortReadyPair(201, true, false, true, Phase::Photo));
   assert(!phaseChange.hasActive());
 
   OtaRequests offline;

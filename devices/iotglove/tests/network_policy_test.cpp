@@ -6,6 +6,13 @@ using namespace iotglove;
 int main() {
   ServerSnapshot s;
   s.valid = true; s.phase = Phase::Active; s.role = Role::Player;
+  s.receivedAtMs = 100;
+  assert(serverSnapshotFresh(s, 100 + kServerFreshMs - 1));
+  assert(!serverSnapshotFresh(s, 100 + kServerFreshMs));
+  s.valid = false; assert(!serverSnapshotFresh(s, 100));
+  s.valid = true; s.receivedAtMs = UINT32_MAX - 100U;
+  assert(serverSnapshotFresh(s, kServerFreshMs - 102U));
+  assert(!serverSnapshotFresh(s, kServerFreshMs - 101U));
   strcpy(s.deviceName, "G1P3"); strcpy(s.session, "boot-1");
   GameEvent e;
   strcpy(e.deviceName, s.deviceName); strcpy(e.session, s.session);

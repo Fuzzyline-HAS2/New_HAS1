@@ -86,7 +86,8 @@ void reset(const char* state) {
 int main() {
   // These snapshots cannot decode as a valid game. The independent lane still
   // reports both physical values, then deduplicates the unchanged value.
-  for (const char* state : {"unknown", "setting", "ready", "blink", "activate", "github", "ended", "exploration"}) {
+  // The retired exploration value remains irrelevant to this independent physical lane.
+  for (const char* state : {"unknown", "setting", "ready", "blink", "activate", "github", "ended", "photo", "exploration"}) {
     reset(state);
     reportChip(); assert(wifi.writes == 1 && server["life_chip"].text == "0");
     reportChip(); assert(wifi.writes == 1);
