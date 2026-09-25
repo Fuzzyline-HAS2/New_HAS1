@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build once, then upload TagMachine Beetles as they are connected by USB.
+"""Download and upload an exact TagMachine Beetle versioned Release image.
 
 Automatic mode deliberately ignores serial ports that were already present
 when the script started. Connect exactly one Beetle when prompted. Use
@@ -20,47 +20,81 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
-SKETCH_DIR = Path(__file__).resolve().parents[1]
-ROOT = Path(__file__).resolve().parents[3]
-PREPARE_LIBRARIES = ROOT / "devices/iotglove/tools/prepare_libraries.py"
+DEVICE = "HAS1_tagmachine_sub"
+REPOSITORY = "Fuzzyline-HAS2/New_HAS1"
+API_BASE = f"https://api.github.com/repos/{REPOSITORY}"
 CORE_VERSION = "3.3.11"
+ESPTOOL_VERSION = "5.3.1"
+PARTITION_VERSION = 1
+PARTITION_SCHEME = "default"
 SECUREOTA_REVISION = "162db758e6806895ef10ca39b101f9f8753bdc20"
-FQBN = (
-    "esp32:esp32:dfrobot_beetle_esp32c3:UploadSpeed=460800,"
+RELEASE_FQBN = (
+    "esp32:esp32:dfrobot_beetle_esp32c3:UploadSpeed=115200,"
     "CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=qio,FlashSize=4M,"
     "PartitionScheme=default,DebugLevel=none,EraseFlash=none"
 )
+UPLOAD_FQBN = RELEASE_FQBN.replace("UploadSpeed=115200", "UploadSpeed=460800")
+FQBN = UPLOAD_FQBN  # Public alias used by the host-side tests.
 SLOT_SIZE = 0x140000
 REQUIRED_SLOT_MARGIN = 32 * 1024
+MAX_IMAGE_BYTES = SLOT_SIZE - REQUIRED_SLOT_MARGIN
+MAX_API_BYTES = 1024 * 1024
+PARTITION_TABLE_OFFSET = 0x8000
+PARTITION_TABLE_SIZE = 0xC00
+OTA_DATA_OFFSET = 0xE000
+OTA_DATA_SIZE = 0x2000
+DEFAULT_PARTITION_SHA256 = (
+    "53b91dac6e7a4dc14ab69656f0cc13902a1526f5a19d171ba9a526c005200899"
+)
+BOOT_APP0_SHA256 = (
+    "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+)
 POLL_SECONDS = 0.5
 STABLE_POLLS = 3
 DISCONNECT_STABLE_SECONDS = 2.0
-SOURCE_SUFFIXES = {".ino", ".h", ".hpp", ".c", ".cpp", ".S", ".s"}
-REGISTRY_LIBRARIES = (
-    "Adafruit PN532@1.3.4",
-    "Adafruit BusIO@1.17.4",
-    "ArduinoJson@7.4.3",
+EXPECTED_ASSETS = (
+    "update.bin",
+    "update.sig",
+    "ota.txt",
+    "ota.sig",
+    "version.txt",
+    "partition_version.txt",
+    "build-provenance.json",
 )
-REGISTRY_LIBRARY_VERSIONS = {
-    "Adafruit_PN532": "1.3.4",
-    "Adafruit_BusIO": "1.17.4",
-    "ArduinoJson": "7.4.3",
+ASSET_SIZE_LIMITS = {
+    "update.bin": (24, MAX_IMAGE_BYTES),
+    "update.sig": (32, 32),
+    "ota.txt": (1, 512),
+    "ota.sig": (32, 32),
+    "version.txt": (1, 16),
+    "partition_version.txt": (1, 16),
+    "build-provenance.json": (2, MAX_API_BYTES),
+}
+# GitHub reports v4 as mutable, so API metadata alone is not a permanent trust
+# anchor. Every allowed release must be reviewed and pinned here before use.
+PINNED_RELEASES = {
+    4: {
+        "source_commit": "05ad44710616cf9c642c858c1567f56cbee4159f",
+        "assets": {
+            "update.bin": "027d456a056145ed1919285d9658c3adb7374f16504e67c504286a2786f53675",
+            "update.sig": "2a44d02943e0caefe2efcdeaa074abf54391ff237c490f1bc010838bf8b61d79",
+            "ota.txt": "dd5606d9a5e254be9c0d1d207bbf6ceda596d134a46664e9b0e75e2867c6abe2",
+            "ota.sig": "dcac4a8f84174c540badd8aff6f1cf245b7fc2016fc2605e42dcd2ffd6ada160",
+            "version.txt": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "partition_version.txt": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "build-provenance.json": "b5a284bffdbd8100d5f43a7ce6eb247f9cf2f5a0d08b2f686f917b8cb2ab1141",
+        },
+    }
 }
 # DFRobot's Beetle ESP32-C3 board exposes its CH343 USB-UART bridge with this
 # generic WCH identity. It is not globally unique to Beetle hardware, so auto
 # mode still requires the operator to connect exactly one known Beetle.
 SUPPORTED_BEETLE_USB_IDS = frozenset({("0x1a86", "0x55d4")})
-REQUIRED_LIBRARY_DIRS = (
-    "Adafruit_PN532",
-    "Adafruit_BusIO",
-    "ArduinoJson",
-    "HAS2_Wifi",
-    "SecureOTA",
-    "SimpleTimer",
-)
-CUSTOM_LIBRARY_DIRS = ("HAS2_Wifi", "SecureOTA", "SimpleTimer")
 
 
 @dataclass(frozen=True)
@@ -76,11 +110,40 @@ class UsbPort:
         return self.serial_number.strip().lower()
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass(frozen=True)
+class VerifiedRelease:
+    version: int
+    tag: str
+    source_commit: str
+    image: bytes
+    image_sha256: str
+
+    @property
+    def web_url(self) -> str:
+        return f"https://github.com/{REPOSITORY}/releases/tag/{self.tag}"
+
+
+@dataclass(frozen=True)
+class FlashTools:
+    esptool: Path
+    partition_table: bytes
+    boot_app0: bytes
+
+
+def positive_version(value: str) -> int:
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise argparse.ArgumentTypeError("선행 0 없는 양의 정수여야 합니다.")
+    version = int(value)
+    if version > 2147483647:
+        raise argparse.ArgumentTypeError("버전이 INT_MAX를 초과합니다.")
+    return version
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "TagMachine Beetle 펌웨어를 한 번 빌드한 뒤 새 USB 포트가 나타나면 "
-            "460800bps로 자동 업로드합니다."
+            "GitHub의 정확한 TagMachine Beetle 버전 릴리즈를 검증한 뒤 "
+            "새 USB 포트가 나타나면 460800bps로 자동 업로드합니다."
         )
     )
     parser.add_argument(
@@ -101,43 +164,23 @@ def parse_args() -> argparse.Namespace:
         help="각 보드 연결/분리 대기 시간(기본: 300초)",
     )
     parser.add_argument(
-        "--secret-file",
-        type=Path,
-        help="실제 HMAC secrets.h 경로(기본: 스케치 폴더의 secrets.h)",
-    )
-    parser.add_argument(
         "--expected-version",
-        type=int,
-        help="소스 FIRMWARE_VER가 이 값과 다르면 빌드 전에 중단합니다.",
-    )
-    parser.add_argument(
-        "--libraries-dir",
-        type=Path,
-        help="이미 준비된 라이브러리 모음. 생략하면 build 캐시를 준비합니다.",
-    )
-    parser.add_argument(
-        "--refresh-dependencies",
-        action="store_true",
-        help="자동 준비 라이브러리 캐시를 지우고 다시 받습니다.",
+        type=positive_version,
+        required=True,
+        metavar="N",
+        help="다운로드할 고정 검토 태그 HAS1_tagmachine_sub-vN의 버전",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="실제 키로 클린 빌드와 슬롯 검증만 하고 업로드하지 않습니다.",
+        help="릴리즈 다운로드와 검증만 하고 USB에는 접근하지 않습니다.",
     )
     parser.add_argument(
         "--arduino-cli",
         default="arduino-cli",
         help="arduino-cli 실행 파일(기본: PATH의 arduino-cli)",
     )
-    return parser.parse_args()
-
-
-def command_prefix(cli: str, config: Path | None) -> list[str]:
-    result = [cli]
-    if config is not None:
-        result += ["--config-file", str(config)]
-    return result
+    return parser.parse_args(argv)
 
 
 def run_json(command: list[str]) -> object:
@@ -219,18 +262,13 @@ def parse_usb_ports(payload: object) -> list[UsbPort]:
             marker in haystack
             for marker in ("bluetooth", "debug-console", "wireless", "network")
         )
-        # A VID/PID pair is required because names such as COM3 or cu.usbserial
-        # are not a board identity. DFRobot's USB-UART has no unique board name.
         if address and protocol == "serial" and vid and pid and not excluded:
             ports[address] = UsbPort(address, label, vid, pid, serial_number)
     return sorted(ports.values(), key=lambda item: item.address)
 
 
-def list_usb_ports(cli: str, config: Path | None) -> list[UsbPort]:
-    payload = run_json(
-        command_prefix(cli, config) + ["board", "list", "--format", "json"]
-    )
-    return parse_usb_ports(payload)
+def list_usb_ports(cli: str) -> list[UsbPort]:
+    return parse_usb_ports(run_json([cli, "board", "list", "--format", "json"]))
 
 
 def fresh_candidates(
@@ -258,7 +296,6 @@ def unseen_ports(
 
 def wait_for_new_port(
     cli: str,
-    config: Path | None,
     ignored_addresses: set[str],
     completed_ids: set[str],
     timeout_seconds: int,
@@ -268,7 +305,7 @@ def wait_for_new_port(
     stable_count = 0
     ignored = set(ignored_addresses)
     while time.monotonic() < deadline:
-        ports = list_usb_ports(cli, config)
+        ports = list_usb_ports(cli)
         current_addresses = {port.address for port in ports}
         # An initially connected port becomes eligible only after it was
         # physically absent once and then reappears.
@@ -281,8 +318,7 @@ def wait_for_new_port(
         ]
         if unsupported:
             details = "\n".join(
-                f"  - {port.address} ({port.vid}/{port.pid})"
-                for port in unsupported
+                f"  - {port.address} ({port.vid}/{port.pid})" for port in unsupported
             )
             raise RuntimeError(
                 "새 USB 직렬 장치가 확인된 Beetle USB ID가 아니어서 "
@@ -313,12 +349,12 @@ def wait_for_new_port(
 
 
 def wait_for_physical_disconnect(
-    cli: str, config: Path | None, uploaded: UsbPort, timeout_seconds: int
+    cli: str, uploaded: UsbPort, timeout_seconds: int
 ) -> set[str]:
     deadline = time.monotonic() + timeout_seconds
     absent_since: float | None = None
     while time.monotonic() < deadline:
-        ports = list_usb_ports(cli, config)
+        ports = list_usb_ports(cli)
         present = any(
             (uploaded.unique_id and port.unique_id == uploaded.unique_id)
             or (not uploaded.unique_id and port.address == uploaded.address)
@@ -335,17 +371,6 @@ def wait_for_physical_disconnect(
     raise RuntimeError("업로드한 Beetle의 USB 분리를 확인하지 못했습니다.")
 
 
-def read_firmware_version(sketch: Path) -> int:
-    match = re.search(
-        r"^\s*#define\s+FIRMWARE_VER\s+(\d+)\s*$",
-        sketch.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    if not match or int(match.group(1)) <= 0:
-        raise RuntimeError(f"FIRMWARE_VER를 읽을 수 없습니다: {sketch}")
-    return int(match.group(1))
-
-
 def require_stable_sequence_identity(port: UsbPort, count: int) -> None:
     if count > 1 and not port.unique_id:
         raise RuntimeError(
@@ -354,61 +379,8 @@ def require_stable_sequence_identity(port: UsbPort, count: int) -> None:
         )
 
 
-def validated_secret_header(path: Path) -> str:
-    try:
-        contents = path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise RuntimeError(
-            f"실제 OTA 키가 든 secrets.h가 필요합니다: {path}"
-        ) from error
-    match = re.search(
-        r'^\s*#define\s+HMAC_SECRET\s+("(?:\\.|[^"\\])*")\s*$',
-        contents,
-        re.MULTILINE,
-    )
-    if not match:
-        raise RuntimeError(f"HMAC_SECRET 문자열 매크로를 읽을 수 없습니다: {path}")
-    try:
-        secret = json.loads(match.group(1))
-    except json.JSONDecodeError as error:
-        raise RuntimeError("secrets.h의 HMAC_SECRET 문자열이 잘못되었습니다.") from error
-    normalized = secret.strip() if isinstance(secret, str) else ""
-    disabled = (
-        not normalized
-        or normalized in {
-            "CHANGE_THIS_TO_YOUR_SECRET",
-            "REPLACE_WITH_DEPLOYMENT_SECRET",
-            "__COMPILE_ONLY_DO_NOT_DEPLOY__",
-            "TAGMACHINE_CI_LINK_VALIDATION_PUBLIC_KEY_NEVER_RELEASE",
-        }
-        or "COMPILE_ONLY" in normalized
-        or "PLACEHOLDER" in normalized
-        or normalized.startswith("REPLACE_WITH_")
-        or any(ord(character) < 32 for character in secret)
-    )
-    if disabled:
-        raise RuntimeError("실제 배포 HMAC_SECRET이 아니므로 USB 빌드를 중단했습니다.")
-    return contents
-
-
-def stage_sketch(destination: Path, secret_header: str) -> Path:
-    staged = destination / SKETCH_DIR.name
-    staged.mkdir(parents=True)
-    for source in SKETCH_DIR.iterdir():
-        if (
-            source.is_file()
-            and source.suffix in SOURCE_SUFFIXES
-            and source.name != "secrets.h"
-        ):
-            shutil.copy2(source, staged / source.name)
-    (staged / "secrets.h").write_text(secret_header, encoding="utf-8")
-    return staged
-
-
-def check_core(cli: str, config: Path | None) -> None:
-    payload = run_json(
-        command_prefix(cli, config) + ["core", "list", "--format", "json"]
-    )
+def check_core(cli: str) -> None:
+    payload = run_json([cli, "core", "list", "--format", "json"])
     platforms = payload.get("platforms", []) if isinstance(payload, dict) else []
     installed = next(
         (
@@ -425,174 +397,445 @@ def check_core(cli: str, config: Path | None) -> None:
         )
 
 
-def directory_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    for item in sorted(
-        (entry for entry in path.rglob("*") if entry.is_file()),
-        key=lambda entry: entry.relative_to(path).as_posix(),
-    ):
-        relative = item.relative_to(path).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        digest.update(hashlib.sha256(item.read_bytes()).digest())
-    return digest.hexdigest()
-
-
-def library_version(path: Path) -> str:
-    properties = path / "library.properties"
+def load_flash_tools(cli: str) -> FlashTools:
+    data_dir = run_json(
+        [cli, "config", "get", "directories.data", "--format", "json"]
+    )
+    if not isinstance(data_dir, str) or not data_dir.strip():
+        raise RuntimeError("arduino-cli data 디렉터리를 확인할 수 없습니다.")
+    packages = Path(data_dir).expanduser().resolve() / "packages/esp32"
+    partitions = (
+        packages
+        / "hardware"
+        / "esp32"
+        / CORE_VERSION
+        / "tools"
+        / "partitions"
+    )
+    default_partition = partitions / "default.bin"
+    boot_app0 = partitions / "boot_app0.bin"
+    esptool_dir = packages / "tools" / "esptool_py" / ESPTOOL_VERSION
+    esptool = next(
+        (path for path in (esptool_dir / "esptool", esptool_dir / "esptool.exe") if path.is_file()),
+        None,
+    )
     try:
-        contents = properties.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    match = re.search(r"^version\s*=\s*(\S+)\s*$", contents, re.MULTILINE)
-    return match.group(1) if match else ""
-
-
-def validate_dependency_provenance(path: Path) -> None:
-    provenance_path = path / "iotglove-dependencies.json"
-    try:
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(
-            "의존성 provenance가 없거나 손상되었습니다. "
-            "--refresh-dependencies로 다시 준비하세요."
-        ) from error
-    patch_path = PREPARE_LIBRARIES.with_name("has2-wifi-result-api.patch")
-    patch_hash = hashlib.sha256(patch_path.read_bytes()).hexdigest()
-    secureota = provenance.get("SecureOTA", {})
-    has2_wifi = provenance.get("HAS2_Wifi", {})
+        partition_bytes = default_partition.read_bytes()
+        boot_app0_bytes = boot_app0.read_bytes()
+    except OSError as error:
+        raise RuntimeError("ESP32 core의 default 파티션 자료를 읽을 수 없습니다.") from error
     if (
+        len(partition_bytes) != PARTITION_TABLE_SIZE
+        or hashlib.sha256(partition_bytes).hexdigest() != DEFAULT_PARTITION_SHA256
+        or len(boot_app0_bytes) != OTA_DATA_SIZE
+        or hashlib.sha256(boot_app0_bytes).hexdigest() != BOOT_APP0_SHA256
+    ):
+        raise RuntimeError("설치된 ESP32 core의 baseline 파티션 자료가 고정값과 다릅니다.")
+    if esptool is None:
+        raise RuntimeError(
+            f"ESP32 core용 esptool {ESPTOOL_VERSION}을 찾을 수 없습니다: {esptool_dir}"
+        )
+    return FlashTools(esptool, partition_bytes, boot_app0_bytes)
+
+
+def trusted_download_url(url: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (
+        host == "github.com"
+        or host == "githubusercontent.com"
+        or host.endswith(".githubusercontent.com")
+    )
+
+
+class SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        if not trusted_download_url(newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, "신뢰하지 않는 GitHub 다운로드 redirect", headers, fp
+            )
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(SafeRedirect())
+
+
+def read_url(url: str, limit: int, *, api: bool = False) -> bytes:
+    headers = {
+        "User-Agent": "New_HAS1-TagMachine-Release-USB-Uploader",
+        "Accept": "application/vnd.github+json" if api else "application/octet-stream",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with OPENER.open(request, timeout=60) as response:
+            final_url = response.geturl()
+            final_host = (urllib.parse.urlsplit(final_url).hostname or "").lower()
+            if api:
+                if final_host != "api.github.com":
+                    raise RuntimeError("GitHub API가 예상하지 않은 호스트로 이동했습니다.")
+            elif not trusted_download_url(final_url):
+                raise RuntimeError("릴리즈 자산이 신뢰하지 않는 호스트로 이동했습니다.")
+            length = response.headers.get("Content-Length")
+            if length and length.isdigit() and int(length) > limit:
+                raise RuntimeError("GitHub 응답이 허용 크기를 초과합니다.")
+            data = response.read(limit + 1)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"GitHub 요청 실패(HTTP {error.code}): {url}") from None
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"GitHub 요청 실패: {error.reason}") from None
+    if len(data) > limit:
+        raise RuntimeError("GitHub 응답이 허용 크기를 초과합니다.")
+    return data
+
+
+def api_json(route: str) -> object:
+    data = read_url(API_BASE + route, MAX_API_BYTES, api=True)
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("GitHub API JSON을 해석할 수 없습니다.") from error
+
+
+def release_tag(version: int) -> str:
+    return f"{DEVICE}-v{version}"
+
+
+def expected_asset_url(tag: str, name: str) -> str:
+    return f"https://github.com/{REPOSITORY}/releases/download/{tag}/{name}"
+
+
+def validate_release_metadata(payload: object, version: int) -> dict[str, dict]:
+    tag = release_tag(version)
+    pin = PINNED_RELEASES.get(version)
+    if not isinstance(pin, dict) or not isinstance(pin.get("assets"), dict):
+        raise RuntimeError(
+            f"v{version}은 검토된 USB 릴리즈 allowlist에 없습니다. "
+            "업로더의 commit/asset SHA-256 pin을 먼저 갱신하세요."
+        )
+    if not isinstance(payload, dict):
+        raise RuntimeError("GitHub 릴리즈 응답 형식이 잘못되었습니다.")
+    if (
+        payload.get("tag_name") != tag
+        or payload.get("draft") is not False
+        or payload.get("prerelease") is not False
+        or not isinstance(payload.get("id"), int)
+    ):
+        raise RuntimeError("요청한 공개 정식 버전 릴리즈가 아닙니다.")
+    commit = payload.get("target_commitish")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("릴리즈 target commit이 고정된 전체 SHA가 아닙니다.")
+    if commit != pin.get("source_commit"):
+        raise RuntimeError("릴리즈 target commit이 검토된 고정값과 다릅니다.")
+    if payload.get("html_url") != f"https://github.com/{REPOSITORY}/releases/tag/{tag}":
+        raise RuntimeError("릴리즈 URL이 예상 저장소/태그와 다릅니다.")
+
+    raw_assets = payload.get("assets")
+    if not isinstance(raw_assets, list):
+        raise RuntimeError("릴리즈 asset 목록이 없습니다.")
+    assets: dict[str, dict] = {}
+    for raw in raw_assets:
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
+            raise RuntimeError("릴리즈 asset 메타데이터가 잘못되었습니다.")
+        name = raw["name"]
+        if name in assets:
+            raise RuntimeError(f"릴리즈에 중복 asset이 있습니다: {name}")
+        assets[name] = raw
+    if set(assets) != set(EXPECTED_ASSETS):
+        missing = sorted(set(EXPECTED_ASSETS) - set(assets))
+        extra = sorted(set(assets) - set(EXPECTED_ASSETS))
+        raise RuntimeError(
+            "릴리즈 asset 구성이 고정 규격과 다릅니다"
+            f"(누락: {', '.join(missing) or '-'}, 추가: {', '.join(extra) or '-'})."
+        )
+
+    for name, asset in assets.items():
+        size = asset.get("size")
+        lower, upper = ASSET_SIZE_LIMITS[name]
+        digest = asset.get("digest")
+        if (
+            asset.get("state") != "uploaded"
+            or not isinstance(asset.get("id"), int)
+            or not isinstance(size, int)
+            or not lower <= size <= upper
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+        ):
+            raise RuntimeError(f"릴리즈 asset 메타데이터가 유효하지 않습니다: {name}")
+        if digest != f"sha256:{pin['assets'].get(name, '')}":
+            raise RuntimeError(
+                f"릴리즈 asset SHA-256이 검토된 고정값과 다릅니다: {name}"
+            )
+        if asset.get("browser_download_url") != expected_asset_url(tag, name):
+            raise RuntimeError(f"릴리즈 asset URL이 예상 경로와 다릅니다: {name}")
+    return assets
+
+
+def release_snapshot(payload: object, version: int) -> tuple:
+    assets = validate_release_metadata(payload, version)
+    assert isinstance(payload, dict)
+    return (
+        payload["id"],
+        payload["tag_name"],
+        payload["target_commitish"],
+        payload.get("published_at"),
+        tuple(
+            sorted(
+                (
+                    asset["id"],
+                    name,
+                    asset["state"],
+                    asset["size"],
+                    asset["digest"],
+                    asset["browser_download_url"],
+                )
+                for name, asset in assets.items()
+            )
+        ),
+    )
+
+
+def resolve_tag_commit(tag: str) -> str:
+    quoted = urllib.parse.quote(tag, safe="")
+    payload = api_json(f"/git/ref/tags/{quoted}")
+    if not isinstance(payload, dict) or not isinstance(payload.get("object"), dict):
+        raise RuntimeError("Git tag 참조를 확인할 수 없습니다.")
+    obj = payload["object"]
+    for _ in range(5):
+        kind = obj.get("type")
+        sha = obj.get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            break
+        if kind == "commit":
+            return sha
+        if kind != "tag":
+            break
+        annotated = api_json(f"/git/tags/{sha}")
+        if not isinstance(annotated, dict) or not isinstance(
+            annotated.get("object"), dict
+        ):
+            break
+        obj = annotated["object"]
+    raise RuntimeError("Git tag가 단일 commit으로 해석되지 않습니다.")
+
+
+def validate_esp32c3_image(image: bytes) -> None:
+    if not 24 <= len(image) <= MAX_IMAGE_BYTES:
+        raise RuntimeError("릴리즈 앱 이미지 크기가 OTA 슬롯 안전 범위를 벗어납니다.")
+    if image[0] != 0xE9 or not 1 <= image[1] <= 16:
+        raise RuntimeError("릴리즈 update.bin이 유효한 ESP 앱 이미지가 아닙니다.")
+    chip_id = int.from_bytes(image[12:14], "little")
+    flash_size_id = image[3] >> 4
+    if chip_id != 5 or flash_size_id != 2:
+        raise RuntimeError("릴리즈 update.bin이 ESP32-C3 4MB 이미지가 아닙니다.")
+
+
+def validate_provenance(data: bytes, version: int, commit: str) -> None:
+    try:
+        provenance = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("build-provenance.json을 해석할 수 없습니다.") from error
+    expected = {
+        "schema": 1,
+        "device": DEVICE,
+        "firmware_version": version,
+        "partition_version": PARTITION_VERSION,
+        "partition_scheme": PARTITION_SCHEME,
+        "fqbn": RELEASE_FQBN,
+        "esp32_core": CORE_VERSION,
+        "source_commit": commit,
+    }
+    if not isinstance(provenance, dict) or any(
+        provenance.get(key) != value for key, value in expected.items()
+    ):
+        raise RuntimeError("릴리즈 build provenance가 요청한 장치/버전과 다릅니다.")
+    dependencies = provenance.get("dependencies")
+    secureota = dependencies.get("SecureOTA", {}) if isinstance(dependencies, dict) else {}
+    if not isinstance(secureota, dict) or (
         secureota.get("commit") != SECUREOTA_REVISION
         or secureota.get("revision") != SECUREOTA_REVISION
-        or has2_wifi.get("branch") != "first_store"
-        or has2_wifi.get("patch_sha256") != patch_hash
     ):
-        raise RuntimeError(
-            "의존성 provenance가 현재 고정 버전과 다릅니다. "
-            "--refresh-dependencies로 다시 준비하세요."
-        )
-    for name in CUSTOM_LIBRARY_DIRS:
-        expected = provenance.get(name, {}).get("tree_sha256", "")
-        actual = directory_sha256(path / name)
-        if not expected or expected != actual:
-            raise RuntimeError(
-                f"{name} 라이브러리 내용이 provenance와 다릅니다. "
-                "--refresh-dependencies로 다시 준비하세요."
-            )
+        raise RuntimeError("릴리즈 SecureOTA provenance가 고정 revision과 다릅니다.")
+    source_hashes = provenance.get("source_sha256")
+    if not isinstance(source_hashes, dict) or not source_hashes:
+        raise RuntimeError("릴리즈 source provenance가 비어 있습니다.")
+    required_source = f"devices/{DEVICE}/{DEVICE}.ino"
+    if required_source not in source_hashes:
+        raise RuntimeError("릴리즈 source provenance에 Beetle 스케치가 없습니다.")
+    for path, digest in source_hashes.items():
+        parts = Path(path).parts if isinstance(path, str) else ()
+        if (
+            not parts
+            or Path(path).is_absolute()
+            or ".." in parts
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise RuntimeError("릴리즈 source provenance 항목이 유효하지 않습니다.")
 
 
-def validate_library_collection(path: Path) -> Path:
-    missing = [name for name in REQUIRED_LIBRARY_DIRS if not (path / name).is_dir()]
-    if missing:
-        raise RuntimeError(
-            f"라이브러리 디렉터리가 불완전합니다: {path}\n누락: {', '.join(missing)}"
-        )
-    wrong_versions = [
-        f"{name}={library_version(path / name) or '미확인'}"
-        for name, expected in REGISTRY_LIBRARY_VERSIONS.items()
-        if library_version(path / name) != expected
-    ]
-    if wrong_versions:
-        raise RuntimeError(
-            "라이브러리 버전이 고정값과 다릅니다: " + ", ".join(wrong_versions)
-        )
-    validate_dependency_provenance(path)
-    return path
+def validate_release_payload(
+    payload: object,
+    tag_commit: str,
+    downloaded: dict[str, bytes],
+    version: int,
+) -> VerifiedRelease:
+    assets = validate_release_metadata(payload, version)
+    if set(downloaded) != set(EXPECTED_ASSETS):
+        raise RuntimeError("검증할 릴리즈 asset bytes가 완전하지 않습니다.")
+    assert isinstance(payload, dict)
+    if payload["target_commitish"] != tag_commit:
+        raise RuntimeError("릴리즈 target commit과 Git tag commit이 다릅니다.")
+    for name, data in downloaded.items():
+        if len(data) != assets[name]["size"]:
+            raise RuntimeError(f"릴리즈 asset 크기가 API 메타데이터와 다릅니다: {name}")
+        actual = hashlib.sha256(data).hexdigest()
+        if assets[name]["digest"] != f"sha256:{actual}":
+            raise RuntimeError(f"릴리즈 asset SHA-256이 일치하지 않습니다: {name}")
 
+    if downloaded["version.txt"] != str(version).encode("ascii"):
+        raise RuntimeError("version.txt가 요청한 버전과 다릅니다.")
+    if downloaded["partition_version.txt"] != str(PARTITION_VERSION).encode("ascii"):
+        raise RuntimeError("partition_version.txt가 지원 파티션 버전과 다릅니다.")
+    update_signature = downloaded["update.sig"]
+    if len(update_signature) != 32 or len(downloaded["ota.sig"]) != 32:
+        raise RuntimeError("릴리즈 서명 파일 길이가 HMAC-SHA256 규격과 다릅니다.")
+    canonical_ota = (
+        f"IGOTA1|{DEVICE}|{version}|{PARTITION_VERSION}|{PARTITION_SCHEME}|"
+        f"{update_signature.hex()}\n"
+    ).encode("ascii")
+    if downloaded["ota.txt"] != canonical_ota:
+        raise RuntimeError("ota.txt와 update.sig가 canonical 릴리즈 규격과 다릅니다.")
 
-def prepare_cached_libraries(cli: str, refresh: bool) -> tuple[Path, Path]:
-    cache_root = ROOT / "build/tagmachine-beetle-usb"
-    user_dir = cache_root / "arduino-user"
-    libraries = user_dir / "libraries"
-    config = cache_root / "arduino-cli.yaml"
-    if refresh and user_dir.exists():
-        shutil.rmtree(user_dir)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    config.write_text(
-        "directories:\n  user: " + json.dumps(str(user_dir)) + "\n",
-        encoding="utf-8",
+    image = downloaded["update.bin"]
+    validate_esp32c3_image(image)
+    validate_provenance(downloaded["build-provenance.json"], version, tag_commit)
+    return VerifiedRelease(
+        version=version,
+        tag=release_tag(version),
+        source_commit=tag_commit,
+        image=image,
+        image_sha256=hashlib.sha256(image).hexdigest(),
     )
-    prefix = command_prefix(cli, config)
-    subprocess.run(prefix + ["lib", "install", *REGISTRY_LIBRARIES], check=True)
-
-    custom_present = [(libraries / name).is_dir() for name in CUSTOM_LIBRARY_DIRS]
-    provenance = libraries / "iotglove-dependencies.json"
-    if not all(custom_present) or not provenance.is_file():
-        if any(custom_present):
-            raise RuntimeError(
-                "의존성 캐시가 불완전합니다. --refresh-dependencies로 다시 준비하세요."
-            )
-        subprocess.run(
-            [
-                sys.executable,
-                str(PREPARE_LIBRARIES),
-                "--libraries-dir",
-                str(libraries),
-            ],
-            check=True,
-        )
-    return validate_library_collection(libraries), config
 
 
-def compile_firmware(
-    cli: str,
-    config: Path | None,
-    staged_sketch: Path,
-    libraries: Path,
-    build_path: Path,
-    output_path: Path,
-) -> Path:
-    command = command_prefix(cli, config) + [
-        "compile",
-        "--clean",
+def download_pinned_release(version: int) -> VerifiedRelease:
+    tag = release_tag(version)
+    route = "/releases/tags/" + urllib.parse.quote(tag, safe="")
+    before = api_json(route)
+    snapshot = release_snapshot(before, version)
+    before_commit = resolve_tag_commit(tag)
+    assert isinstance(before, dict)
+    if before["target_commitish"] != before_commit:
+        raise RuntimeError("릴리즈와 Git tag가 같은 commit을 가리키지 않습니다.")
+
+    metadata = validate_release_metadata(before, version)
+    downloaded: dict[str, bytes] = {}
+    for name in EXPECTED_ASSETS:
+        size = metadata[name]["size"]
+        downloaded[name] = read_url(metadata[name]["browser_download_url"], size)
+
+    # Detect a tag move or asset replacement that raced with this download.
+    after = api_json(route)
+    after_commit = resolve_tag_commit(tag)
+    if release_snapshot(after, version) != snapshot or after_commit != before_commit:
+        raise RuntimeError("다운로드 도중 릴리즈 또는 Git tag가 변경되었습니다.")
+    return validate_release_payload(after, after_commit, downloaded, version)
+
+
+def upload_command(cli: str, port: str, image: Path) -> list[str]:
+    # The esp32 core's `esptool` programmer recipe writes only the app at
+    # 0x10000. The normal upload recipe also writes bootloader/partition data.
+    return [
+        cli,
+        "upload",
         "--fqbn",
-        FQBN,
-        "--libraries",
-        str(libraries),
-        "--library",
-        str(ROOT / "libraries/TagMachineProtocol"),
-        "--library",
-        str(ROOT / "libraries/IoTGloveProtocol"),
-        "--build-path",
-        str(build_path),
-        "--output-dir",
-        str(output_path),
-        str(staged_sketch),
+        UPLOAD_FQBN,
+        "--port",
+        port,
+        "--input-file",
+        str(image),
+        "--programmer",
+        "esptool",
+        "--verify",
     ]
-    print("🔨 Beetle 펌웨어 클린 빌드 중...")
-    subprocess.run(command, check=True)
-    images = list(output_path.glob("*.ino.bin"))
-    if len(images) != 1:
-        raise RuntimeError("업로드할 앱 바이너리를 정확히 하나 찾지 못했습니다.")
-    image = images[0]
-    size = image.stat().st_size
-    if size > SLOT_SIZE - REQUIRED_SLOT_MARGIN:
-        raise RuntimeError(
-            f"앱 이미지 {size:,}B가 OTA 슬롯 32KiB 안전 기준을 초과합니다."
-        )
-    digest = hashlib.sha256(image.read_bytes()).hexdigest()
-    print(
-        f"✅ 빌드 완료: {size:,}B, 슬롯 여유 {SLOT_SIZE - size:,}B, "
-        f"SHA-256 {digest}"
-    )
+
+
+def materialize_image(release: VerifiedRelease, directory: Path) -> Path:
+    directory.mkdir()
+    image = directory / "update.bin"
+    image.write_bytes(release.image)
+    if hashlib.sha256(image.read_bytes()).hexdigest() != release.image_sha256:
+        raise RuntimeError("임시 업로드 이미지 SHA-256 검증에 실패했습니다.")
     return image
 
 
-def upload_command(
-    cli: str, config: Path | None, port: str, output_path: Path
+def read_flash_command(
+    tools: FlashTools, port: str, address: int, size: int, output: Path
 ) -> list[str]:
-    return command_prefix(cli, config) + [
-        "upload",
-        "--fqbn",
-        FQBN,
+    return [
+        str(tools.esptool),
+        "--chip",
+        "esp32c3",
         "--port",
         port,
-        "--input-dir",
-        str(output_path),
-        "--upload-property",
-        "upload.extra_flags=--no-fast-flash",
-        "--verify",
+        "--baud",
+        "460800",
+        "--before",
+        "default-reset",
+        "--after",
+        "hard-reset",
+        "read-flash",
+        "--no-progress",
+        hex(address),
+        hex(size),
+        str(output),
     ]
+
+
+def validate_device_baseline(
+    partition_table: bytes, ota_data: bytes, tools: FlashTools
+) -> None:
+    if partition_table != tools.partition_table:
+        raise RuntimeError(
+            "보드의 파티션 테이블이 ESP32 core 3.3.11 default와 다릅니다. "
+            "앱 영역만 덮어쓰면 안전하지 않아 중단했습니다."
+        )
+    if ota_data != tools.boot_app0:
+        raise RuntimeError(
+            "보드가 초기 app0 선택 상태가 아닙니다(이미 OTA 슬롯이 바뀌었을 수 있음). "
+            "이 스크립트는 v3 USB baseline 장치에만 사용하세요."
+        )
+
+
+def verify_device_baseline(tools: FlashTools, port: str, directory: Path) -> None:
+    partition_output = directory / "device-partitions.bin"
+    ota_output = directory / "device-otadata.bin"
+    reads = (
+        (
+            PARTITION_TABLE_OFFSET,
+            PARTITION_TABLE_SIZE,
+            partition_output,
+        ),
+        (OTA_DATA_OFFSET, OTA_DATA_SIZE, ota_output),
+    )
+    print("🔎 보드의 default 파티션/app0 baseline 확인 중...")
+    for address, size, output in reads:
+        result = subprocess.run(
+            read_flash_command(tools, port, address, size, output),
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "보드 baseline 읽기에 실패했습니다. 같은 연결에서 자동 재시도하지 않습니다."
+            )
+    try:
+        partition_table = partition_output.read_bytes()
+        ota_data = ota_output.read_bytes()
+    except OSError as error:
+        raise RuntimeError("보드 baseline 읽기 결과를 확인할 수 없습니다.") from error
+    validate_device_baseline(partition_table, ota_data, tools)
+    print("✅ default 파티션 및 app0 선택 상태 확인")
 
 
 def port_holder(address: str) -> str:
@@ -609,9 +852,14 @@ def port_holder(address: str) -> str:
     return lines[0] if lines else ""
 
 
-def explicit_port(cli: str, config: Path | None, address: str) -> UsbPort:
-    for port in list_usb_ports(cli, config):
+def explicit_port(cli: str, address: str) -> UsbPort:
+    for port in list_usb_ports(cli):
         if port.address == address:
+            if (port.vid, port.pid) not in SUPPORTED_BEETLE_USB_IDS:
+                raise RuntimeError(
+                    f"지정한 포트가 확인된 Beetle USB ID가 아닙니다: {address} "
+                    f"({port.vid}/{port.pid})"
+                )
             return port
     if not address.upper().startswith("COM") and not Path(address).exists():
         raise RuntimeError(f"지정한 포트를 찾을 수 없습니다: {address}")
@@ -626,70 +874,40 @@ def main() -> int:
         raise RuntimeError("--wait-timeout은 1 이상이어야 합니다.")
     if args.port and args.count != 1:
         raise RuntimeError("--port는 --count 1에서만 사용할 수 있습니다.")
-    if not args.dry_run and args.expected_version is None:
-        raise RuntimeError(
-            "실제 업로드에는 --expected-version을 반드시 지정해야 합니다."
-        )
-    if args.refresh_dependencies and args.libraries_dir:
-        raise RuntimeError("--refresh-dependencies와 --libraries-dir는 함께 쓸 수 없습니다.")
     if shutil.which(args.arduino_cli) is None and not Path(args.arduino_cli).is_file():
         raise RuntimeError("arduino-cli를 찾을 수 없습니다.")
 
-    secret_path = (
-        args.secret_file or (SKETCH_DIR / "secrets.h")
-    ).expanduser().resolve()
-    secret_header = validated_secret_header(secret_path)
-    version = read_firmware_version(SKETCH_DIR / "HAS1_tagmachine_sub.ino")
-    if args.expected_version is not None and version != args.expected_version:
-        raise RuntimeError(
-            f"펌웨어 버전이 다릅니다: 기대 v{args.expected_version}, 소스 v{version}"
-        )
-    print(f"📌 업로드 대상 펌웨어: v{version}, 속도 460800bps")
-
-    # Snapshot before dependency preparation/build, so a Beetle connected while
-    # compilation runs is still considered newly attached.
-    initial_config: Path | None = None
-    initial_ports = (
-        []
-        if args.dry_run or args.port
-        else list_usb_ports(args.arduino_cli, initial_config)
-    )
+    # Snapshot before network work, so a Beetle connected during the download
+    # is still considered newly attached. Dry-run never inspects USB.
+    initial_ports = [] if args.dry_run or args.port else list_usb_ports(args.arduino_cli)
     ignored_addresses = {port.address for port in initial_ports}
     if ignored_addresses:
         print("ℹ️  시작할 때 이미 있던 USB 포트는 자동 선택하지 않습니다:")
         for address in sorted(ignored_addresses):
             print(f"   - {address}")
 
-    if args.libraries_dir:
-        libraries = validate_library_collection(
-            args.libraries_dir.expanduser().resolve()
-        )
-        config = None
-    else:
-        libraries, config = prepare_cached_libraries(
-            args.arduino_cli, args.refresh_dependencies
-        )
-    check_core(args.arduino_cli, config)
+    check_core(args.arduino_cli)
+    flash_tools = load_flash_tools(args.arduino_cli)
+    tag = release_tag(args.expected_version)
+    print(f"⬇️  GitHub 버전 릴리즈 검증 중: {tag}")
+    release = download_pinned_release(args.expected_version)
+    print(f"✅ Release: {release.web_url}")
+    print(f"   commit: {release.source_commit}")
+    print(
+        f"   update.bin: {len(release.image):,}B, SHA-256 {release.image_sha256}"
+    )
+    print("   upload: app@0x10000 only, 460800bps")
 
-    with tempfile.TemporaryDirectory(prefix="tagmachine-beetle-usb-") as work:
+    if args.dry_run:
+        print("✅ dry-run 완료. USB 조회/업로드는 수행하지 않았습니다.")
+        return 0
+
+    completed_ids: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="tagmachine-beetle-release-") as work:
         work_path = Path(work)
-        staged = stage_sketch(work_path / "stage", secret_header)
-        output_path = work_path / "output"
-        build_path = work_path / "build"
-        output_path.mkdir()
-        build_path.mkdir()
-        compile_firmware(
-            args.arduino_cli, config, staged, libraries, build_path, output_path
-        )
-
-        if args.dry_run:
-            print("✅ dry-run 완료. 실제 USB 업로드는 수행하지 않았습니다.")
-            return 0
-
-        completed_ids: set[str] = set()
         for index in range(args.count):
             if args.port:
-                port = explicit_port(args.arduino_cli, config, args.port)
+                port = explicit_port(args.arduino_cli, args.port)
             else:
                 print(
                     f"🔌 Beetle {index + 1}/{args.count} 한 대만 USB에 연결하세요 "
@@ -697,7 +915,6 @@ def main() -> int:
                 )
                 port = wait_for_new_port(
                     args.arduino_cli,
-                    config,
                     ignored_addresses,
                     completed_ids,
                     args.wait_timeout,
@@ -708,12 +925,19 @@ def main() -> int:
                 raise RuntimeError(
                     f"포트를 다른 프로그램이 사용 중입니다: {port.address}\n  {holder}"
                 )
+
+            # Each board gets a fresh directory, so esp32 core 3.3.11 cannot
+            # reuse a *_flashed.bin differential-flash reference from another
+            # board. The bytes are checked again immediately before upload.
+            board_dir = work_path / f"board-{index + 1}"
+            image = materialize_image(release, board_dir)
+            verify_device_baseline(flash_tools, port.address, board_dir)
             print(
-                f"⚡ Beetle {index + 1}/{args.count} 업로드: {port.address} "
-                f"({port.vid or '?'}/{port.pid or '?'})"
+                f"⚡ Beetle {index + 1}/{args.count} 릴리즈 v{release.version} 업로드: "
+                f"{port.address} ({port.vid or '?'}/{port.pid or '?'})"
             )
             result = subprocess.run(
-                upload_command(args.arduino_cli, config, port.address, output_path),
+                upload_command(args.arduino_cli, port.address, image),
                 check=False,
             )
             if result.returncode != 0:
@@ -727,7 +951,7 @@ def main() -> int:
             if index + 1 < args.count:
                 print("🔌 방금 업로드한 Beetle을 USB에서 완전히 분리하세요.")
                 ignored_addresses = wait_for_physical_disconnect(
-                    args.arduino_cli, config, port, args.wait_timeout
+                    args.arduino_cli, port, args.wait_timeout
                 )
                 print("✅ 분리 확인. 다음 Beetle을 연결할 수 있습니다.")
     return 0
