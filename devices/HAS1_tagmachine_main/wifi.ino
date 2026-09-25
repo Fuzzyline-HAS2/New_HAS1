@@ -1,5 +1,33 @@
 void DataChanged()
 {
+  // During a Beetle update, consume authoritative server state but suppress
+  // every game/device callback that could pulse or reopen the relay. A change
+  // is latched so the sequence stops after the currently flashing board has
+  // supplied terminal proof; an in-doubt board remains quarantined.
+  static JsonDocument cur;  // 저장되어 있는 cur과 읽어온 my 값과 비교후 실행
+  const String currentDeviceState = (String)(const char*)my["device_state"];
+  if (!BeetleOtaActive()) {
+    if (IsTtgoOnlyOtaCommand(currentDeviceState)) {
+      BeginTtgoOnlyOta();
+    } else CancelTtgoOnlyOta();
+  }
+  if (BeetleOtaActive()) {
+    const String gameState = (String)(const char*)my["game_state"];
+    if (!IsExpectedAllBoardOtaCommand(currentDeviceState))
+      NoteBeetleOtaCommandChanged();
+    if (gameState != "setting" && gameState != "ready")
+      NoteBeetleOtaRuntimeUnsafe();
+    if (!BeetleOtaActive()) {
+      cur = my;
+      return;
+    }
+    pendingDeviceState = "";
+    pendingDeviceStateApply = false;
+    digitalWrite(RELAY_PIN, LOW);
+    cur = my;
+    return;
+  }
+
   // 서버 이름만 복사한다. BLE 명령/응답 처리는 loop() 끝에서 진행한다.
   if (my["device_name"].is<const char *>()) {
     Has1BleBeacon::setDeviceName(my["device_name"].as<const char *>());
@@ -9,7 +37,6 @@ void DataChanged()
   // 같아야만 대입(operator=)이 되는데, 로컬/CI에 깔린 HAS2_Wifi 사본마다 my의 선언 크기가
   // 다를 수 있어(예: 1000 vs 2048) 매번 컴파일 에러가 났다. JsonDocument는 크기에 상관없이
   // 대입/set()이 되므로 어떤 환경에서도 안전하다.
-  static JsonDocument cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
   UpdateBrightness();  // 변경 감지는 함수 내부에서 한다
   if((String)(const char*)my["game_state"] != (String)(const char*)cur["game_state"]){
     if((String)(const char*)my["game_state"] == "setting"){
@@ -51,11 +78,12 @@ void DataChanged()
         if(loginDone) QueuePendingDeviceState(deviceState);
         else ApplyDeviceState(deviceState);
     }
-    else if(deviceState == "github"){
-        // esp_task_wdt_delete(NULL);  // [WDT 비활성화]
-        ota.check();
-        // esp_task_wdt_add(NULL);  // [WDT 비활성화]
+    else if(IsAllBoardOtaCommand(deviceState)){
+        // Main Beetle -> Sub Beetle 순으로 signed OTA와 새 boot/version을
+        // 확인한 뒤에만 TTGO 자체 SecureOTA를 실행한다.
+        BeginBeetleOtaSequence();
     }
+    // github-ttgo[@version] is queued above and serviced with safe-phase/backoff checks.
     else if(deviceState == "tagger"){
         ApplyDeviceState("tagger");
     }
@@ -79,6 +107,10 @@ void QueuePendingDeviceState(String deviceState) {
 }
 
 void ApplyPendingDeviceState() {
+    if (BeetleOtaActive()) {
+      digitalWrite(RELAY_PIN, LOW);
+      return;
+    }
     if (!pendingDeviceStateApply || loginDone) return;
 
     String deviceState = pendingDeviceState;

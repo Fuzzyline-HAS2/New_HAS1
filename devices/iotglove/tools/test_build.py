@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -9,14 +10,59 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts"))
 from firmware_targets import TARGETS  # noqa: E402
-from write_firmware_secret import checked_secret  # noqa: E402
+from write_firmware_secret import LINK_VALIDATION_SECRET, checked_secret  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("glove_compile", Path(__file__).with_name("compile.py"))
 glove_compile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(glove_compile)
 
+prepare_spec = importlib.util.spec_from_file_location(
+    "prepare_libraries", Path(__file__).with_name("prepare_libraries.py")
+)
+prepare_libraries = importlib.util.module_from_spec(prepare_spec)
+prepare_spec.loader.exec_module(prepare_libraries)
+
 
 class BuildContractTests(unittest.TestCase):
+    def test_release_workflow_rejects_non_default_branches_before_checkout(self):
+        workflow = (ROOT / ".github" / "workflows" / "deploy-firmware.yml").read_text()
+        guard = workflow.index("github.event.repository.default_branch")
+        checkout = workflow.index("uses: actions/checkout@v4")
+        self.assertLess(guard, checkout)
+        self.assertIn('if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]', workflow)
+
+    def test_secureota_release_dependency_is_pinned_and_exact_checkout_works(self):
+        self.assertEqual(
+            prepare_libraries.SECUREOTA_REVISION,
+            "162db758e6806895ef10ca39b101f9f8753bdc20",
+        )
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "source"
+            source.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.name", "Test"], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+                check=True,
+            )
+            marker = source / "marker"
+            marker.write_text("pinned\n")
+            subprocess.run(["git", "-C", str(source), "add", "marker"], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "--quiet", "-m", "pinned"], check=True)
+            pinned = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            marker.write_text("newer\n")
+            subprocess.run(["git", "-C", str(source), "commit", "--quiet", "-am", "newer"], check=True)
+
+            checkout = Path(work) / "checkout"
+            prepare_libraries.clone_checkout(source.as_uri(), checkout, revision=pinned)
+            actual = subprocess.check_output(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+            ).strip()
+            self.assertEqual(actual, pinned)
+            self.assertEqual((checkout / "marker").read_text(), "pinned\n")
+
     def test_existing_target_paths_and_options_are_preserved(self):
         for name in ("HAS1_itembox", "HAS1_generator", "HAS1_altar", "HAS1_duct"):
             directory, fqbn = TARGETS[name]
@@ -65,10 +111,14 @@ class BuildContractTests(unittest.TestCase):
             self.assertFalse((destination / "update.bin").exists())
 
     def test_missing_or_placeholder_signing_keys_fail_before_deployment(self):
-        for value in (None, "", "  ", "CHANGE_THIS_TO_YOUR_SECRET", " REPLACE_WITH_DEPLOYMENT_SECRET ", "__COMPILE_ONLY_DO_NOT_DEPLOY__", "bad\nkey"):
+        for value in (None, "", "  ", "CHANGE_THIS_TO_YOUR_SECRET", " REPLACE_WITH_DEPLOYMENT_SECRET ", "__COMPILE_ONLY_DO_NOT_DEPLOY__", LINK_VALIDATION_SECRET, "bad\nkey"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     checked_secret(value)
+        self.assertEqual(
+            checked_secret(LINK_VALIDATION_SECRET, allow_link_validation=True),
+            LINK_VALIDATION_SECRET,
+        )
         self.assertEqual(checked_secret('key-with-"quote-and-backslash\\'), 'key-with-"quote-and-backslash\\')
 
 

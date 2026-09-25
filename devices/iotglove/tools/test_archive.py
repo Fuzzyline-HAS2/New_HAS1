@@ -35,6 +35,19 @@ def assets():
     return archive.signed_assets(record(), image, signature, SECRET, COMMIT)
 
 
+def tagmachine_assets(device="HAS1_tagmachine_sub", firmware_version=4):
+    captured = record()
+    captured.update({
+        "device": device,
+        "firmware_version": firmware_version,
+        "partition_scheme": "default",
+        "fqbn": archive.TARGETS[device][1],
+    })
+    image = b"tagmachine-firmware-binary"
+    signature = hmac.new(SECRET.encode(), image, hashlib.sha256).digest()
+    return archive.signed_assets(captured, image, signature, SECRET, COMMIT)
+
+
 class FakeGitHub:
     def __init__(self):
         self.release = None
@@ -78,6 +91,42 @@ class FakeGitHub:
         raise AssertionError((route, method))
 
 
+class FakeChannelGitHub:
+    def __init__(self, device="HAS1_tagmachine_sub"):
+        self.device = device
+        self.data = {}
+        self.next_id = 1
+        self.release = {"id": 9, "tag_name": device, "draft": False, "assets": []}
+        self.mutations = []
+
+    def release_for_tag(self, tag):
+        return copy.deepcopy(self.release) if tag == self.device else None
+
+    def request(self, route, method="GET", body=None, binary=False, upload=False):
+        if method != "GET":
+            self.mutations.append((method, route))
+        if route.startswith("/releases/assets/"):
+            identifier = int(route.rsplit("/", 1)[1])
+            if method == "DELETE":
+                self.release["assets"] = [item for item in self.release["assets"]
+                                                  if item["id"] != identifier]
+                self.data.pop(identifier)
+                return None
+            assert method == "GET" and binary
+            return self.data[identifier]
+        if route.startswith("/releases/9/assets?name=") and method == "POST":
+            assert upload
+            name = route.split("name=", 1)[1]
+            identifier = self.next_id
+            self.next_id += 1
+            self.data[identifier] = body
+            self.release["assets"].append(
+                {"id": identifier, "name": name, "state": "uploaded", "size": len(body)}
+            )
+            return {}
+        raise AssertionError((route, method))
+
+
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
         # Fake API operations must not appear as actual publication in test logs.
@@ -96,6 +145,21 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(output["partition_version.txt"], b"1")
         self.assertNotIn(SECRET.encode(), output["build-provenance.json"])
         self.assertEqual(json.loads(output["build-provenance.json"])["source_commit"], COMMIT)
+
+        tagmachine = tagmachine_assets()
+        tag_hmac = hmac.new(SECRET.encode(), tagmachine["update.bin"], hashlib.sha256).hexdigest()
+        self.assertEqual(
+            tagmachine["ota.txt"],
+            f"IGOTA1|HAS1_tagmachine_sub|4|1|default|{tag_hmac}\n".encode(),
+        )
+        tagmachine_main = tagmachine_assets("HAS1_tagmachine_main", 14)
+        main_hmac = hmac.new(
+            SECRET.encode(), tagmachine_main["update.bin"], hashlib.sha256
+        ).hexdigest()
+        self.assertEqual(
+            tagmachine_main["ota.txt"],
+            f"IGOTA1|HAS1_tagmachine_main|14|1|default|{main_hmac}\n".encode(),
+        )
 
     def test_wrong_image_signature_or_partition_signature_is_rejected(self):
         output = assets()
@@ -210,6 +274,35 @@ class ArchiveTests(unittest.TestCase):
         self.assertIsNone(redirected.get_header("Authorization"))
         redirected = archive.SafeRedirect().redirect_request(request, None, 302, "Found", {}, "https://api.github.com/redirected")
         self.assertEqual(redirected.get_header("Authorization"), "Bearer test-token")
+
+    def test_tagmachine_fixed_channel_pointer_is_verified_and_idempotent(self):
+        api = FakeChannelGitHub()
+        output = tagmachine_assets()
+        archive.publish_channel_manifest(api, "HAS1_tagmachine_sub", output)
+        self.assertEqual({item["name"] for item in api.release["assets"]}, {"ota.txt", "ota.sig"})
+        before = list(api.mutations)
+        archive.publish_channel_manifest(api, "HAS1_tagmachine_sub", output)
+        self.assertEqual(api.mutations, before)
+
+        # A changed pointer replaces only the two mutable channel assets.
+        replacement = dict(output)
+        replacement["ota.txt"] = replacement["ota.txt"].replace(b"|4|", b"|5|")
+        replacement["ota.sig"] = hmac.new(
+            SECRET.encode(), replacement["ota.txt"], hashlib.sha256
+        ).digest()
+        archive.publish_channel_manifest(api, "HAS1_tagmachine_sub", replacement)
+        self.assertEqual({item["name"] for item in api.release["assets"]}, {"ota.txt", "ota.sig"})
+        self.assertTrue(any(method == "DELETE" for method, _ in api.mutations))
+
+        main_api = FakeChannelGitHub("HAS1_tagmachine_main")
+        main_output = tagmachine_assets("HAS1_tagmachine_main", 14)
+        archive.publish_channel_manifest(
+            main_api, "HAS1_tagmachine_main", main_output
+        )
+        self.assertEqual(
+            {item["name"] for item in main_api.release["assets"]},
+            {"ota.txt", "ota.sig"},
+        )
 
 
 if __name__ == "__main__":

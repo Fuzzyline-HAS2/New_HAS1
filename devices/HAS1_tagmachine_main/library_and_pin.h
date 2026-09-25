@@ -9,8 +9,10 @@
 #include "DFRobotDFPlayerMini.h"
 #include "HAS2_Wifi.h"
 #include <HAS1BleBeacon.h>
+#include <IoTGloveOta.h>
+#include <IoTGloveOtaClient.h>
+#include <Preferences.h>
 #include <SimpleTimer.h>
-#include <SecureOTA.h>
 #include "secrets.h"
 
 #define DFPLAYER_RX_PIN 39

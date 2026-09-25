@@ -29,6 +29,10 @@ int main() {
   assert(std::string(url) == "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/iotglove-v12/");
   assert(archiveBaseUrl("iotglove_beetle", 7, url, sizeof(url)));
   assert(std::string(url).find("iotglove_beetle-v7/") != std::string::npos);
+  assert(archiveBaseUrl("HAS1_tagmachine_sub", 4, url, sizeof(url)));
+  assert(std::string(url).find("HAS1_tagmachine_sub-v4/") != std::string::npos);
+  assert(archiveBaseUrl("HAS1_tagmachine_main", 14, url, sizeof(url)));
+  assert(std::string(url).find("HAS1_tagmachine_main-v14/") != std::string::npos);
   assert(!archiveBaseUrl("HAS1_duct", 7, url, sizeof(url)));
   assert(!archiveBaseUrl("iotglove", 0, url, sizeof(url)));
   assert(!archiveBaseUrl("iotglove", 7, url, 10));
@@ -44,6 +48,18 @@ int main() {
   assert(!matchesMetadata(metadata, "iotglove", 13, 1));
   assert(!matchesMetadata(metadata, "iotglove", 12, 2));
   assert(!matchesMetadata(metadata, nullptr, 12, 1));
+  const std::string tagmachineText =
+      "IGOTA1|HAS1_tagmachine_sub|4|1|default|" + signature + "\n";
+  assert(parseMetadata(tagmachineText.data(), tagmachineText.size(), metadata));
+  assert(matchesMetadata(metadata, "HAS1_tagmachine_sub", 4, 1));
+  assert(!matchesMetadata(metadata, "HAS1_tagmachine_sub", 4, 2));
+  const std::string tagmachineMainText =
+      "IGOTA1|HAS1_tagmachine_main|14|1|default|" + signature + "\n";
+  assert(parseMetadata(tagmachineMainText.data(), tagmachineMainText.size(), metadata));
+  assert(matchesMetadata(metadata, "HAS1_tagmachine_main", 14, 1));
+  assert(monotonicTarget(3, 4));
+  assert(monotonicTarget(4, 4));
+  assert(!monotonicTarget(4, 3));
   for (const std::string& invalid : {
       "IGOTA2|iotglove|12|1|min_spiffs|" + signature + "\n",
       "IGOTA1|iotglove|012|1|min_spiffs|" + signature + "\n",

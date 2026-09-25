@@ -63,6 +63,21 @@ static void HandleBeetleFrame(int idx, const char *frame, size_t length) {
   BeetleLinkState &link = beetleLinks[idx];
   const unsigned long now = millis();
 
+  // OTA responses deliberately use an R prefix. Legacy TTGO firmware already
+  // consumes every R-prefixed line as control, so mixed-version deployment
+  // cannot turn a long OTA status line into a tag or relay command.
+  if (tagmachine::ota_wire::isStructuredResponsePrefix(frame, length)) {
+    tagmachine::ota_wire::Response response;
+    if (!tagmachine::ota_wire::parseResponse(frame, length, response)) {
+      link.invalidFrameCount++;
+      return;
+    }
+    MarkTransportActivity(link, now);
+    link.heartbeatCapable = true;
+    HandleBeetleOtaResponse(idx, response);
+    return;
+  }
+
   // Preserve the legacy prefix classifier order. W/R remain transport control
   // frames even if trailing bytes are present, rather than becoming tag data.
   if (length > 0 && frame[0] == 'W') {
@@ -258,6 +273,11 @@ static void MaintainBeetleLink(int idx) {
   BeetleLinkState &link = beetleLinks[idx];
   const unsigned long now = millis();
 
+  // Coordinator retransmits only Q/U while an OTA pair is active. Suppress H
+  // probes and PN532 R recovery so no normal control traffic races the flash
+  // transaction or a just-rebooted Beetle's proof frames.
+  if (BeetleOtaActive()) return;
+
   if (link.lastPingMs == 0 || Elapsed(now, link.lastPingMs, BEETLE_PING_INTERVAL_MS)) {
     // An unanswered W can wake a legacy Beetle still in its boot handshake;
     // H discovers a running new-protocol Beetle after a TTGO-only reset.
@@ -367,6 +387,11 @@ void DispatchBeetleTagsFromWifiTick() {
   // matching the original WifiIntervalFunc ordering.
   ReadBeetleFrames(BEETLE_SUB);
   ReadBeetleFrames(BEETLE_MAIN);
+  if (BeetleOtaActive()) {
+    DiscardQueuedTags(BEETLE_SUB);
+    DiscardQueuedTags(BEETLE_MAIN);
+    return;
+  }
   DispatchPendingInput(BEETLE_SUB, true);
   DispatchPendingInput(BEETLE_MAIN, true);
 }

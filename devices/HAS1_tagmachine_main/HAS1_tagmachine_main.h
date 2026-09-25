@@ -2,6 +2,8 @@
 #define _HAS1_TAGMACHINE_MAIN_
 
 #include "library_and_pin.h"
+#include "beetle_ota_state.h"
+#include "ttgo_ota_record.h"
 
 class TelnetDebugConsole : public Stream {
 public:
@@ -25,14 +27,21 @@ const int rfid_num = 1; // 설치된 pn532의 개수
 void TelnetInit();
 void TelnetRun();
 HAS2_Wifi has2wifi("http://172.30.1.43");
-SecureOTA ota(
-  "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_tagmachine_main/update.bin",
-  "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_tagmachine_main/version.txt",
-  "https://github.com/Fuzzyline-HAS2/New_HAS1/releases/download/HAS1_tagmachine_main/update.sig",
-  HMAC_SECRET,
-  FIRMWARE_VER
-);
 void DataChanged();
+void BeginBeetleOtaSequence();
+void ServiceBeetleOtaSequence();
+bool BeetleOtaActive();
+void NoteBeetleOtaCommandChanged();
+void NoteBeetleOtaRuntimeUnsafe();
+void BeginTtgoOnlyOta();
+bool CancelTtgoOnlyOta();
+bool IsAllBoardOtaCommand(const String &command);
+bool IsExpectedAllBoardOtaCommand(const String &command);
+bool IsTtgoOnlyOtaCommand(const String &command);
+void HandleBeetleOtaResponse(int idx, const tagmachine::ota_wire::Response &response);
+bool ClearGithubOtaState(const char *expectedCommand);
+bool CompleteTtgoOtaCommand();
+void RecoverPendingTtgoOta();
 void ApplyDeviceState(String deviceState);
 void QueuePendingDeviceState(String deviceState);
 void ApplyPendingDeviceState();
@@ -109,7 +118,7 @@ struct BeetleLinkState {
   HardwareSerial *serial;
   const char *name;
 
-  char rxLine[16];
+  char rxLine[tagmachine::ota_wire::kMaxLine + 1];
   uint8_t rxLength;
   bool rxOverflow;
   char pendingTag[5];

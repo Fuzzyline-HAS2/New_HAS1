@@ -10,6 +10,7 @@
  */
 
 #define FIRMWARE_VER 13
+#define PARTITION_VER 1
 #include "HAS1_tagmachine_main.h"
 // #include <esp_task_wdt.h>  // [WDT 비활성화]
 
@@ -36,14 +37,8 @@ void setup() {
     // 현재 펌웨어 버전을 서버 device.esp_version 컬럼에 보고 (부팅 시 1회)
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
     ServiceBeetleLinks();
+    RecoverPendingTtgoOta();
     TelnetInit();
-    ota.setLogStream(Serial);
-    ota.setOnSuccess([]() {
-        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "setting");
-    });
-    ota.setOnSkip([]() {
-        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "setting");
-    });
     DataChanged();
     GameSetting();
     ServiceBeetleLinks();
@@ -68,10 +63,12 @@ void loop() {
     // esp_task_wdt_reset();  // [WDT 비활성화]
     // Always service both UARTs before mode handlers or WiFi timers can block.
     ServiceBeetleLinks();
-    if (ptrCurrentMode != nullptr) ptrCurrentMode();
+    ServiceBeetleOtaSequence();
+    if (!BeetleOtaActive() && ptrCurrentMode != nullptr) ptrCurrentMode();
     ServiceBeetleLinks();
     TimerRun();
     ServiceBeetleLinks();
+    ServiceBeetleOtaSequence();
     TelnetRun();
     // 태그/게이지 진행 중에는 BLE 설정 재시도를 미루고 기존 광고는 유지한다.
     Has1BleBeacon::poll(!loginDone);

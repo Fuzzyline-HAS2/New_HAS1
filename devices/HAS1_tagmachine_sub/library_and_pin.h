@@ -7,6 +7,7 @@
 #include <HardwareSerial.h>
 #include <SimpleTimer.h>
 #include <esp_idf_version.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 
 #define PN532_SCK   4
