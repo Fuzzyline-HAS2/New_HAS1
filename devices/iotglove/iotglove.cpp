@@ -461,7 +461,7 @@ void render(uint32_t now) {
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   // Already raw 0..255 — the network task converted it when the snapshot was parsed.
-  const uint8_t brightness = (kTraining || academy) ? 255 : game.server().brightness;
+  const uint8_t brightness = kTraining ? 255 : game.server().brightness;
   if (!haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
       out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness) {
     pixels.setBrightness(brightness);
