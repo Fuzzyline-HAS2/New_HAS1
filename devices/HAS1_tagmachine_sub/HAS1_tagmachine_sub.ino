@@ -9,7 +9,7 @@
  *
  */
 
-#define FIRMWARE_VER 2
+#define FIRMWARE_VER 3
 
 #include "HAS1_tagmachine_sub.h"
 
