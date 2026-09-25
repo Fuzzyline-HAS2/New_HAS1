@@ -35,7 +35,7 @@
 아래 설정과 통합 게임 검증은 후속 항목이다. 총 8대 초기 설치와 G1P1~G1P8의 OTA·Telnet 실측 완료 범위는 [설치 계획](ROLLOUT.md)에서 별도로 관리한다.
 
 1. TTGO 실물 배터리 종류/셀 수, ADC 배선, 실제 분압비와 보정 범위를 `library_and_pin.h`에 반영한다. 기본값은 측정 보고 비활성이다.
-2. 실제 제단·생명장치의 `HAS3:장치명`을 Beetle `beacon_map.h`의 방 매핑에 넣는다. 현재 방 이름/별칭 기본값이 현장 ID와 같다고 가정하지 않는다.
+2. 실제 광고명이 `HAS3:장치ID`인지 확인한다. Beetle `beacon_map.h`는 대문자 첫 글자 `B/L/T/S/U/H`를 각 방에 매핑하며, ID는 2~18자의 영문·숫자·`_`·`-`만 허용한다. `BI1/BI2/BR1/BR2/BD1/BD2/BE/BT`가 `bamboo`, `LA`가 `living`으로 보고되는지 확인하고 나머지 네 방도 현장 장치로 검증한다.
 3. GPIO12 부팅 LOW 유지, Beetle GPIO1 pull-down, 공통 GND, UART 교차 연결, 모터 드라이버를 대조한다. 회로도 심벌의 물리 핀 4가 GPIO1이며, 기존 GPIO3 가정은 아래 실기 기록에서 정정했다.
 4. 서버 MAC 등록과 G1/G2 장치명, `tagger_name`, 역할/시간/봉헌/개방 필드를 확인한다. 두 보드 첫 USB 설치는 빌드와 같은 min_spiffs 파티션을 사용한다.
 

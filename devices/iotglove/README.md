@@ -92,7 +92,7 @@ TTGO와 Beetle OTA는 `badland_shoot`에 직접 연결한다. `first_store`의 �
 
 ## 위치·배터리 설정
 
-Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)에 현장 `HAS3:장치명`의 **장치명 → 방**을 추가한다. 현재 기본값은 서버에서 확인한 방 이름/별칭만 포함하므로 실제 제단/생명장치 ID 매핑 전에는 위치가 미확인일 수 있다. 방 접두사를 추측하여 쓰지 않는다. 5초 이상 오래된 위치는 무효이며 서버 위치도 빈 문자열로 주기적으로 지운다.
+Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)는 `HAS3:장치ID`의 대문자 첫 글자를 방에 매핑한다: `B` → `bamboo`, `L` → `living`, `T` → `toilet`, `S` → `sleeping`, `U` → `underground`, `H` → `hallway`. `BI1/BI2/BR1/BR2/BD1/BD2/BE/BT`는 Bamboo, `LA`는 Living Altar다. 장치 ID는 2~18자의 영문·숫자·`_`·`-`이며, 방 접두사 한 글자만으로는 장치 ID가 되지 않는다. 같은 방의 장치도 ID별로 RSSI를 따로 관리한다. 참조 `updated_IoTglove`처럼 Beetle이 1.5초 구간의 장치별 중앙값·EMA를 구하고 방별 상위 2개 신호 평균으로 위치를 판정한다. 최초 선택과 방 전환은 1.2초 유지가 필요하며, 현재 방에도 점수가 있으면 새 방이 5dB 이상 강해야 한다. 5초간 유효 비콘을 받지 못하면 위치를 무효화하고 TTGO는 서버 위치를 빈 문자열로 지운다. 판정 구조와 전송 방식의 차이는 [Beetle 설명](iotglove_beetle/README.md)을 따른다.
 
 근접 진동 기본안은 같은 방(`vibe=3`) 1초당 100ms 두 번, 인접(`vibe=1`) 2초당 100ms 한 번이다. 칩/발각 진동이 우선하며 오래된 위치로는 울리지 않는다. 실제 방 경계에서 RSSI 필터와 진동 패턴을 조정한다. 서버 `vibe` 10~17은 운영자 연출 명령이다: 10 음소거, 11 연속 ON, 12/13/14 짧은(200ms) 1~3회, 15/16/17 긴(600ms) 1~3회. 12~17은 값이 바뀌는 순간 1회만 울리고 상태·역할과 무관하게 동작한다(`docs/SERVER_CONTRACT.md`의 "vibe 연출 명령" 절 참고).
 

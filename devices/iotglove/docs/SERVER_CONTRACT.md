@@ -101,7 +101,7 @@ Origin에서는 컨택 단축 `Situation/revival_cooldown`이 무시된다. Erro
 
 ### 당시 위치/배터리
 
-- Origin 방 ID와 인접 관계는 [config/audio-layouts.json](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/config/audio-layouts.json)의 origin을 따른다. 주요 방은 `bambooForest/livingRoom/sleepingRoom/toilet/undergroundRoom/hallway`. 비콘 장치명→방 매핑은 실제 장치 메타와 대조한다.
+- 현재 장갑이 전송하는 방 ID는 사용자 지정 `bamboo/living/sleeping/toilet/underground/hallway`다. 이 이름은 과거 Origin 구성에서 그대로 가져온 값이 아니다. [과거 config/audio-layouts.json](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/config/audio-layouts.json)은 기존 Origin 구조와 인접 관계의 참고 자료이며, 현재 방 ID의 근거로 사용하지 않는다. 비콘 장치명→방 매핑은 실제 장치 메타와 대조한다.
 - `computeVibe`는 실제로 같은 방=3을 반환한다. 위치가 비어 있으면 0이지만 같은 미확인 문자열 두 개를 같은 방으로 볼 가능성이 있으므로, 펌웨어의 위치 유효성/만료 조건을 진동에 적용하고 서버의 unknown 처리도 점검한다. [계산 함수](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L160)
 - 구 글러브는 `battery_remaining`에 소수 2자리 **전압(V)**을 보낸다. 서버는 실수 저장만 하며, 별도 [칼럼 설명 문서](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/docs/iot-glove-table-columns.md)는 %로 설명해 불일치한다. 기본안은 기존 전압 보고 호환이며, 단위를 명시하고 화면/운영값을 확인한 뒤 적용한다. 임의로 0~100 값을 혼용하지 않는다.
 - 하드웨어 배터리 필드는 게임 아이템 수량 `battery_pack`과 별개다. 배터리 미연결·포화 등 무효 측정값을 정상 전압으로 보고하지 않는다.

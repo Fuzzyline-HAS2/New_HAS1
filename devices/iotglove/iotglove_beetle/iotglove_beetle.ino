@@ -68,9 +68,16 @@ void loop() {
   }
   static uint32_t lastLocation = 0;
   static uint32_t locationSequence = 0;
-  if (now - lastLocation >= beetle_config::kLocationReportMs) {
+  static char lastRoom[24] = "";
+  static bool lastLocationValid = false;
+  // Evaluate every loop (the tracker gates evaluations to 200 ms). Report a
+  // changed stable room immediately, then repeat at the reference's 1 s rate.
+  const auto location = beetle::currentLocation(now);
+  if (location.valid != lastLocationValid || strcmp(lastRoom, location.room) != 0 ||
+      now - lastLocation >= beetle_config::kLocationReportMs) {
     lastLocation = now;
-    const auto location = beetle::currentLocation(now);
+    lastLocationValid = location.valid;
+    strncpy(lastRoom, location.room, sizeof(lastRoom) - 1);
     iotglove::wire::Frame frame;
     strcpy(frame.type, "LOC");
     frame.id = ++locationSequence;

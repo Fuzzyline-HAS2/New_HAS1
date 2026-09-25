@@ -1,21 +1,13 @@
 #pragma once
 #include <IoTGloveLocation.h>
 
-// Exact beacon device_name -> canonical Origin room. Room names/aliases below
-// are verified against fuzzyline-core bc6907f config/audio-layouts.json.
-// The server Origin layout contains NO device-prefix map. Add the real installed
-// altar/revival device IDs here after surveying their advertised HAS3:<name>.
-// Do not infer room from the first character of an unverified device name.
+// Installed device IDs use these uppercase room prefixes (HAS3:<device ID>).
+// Use the user-specified server room IDs independently of BLE device naming.
 constexpr iotglove::BeaconMapEntry kBeaconMap[] = {
-    {"bambooForest", "bambooForest"},
-    {"bambooForestB", "bambooForest"},
-    {"bamboo", "bambooForest"},
-    {"livingRoom", "livingRoom"},
-    {"living", "livingRoom"},
-    {"sleepingRoom", "sleepingRoom"},
-    {"toilet", "toilet"},
-    {"undergroundRoom", "undergroundRoom"},
-    {"undergroundRoomB", "undergroundRoom"},
-    {"underground", "undergroundRoom"},
-    {"hallway", "hallway"},
+    {'B', "bamboo"},  // BI1/BI2, BR1/BR2, BD1/BD2, BE, BT
+    {'L', "living"},    // LA (Living Altar)
+    {'T', "toilet"},
+    {'S', "sleeping"},
+    {'U', "underground"},
+    {'H', "hallway"},
 };

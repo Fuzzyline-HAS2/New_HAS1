@@ -9,7 +9,7 @@ independently through explicit header declarations.
 | `iotglove_beetle.ino` | Versions, setup/loop, reset and watchdog coordination |
 | `iotglove_beetle.h` | Shared module declarations and types |
 | `library_and_pin.h` | Pins, UART speed and timeout constants |
-| `ble_location.cpp`, `beacon_map.h` | BLE collection and explicit room mappings |
+| `ble_location.cpp`, `beacon_map.h` | BLE collection and room-prefix mappings |
 | `serial_communication.cpp` | UART framing and command handling |
 | `diagnostics.cpp` | Bounded typed diagnostic log queue |
 | `ota.cpp`, `ota_record.h` | OTA worker and persistent request/result state |
@@ -47,14 +47,41 @@ schema is documented in [IoTGloveProtocol](../../../libraries/IoTGloveProtocol/R
 BLE scanning is disabled until a valid MODE command. It stops after 6 s without a
 valid TTGO command. The native NimBLE GAP callback streams only mapped `HAS3:`
 names into a 24-entry queue. There is no dynamic BLEScan address-result map.
-Candidates use a three-sample median, EMA, 6 dBm/750 ms switching hysteresis,
-minimum -92 dBm, and a 5 s TTL. These are configurable starting values for field
-calibration. Heartbeats and invalid location reports continue during outages.
+Scanning is passive with a 100 ms interval/window and accepts complete local
+names only. Location evaluation follows the reference every 200 ms: up to 96
+samples in a 1.5 s window, at least two samples per device, median followed by
+EMA (0.5 previous + 0.5 median), and the average of each room's two strongest
+devices (or its only device). A candidate must lead by 5 dB for 1.2 s; initial
+selection also waits 1.2 s. The stable room is retained through short gaps and
+becomes unknown after 5 s without a valid HAS3 observation. Recovery from
+unknown is immediate once a room has enough samples. There is no -92 dBm cutoff.
+Heartbeats and invalid location reports continue during outages.
 
-Edit `beacon_map.h` with the exact device names broadcast by installed altar and
-revival devices. The verified Origin server configuration has room aliases but
-no device-prefix mapping. Default entries recognize room names themselves;
-unmapped real device IDs deliberately report `unknown` until configured.
+`beacon_map.h` maps the uppercase initial of `HAS3:<device ID>` to the server room:
+`B` → `bamboo`, `L` → `living`, `T` → `toilet`, `S` → `sleeping`,
+`U` → `underground`, and `H` → `hallway`. Bamboo devices are `BI1`, `BI2`,
+`BR1`, `BR2`, `BD1`, `BD2`, `BE`, and `BT`; `LA` is the Living Altar.
+Device IDs must contain 2–18 ASCII letters, digits, underscores, or hyphens.
+The one-letter room initial alone is not a device ID. Each full device ID retains
+its own RSSI history and expiry, including devices sharing a room prefix.
+Unknown prefixes and malformed IDs are ignored.
+
+Naming validation follows the reference
+[`updated_IoTglove` protocol at e1c7707](https://github.com/Fuzzyline-HAS2/updated_IoTglove/blob/e1c7707a7e02fba6f04c29725985db357f9255cc/location_protocol.h).
+Room scoring and stabilization follow
+[`wifi_location/beetle_ble.ino` at the same commit](https://github.com/Fuzzyline-HAS2/updated_IoTglove/blob/e1c7707a7e02fba6f04c29725985db357f9255cc/wifi_location/beetle_ble.ino).
+As in that repository, Beetle resolves the room and TTGO forwards it; TTGO does
+not classify raw BLE readings. This installation keeps its six canonical Origin
+server room names and the existing `IG1|LOC` framing with RSSI, age, and validity.
+The existing wire RSSI range remains -127..0 dBm; readings outside it are
+rejected instead of using the reference's -127..20 dBm clamp.
+Changed rooms are reported immediately and repeated every second. The age is
+since the latest accepted HAS3 observation, matching the reference's global
+five-second loss timeout while it retains a stable room. TTGO still validates
+freshness and clears the server field with an empty string when invalid; the
+reference instead mutes proximity vibration on `ROOM:unknown` without clearing
+its server location. OTA, heartbeat and game-state controls stay on the existing
+IoTGlove protocol.
 
 OTA uses the patched `first_store` HAS2_Wifi
 `TrySetupFixed("badland", "badland_shoot")` API in a worker. The `badland` theme

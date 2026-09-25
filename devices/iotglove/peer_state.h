@@ -130,7 +130,7 @@ class PeerState {
   void clearOta() { if (ota_ != PeerOta::Waiting) ota_ = PeerOta::Idle; }
   void invalidateLocation() { locationValid_ = false; }
   static bool knownRoom(const char* room) {
-    static const char* const rooms[] = {"bambooForest", "livingRoom", "sleepingRoom", "toilet", "undergroundRoom", "hallway"};
+    static const char* const rooms[] = {"bamboo", "living", "sleeping", "toilet", "underground", "hallway"};
     for (const char* known : rooms) if (strcmp(room, known) == 0) return true;
     return false;
   }
