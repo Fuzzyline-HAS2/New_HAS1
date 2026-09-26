@@ -138,7 +138,8 @@ class FeedbackEngine {
     if (pattern_.total) {
       // The OFF gap is part of the pattern and also overrides proximity pulses.
       out.motor = feedback_config::motorOn(pattern_, uint32_t(now - patternStart_));
-    } else if (locationFresh && state.display == Display::Player) {
+    } else if (locationFresh &&
+               (state.display == Display::Player || state.display == Display::Ghost)) {
       if (vibe == 3) {
         const uint32_t t = now % 1000U;
         out.motor = t < 100U || (t >= 200U && t < 300U);

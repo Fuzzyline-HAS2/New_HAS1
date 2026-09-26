@@ -202,6 +202,47 @@ static void wrapAndTaggerLeds() {
   assert(!wrap.update(f, 0, false, 99).motor);  // 300 ms transition pulse across wrap.
 }
 
+static void playerAndGhostProximity() {
+  const Feedback participants[] = {
+      state(Role::Player, DeviceState::Activate, Phase::Active, Display::Player),
+      state(Role::Ghost, DeviceState::Activate, Phase::Active, Display::Ghost),
+  };
+  for (auto f : participants) {
+    FeedbackEngine engine;
+    // Player and Ghost (including the server's revival alias) share the same pulses.
+    assert(engine.update(f, 3, true, 0).motor);
+    assert(engine.update(f, 3, true, 99).motor);
+    assert(!engine.update(f, 3, true, 100).motor);
+    assert(!engine.update(f, 3, true, 199).motor);
+    assert(engine.update(f, 3, true, 200).motor);
+    assert(engine.update(f, 3, true, 299).motor);
+    assert(!engine.update(f, 3, true, 300).motor);
+    assert(engine.update(f, 3, true, 1000).motor);
+    assert(engine.update(f, 1, true, 2000).motor);
+    assert(engine.update(f, 1, true, 2099).motor);
+    assert(!engine.update(f, 1, true, 2100).motor);
+    assert(!engine.update(f, 1, true, 3000).motor);
+    assert(engine.update(f, 1, true, 4000).motor);
+    assert(!engine.update(f, 0, true, 4001).motor);
+    assert(!engine.update(f, 2, true, 4002).motor);
+    assert(!engine.update(f, 1, false, 4003).motor);
+    assert(!engine.update(f, 3, false, 4004).motor);
+    assert(!engine.update(f, 10, true, 4005).motor);
+    assert(!engine.update(f, 3, true, 4006, true).motor);
+    f.stateValid = false;
+    assert(!engine.update(f, 3, true, 4007).motor);
+    f.stateValid = true;
+    f.phase = Phase::Academy;
+    assert(!engine.update(f, 3, true, 4008).motor);
+
+    FeedbackEngine ready;
+    f.phase = Phase::Ready;
+    f.deviceState = DeviceState::Ready;
+    f.display = Display::Ready;
+    assert(!ready.update(f, 3, true, 5000).motor);
+  }
+}
+
 static void commandSchedules() {
   Settings config;
   auto s = feedback_config::pulses(200, 200, 3);
@@ -352,6 +393,7 @@ int main() {
   prioritiesAndCancellation();
   onlyServerRoleTransitionsSignal();
   wrapAndTaggerLeds();
+  playerAndGhostProximity();
   commandSchedules();
   commandEdgesAndLevels();
   commandPrioritiesAndExceptions();
