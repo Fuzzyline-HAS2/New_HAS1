@@ -122,11 +122,24 @@ codes later in the URL, and Text records cannot use this game layout. Use
   protection checks remain the default. The exact combination of VERSION
   `00 04 04 02 01 00 13 03`, CC `E1 10 3E 00`, and that leading descriptor
   selects an explicit NTAG215-compatible protection layout (pages 129–132).
+  The same exact VERSION and CC also support the separately observed plain
+  NDEF profile: one nonempty, bounded NDEF TLV starting at byte 0 or after up to
+  five NULL bytes (including this writer's output). A terminator must be followed
+  only by NULL padding; an NDEF ending exactly at byte 144 needs no terminator.
+  Blank layouts, duplicate NDEFs, custom/control TLVs, and truncated lengths are
+  refused for this profile. The first eight bytes must remain unchanged between
+  the static check and full memory inspection. Only after full layout validation
+  are pages 129–132 selected and all protection checks performed. Plain cards
+  keep NULL metadata padding; no legacy lock descriptor is inserted. Their writes
+  clear and verify the full 144-byte user region so shorter replacements leave
+  no stale non-NULL tail that would prevent another write. The page-40
+  check remains mandatory for the legacy-descriptor profile only.
   The console retains `MODEL NTAG216` and prints the selected `PROTECTION`
   profile separately. This tuple was observed in read-only hardware probes;
-  it does not establish authenticity or exact physical capacity. The descriptor
+  it does not establish authenticity or exact physical capacity. Legacy descriptors
   must still match when the full user memory is checked. Dynamic locks, AUTH0,
-  ACCESS, mirroring, and the additional page-40 lock check all remain mandatory. UID, CC, lock bits, password, and configuration pages are never written.
+  ACCESS, and mirroring checks remain mandatory for both profiles. UID, CC, lock
+  bits, password, and configuration pages are never written.
 - NTAG21x native protection checks use a bounded raw `FAST_READ` through PN532
   `InCommunicateThru`: pages 39–42 (213), 129–132 (215), or 225–228 (216).
   These read the last user page, dynamic locks, CFG0, and CFG1, excluding PWD/PACK.

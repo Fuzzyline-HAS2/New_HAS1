@@ -175,6 +175,63 @@ int main(int argc, char** argv) {
       const uint8_t expected[] = {1,3,0xA0,0x0C,0x34}; assert(!memcmp(memoryPages[4], expected, 5));
     } else { const uint8_t empty[5] = {}; assert(!memcmp(memoryPages[4], empty, 5)); }
     auto count = writes.size(); for (int i=0;i<100;++i) tick(); assert(writes.size() == count);
+  } else if (scenario.rfind("plain215_", 0) == 0) {
+    versionBytes[6] = 0x13; memoryPages[3][2] = 0x3E;
+    memoryPages[131][3] = 0xFF; reject216Config = true;
+    const uint8_t old[] = {3,9,0xD1,1,5,0x55,1,'M','M','M','M',0xFE};
+    memcpy(memoryPages[4], old, sizeof(old));
+    if (scenario == "plain215_cc") memoryPages[3][2] = 0x6D;
+    if (scenario == "plain215_version") versionBytes[3] = 0x12;
+    if (scenario == "plain215_static") memoryPages[2][2] = 1;
+    if (scenario == "plain215_readonly") memoryPages[3][3] = 0x0F;
+    if (scenario == "plain215_dynamic") memoryPages[130][1] = 1;
+    if (scenario == "plain215_auth") memoryPages[131][3] = 4;
+    if (scenario == "plain215_access") memoryPages[132][0] = 1;
+    if (scenario == "plain215_mirror") memoryPages[131][0] = 0x40;
+    if (scenario == "plain215_truncated") memoryPages[4][1] = 143;
+    if (scenario == "plain215_extended") { memoryPages[4][1] = 255; memoryPages[4][2] = 1; }
+    if (scenario == "plain215_empty") memoryPages[4][1] = 0;
+    if (scenario == "plain215_duplicate") { memoryPages[6][3] = 3; memoryPages[7][0] = 0; memoryPages[7][1] = 0xFE; }
+    if (scenario == "plain215_custom") memoryPages[6][3] = 2;
+    if (scenario == "plain215_hidden") memoryPages[8][0] = 1;
+    if (scenario == "plain215_no_terminator") memoryPages[6][3] = 0;
+    arm("write https://MMMM.p.fuzzyline.io");
+    if (scenario == "plain215_changed") { untilStage(UPLOAD_MEMORY); memoryPages[4][2] ^= 1; }
+    if (scenario == "plain215_uid") { untilStage(UPLOAD_MEMORY); tagUid[0] ^= 1; }
+    if (scenario == "plain215_error") { untilStage(UPLOAD_DYNAMIC); tick(); failNextOperation = Pn532Result::TagError; }
+    if (scenario == "plain215_verify") corruptAfterWrite = true;
+    if (scenario == "plain215_cancel") { untilStage(UPLOAD_DYNAMIC); command("cancel"); }
+    if (scenario == "plain215_timeout") { untilStage(UPLOAD_DYNAMIC); fakeMs += 30001; }
+    untilDone();
+    if (scenario == "plain215_write" || scenario == "plain215_rewrite" || scenario == "plain215_reset" || scenario == "plain215_long_short") {
+      assert(says("OK WRITE verified") && says("plain NDEF"));
+      assert(configReads == std::vector<uint8_t>({130}));
+      const uint8_t empty[5] = {}; assert(!memcmp(memoryPages[4], empty, 5));
+      assert(!memcmp(memoryPages[7], "MMMM", 4));
+      assert(!memcmp(memoryPages[4], uploadImage.bytes, uploadWriteSize));
+      for (auto page : reads) assert(page != 40);
+      if (scenario == "plain215_long_short") {
+        const std::string longUrl = "write https://MMMM.p.fuzzyline.io/" + std::string(70, 'a');
+        output.clear(); arm(longUrl.c_str()); untilDone(); assert(says("OK WRITE verified"));
+        output.clear(); arm("write https://MMMM.p.fuzzyline.io"); untilDone(); assert(says("OK WRITE verified"));
+        output.clear(); arm("write https://MMMM.p.fuzzyline.io"); untilDone(); assert(says("OK WRITE verified"));
+      }
+      if (scenario == "plain215_rewrite" || scenario == "plain215_reset") {
+        writes.clear(); output.clear(); configReads.clear();
+        if (scenario == "plain215_reset") memoryPages[3][2] = 0x6D;
+        arm("write https://MMMM.p.fuzzyline.io"); untilDone();
+        if (scenario == "plain215_rewrite") assert(says("OK WRITE verified") && configReads == std::vector<uint8_t>({130}));
+        else assert(writes.empty() && configReads == std::vector<uint8_t>({226}) && says("ERROR"));
+      }
+    } else if (scenario == "plain215_verify") {
+      assert(!writes.empty() && says("UNKNOWN") && says("verification mismatch"));
+    } else {
+      assert(writes.empty() && !says("OK WRITE"));
+      if (scenario == "plain215_cc") assert(configReads == std::vector<uint8_t>({226}));
+      else if (scenario == "plain215_dynamic" || scenario == "plain215_auth" || scenario == "plain215_access" || scenario == "plain215_mirror" || scenario == "plain215_error")
+        assert(configReads == std::vector<uint8_t>({130}) && says("ERROR"));
+      else assert(configReads.empty());
+    }
   } else if (scenario.rfind("compat215_", 0) == 0) {
     versionBytes[6] = 0x13; memoryPages[3][2] = 0x3E;
     memoryPages[131][3] = 0xFF; reject216Config = true;

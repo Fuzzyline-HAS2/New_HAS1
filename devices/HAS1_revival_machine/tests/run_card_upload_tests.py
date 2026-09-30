@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 TESTS = Path(__file__).resolve().parent
 DEVICE = TESTS.parent
-CASES = ('compat215_write','compat215_reset','compat215_cc','compat215_prefix','compat215_version',
+CASES = ('plain215_long_short','plain215_write','plain215_rewrite','plain215_reset','plain215_cc','plain215_version','plain215_static','plain215_readonly','plain215_dynamic','plain215_auth','plain215_access','plain215_mirror','plain215_truncated','plain215_extended','plain215_empty','plain215_duplicate','plain215_custom','plain215_hidden','plain215_no_terminator','plain215_changed','plain215_uid','plain215_error','plain215_verify','plain215_cancel','plain215_timeout',
+         'compat215_write','compat215_reset','compat215_cc','compat215_prefix','compat215_version',
          'compat215_static','compat215_readonly','compat215_dynamic','compat215_auth','compat215_access',
          'compat215_mirror','compat215_legacy','compat215_duplicate','compat215_changed','compat215_error',
          'compat215_uid','compat215_verify',
