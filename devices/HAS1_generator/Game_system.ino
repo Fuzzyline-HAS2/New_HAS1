@@ -17,6 +17,13 @@ void StarterActivate(){
     // ContribLoop()이 세션을 강제 종료한 뒤 false로 되돌려야 해서 함수 밖으로 옮겼다.
     static bool isPlayerTagged = false; // 현재 리더 위 태그가 role=="player"인지 여부
     static unsigned long lastRfidCheck = 0;
+    if (starterRfidNeedsValidation) {
+        tagOnReader = false;
+        isPlayerTagged = false;
+        starterLastTagState = false;
+        lastRfidCheck = millis() - 200;
+        starterRfidNeedsValidation = false;
+    }
     if (millis() - lastRfidCheck >= 200){
         lastRfidCheck = millis();
         // RfidPresenceCheck()가 근접 Dead Zone 대응을 위해 근/원거리 Gain을 자동으로 오가며 확인한다
@@ -48,42 +55,7 @@ void StarterActivate(){
         starterLastTagState = tagOnReader;
     }
 
-    // 게이지 목표 칸 수(gaugeNeoCnt)는 encoderValue/starterEncoderUnit으로 즉시 계산되지만,
-    // 화면에 실제로 보여주는 칸 수(displayedGaugeNeoCnt)는 목표치로 한 번에 점프하지 않고
-    // 최소 GAUGE_STEP_INTERVAL_MS마다 1칸씩만 쫓아가도록 애니메이션한다.
-    // starterEncoderUnit을 작게 잡으면(예: 1000) 손잡이를 살짝만 돌려도 그 사이 loop 판독
-    // 한 번에 여러 칸이 한꺼번에 넘어가버려("한 번에 2~3칸씩") 화면이 끊겨 보이는데, 목표치와
-    // 표시 칸 수를 분리해두면 실제로는 여러 칸이 한 번에 찼더라도 화면에는 한 칸씩 순차적으로
-    // 이어져 보인다.
-    // displayedGaugeNeoCnt는 함수-지역 static이 아니라 전역(HAS1_generator.h) — BatteryFinish()가
-    // 새 충전 사이클마다 -1로 리셋해줘야, 이전 라운드에 다 찼던 값이 새 라운드까지 남아있지 않는다.
-    // 35ms였을 때는 손잡이를 빠르게 돌리면 여러 칸이 35ms 간격으로 연속 점등되어,
-    // 사람 눈에는 한 칸씩이 아니라 2~3칸이 한꺼번에 차오르는 것처럼 보였다(사용자 리포트).
-    // 칸 사이 간격을 늘려 한 칸씩 채워지는 게 실제로 보이도록 함.
-    const unsigned long GAUGE_STEP_INTERVAL_MS = 100; // 작을수록 더 즉각적, 클수록 더 부드러움
-    static unsigned long lastGaugeStepTime = 0;
-    static unsigned long lastGaugeRefresh = 0;
-    int gaugeNeoCnt = StarterGaugeCnt();
-    // 기여도 기록용 최신 칸 수 갱신 — 아래 "카드 없음/비플레이어" 조기 리턴보다 반드시 위에 둔다.
-    // 아래에 두면 가드가 걸릴 때마다 값이 낡고, ContribLoop()의 강제 종료가 낡은 값을 읽는다.
-    // (이 함수는 가드에 걸려도 호출은 되므로 "매 프레임"과 "매 호출"이 다르다.)
-    starterContribLastCnt = gaugeNeoCnt;
-
-    bool needRender = false;
-    if (displayedGaugeNeoCnt < 0){
-        displayedGaugeNeoCnt = gaugeNeoCnt;
-        needRender = true;
-    }
-    else if (displayedGaugeNeoCnt != gaugeNeoCnt && millis() - lastGaugeStepTime >= GAUGE_STEP_INTERVAL_MS){
-        lastGaugeStepTime = millis();
-        displayedGaugeNeoCnt += (displayedGaugeNeoCnt < gaugeNeoCnt) ? 1 : -1;
-        needRender = true;
-    }
-    // 변화가 없어도 500ms마다 재전송(깨진 프레임 자동 복구용)
-    if (needRender || millis() - lastGaugeRefresh >= 500){
-        lastGaugeRefresh = millis();
-        EncoderNeopixelOn(displayedGaugeNeoCnt); // GAUGE 스트립에 진행률 표시
-    }
+    StarterGaugeUpdate(false);
 
     // 태그가 없거나 player가 아니면 엔코더 카운팅을 멈추고 즉시 리턴 (부정 진행 방지).
     // 이 상태에서도 위의 게이지 표시/RFID 체크는 계속 수행된다.
@@ -119,4 +91,48 @@ void StarterActivate(){
         BlinkTimer.deleteTimer(blinkTimerId);
         NeoLightColor(CIRCUIT, color[BLUE]);
     }
+}
+
+// Shared by starter and its tagger overlay, including audio/blink feedback.
+void StarterGaugeUpdate(bool forceRender) {
+    // 게이지 목표 칸 수(gaugeNeoCnt)는 encoderValue/starterEncoderUnit으로 즉시 계산되지만,
+    // 화면에 실제로 보여주는 칸 수(displayedGaugeNeoCnt)는 목표치로 한 번에 점프하지 않고
+    // 최소 GAUGE_STEP_INTERVAL_MS마다 1칸씩만 쫓아가도록 애니메이션한다.
+    // starterEncoderUnit을 작게 잡으면(예: 1000) 손잡이를 살짝만 돌려도 그 사이 loop 판독
+    // 한 번에 여러 칸이 한꺼번에 넘어가버려("한 번에 2~3칸씩") 화면이 끊겨 보이는데, 목표치와
+    // 표시 칸 수를 분리해두면 실제로는 여러 칸이 한 번에 찼더라도 화면에는 한 칸씩 순차적으로
+    // 이어져 보인다.
+    // displayedGaugeNeoCnt는 함수-지역 static이 아니라 전역(HAS1_generator.h) — BatteryFinish()가
+    // 새 충전 사이클마다 -1로 리셋해줘야, 이전 라운드에 다 찼던 값이 새 라운드까지 남아있지 않는다.
+    // 35ms였을 때는 손잡이를 빠르게 돌리면 여러 칸이 35ms 간격으로 연속 점등되어,
+    // 사람 눈에는 한 칸씩이 아니라 2~3칸이 한꺼번에 차오르는 것처럼 보였다(사용자 리포트).
+    // 칸 사이 간격을 늘려 한 칸씩 채워지는 게 실제로 보이도록 함.
+    const unsigned long GAUGE_STEP_INTERVAL_MS = 100; // 작을수록 더 즉각적, 클수록 더 부드러움
+    static unsigned long lastGaugeStepTime = 0;
+    static unsigned long lastGaugeRefresh = 0;
+    int gaugeNeoCnt = StarterGaugeCnt();
+    // 기여도 기록용 최신 칸 수 갱신 — 아래 "카드 없음/비플레이어" 조기 리턴보다 반드시 위에 둔다.
+    // 아래에 두면 가드가 걸릴 때마다 값이 낡고, ContribLoop()의 강제 종료가 낡은 값을 읽는다.
+    // (이 함수는 가드에 걸려도 호출은 되므로 "매 프레임"과 "매 호출"이 다르다.)
+    starterContribLastCnt = gaugeNeoCnt;
+
+    // During tagger, queued charge animation must never add blue pixels.
+    if (starterTaggerActive && gaugeNeoCnt > displayedGaugeNeoCnt && displayedGaugeNeoCnt >= 0)
+        gaugeNeoCnt = displayedGaugeNeoCnt;
+    bool needRender = forceRender;
+    if (displayedGaugeNeoCnt < 0){
+        displayedGaugeNeoCnt = gaugeNeoCnt;
+        needRender = true;
+    }
+    else if (displayedGaugeNeoCnt != gaugeNeoCnt && millis() - lastGaugeStepTime >= GAUGE_STEP_INTERVAL_MS){
+        lastGaugeStepTime = millis();
+        displayedGaugeNeoCnt += (displayedGaugeNeoCnt < gaugeNeoCnt) ? 1 : -1;
+        needRender = true;
+    }
+    // 변화가 없어도 500ms마다 재전송(깨진 프레임 자동 복구용)
+    if (needRender || millis() - lastGaugeRefresh >= 500){
+        lastGaugeRefresh = millis();
+        EncoderNeopixelOn(displayedGaugeNeoCnt); // GAUGE 스트립에 진행률 표시
+    }
+
 }
