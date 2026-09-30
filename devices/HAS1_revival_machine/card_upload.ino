@@ -19,7 +19,9 @@ static bool uploadLineInvalid = false, uploadAfterCr = false;
 static uint8_t uploadTelnetState = 0; // data, IAC, option, subnegotiation, subnegotiation-IAC
 static char uploadLastResult[100] = "idle";
 static uint8_t uploadUid[10], uploadUidLength = 0;
-static uint8_t uploadLockPage = 0;
+static uint8_t uploadLockPage = 0; // Reported GET_VERSION model.
+static uint8_t uploadConfigLockPage = 0; // Effective protection layout.
+static bool uploadCompat215 = false;
 static bool uploadLegacyLock = false;
 static bool uploadNtagI2c = false, uploadSessionChecked = false;
 static uint16_t uploadOffset = 0, uploadWriteSize = 0;
@@ -148,7 +150,8 @@ static void UploadArm(bool writing, const char *value)
   uploadAbsentCount = 0;
   uploadSelected = false;
   uploadAttemptedWrite = false;
-  uploadNtagI2c = uploadSessionChecked = uploadLegacyLock = false;
+  uploadNtagI2c = uploadSessionChecked = uploadLegacyLock = uploadCompat215 = false;
+  uploadConfigLockPage = 0;
   uploadUidLength = 0;
   uploadOffset = 0;
   memset(uploadMemory, 0, sizeof(uploadMemory));
@@ -328,8 +331,8 @@ static bool UploadWritableTlv()
     }
     // Some cards reporting NTAG216 retain NTAG203-style lock metadata.
     // Accept only this bounded, known descriptor at the reserved prefix. Its
-    // two lock bytes at byte160/page40 are checked IN ADDITION to native216
-    // locks/configuration, never used as evidence of a different chip model.
+    // two lock bytes at byte160/page40 are checked IN ADDITION to the selected
+    // protection layout, never used alone to select a different layout.
     if (type == 1 && !uploadNtagI2c && uploadLockPage == 226 &&
         offset == 1 && !ndefSeen && !factoryLockSeen) {
       const uint8_t legacyLock[] = {3, 0xA0, 0x10, 0x44};
@@ -486,6 +489,14 @@ void CardUploadLoop()
     if (uploadJob == UPLOAD_WRITE && (bytes[2] || bytes[3] || (bytes[7] & 0x0F))) {
       UploadFinish("static lock or non-writable capability container", false); return;
     }
+    // Select the observed compatibility profile from its complete metadata tuple,
+    // never from a failed native protection read. GET_VERSION was validated above.
+    const uint8_t compatCcAndPrefix[] = {0xE1, 0x10, 0x3E, 0, 1, 3, 0xA0, 0x10, 0x44};
+    uploadCompat215 = !uploadNtagI2c && uploadLockPage == 226 &&
+                      !memcmp(bytes + 4, compatCcAndPrefix, sizeof(compatCcAndPrefix));
+    uploadConfigLockPage = uploadCompat215 ? 130 : uploadLockPage;
+    if (uploadCompat215)
+      UploadSay("PROTECTION NTAG215-compatible (reported NTAG216); config pages=129-132; legacy lock page=40");
     uploadStage = uploadJob == UPLOAD_WRITE ? UPLOAD_DYNAMIC : UPLOAD_MEMORY;
   } else if (uploadStage == UPLOAD_DYNAMIC) {
     if (uploadNtagI2c) {
@@ -500,8 +511,8 @@ void CardUploadLoop()
       return;
     }
     // Last user page + dynamic locks + CFG0 + CFG1. Never reads PWD/PACK pages.
-    result = pn532.readNtag21xConfig(uploadLockPage, bytes, deadline);
-    if (!UploadCheckResult(result, "fast-read", uploadLockPage - 1)) return;
+    result = pn532.readNtag21xConfig(uploadConfigLockPage, bytes, deadline);
+    if (!UploadCheckResult(result, "fast-read", uploadConfigLockPage - 1)) return;
     if (bytes[4] || bytes[5] || bytes[6] || bytes[11] != 0xFF || bytes[12] || (bytes[8] & 0xC0)) {
       UploadFinish("locked, protected or mirrored tag refused", false); return;
     }
@@ -515,6 +526,9 @@ void CardUploadLoop()
     if (uploadOffset == sizeof(uploadMemory)) {
       if (uploadJob == UPLOAD_READ) { UploadFinish("READ complete: 144 user-memory bytes", true); return; }
       if (!UploadWritableTlv()) { UploadFinish("custom or out-of-range TLV refused", false); return; }
+      if (uploadCompat215 && !uploadLegacyLock) {
+        UploadFinish("compatibility lock metadata changed; refused", false); return;
+      }
       if (uploadLegacyLock) {
         memcpy(uploadImage.bytes, uploadMemory, 5);
         uploadStage = UPLOAD_LEGACY_LOCK;

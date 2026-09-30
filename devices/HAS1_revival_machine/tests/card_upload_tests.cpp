@@ -29,6 +29,7 @@ struct Write { uint8_t page; std::vector<uint8_t> data; };
 static std::vector<Write> writes;
 static std::vector<uint8_t> reads;
 static std::vector<uint8_t> configReads;
+static bool reject216Config = false;
 static std::vector<Pn532Result> observed;
 Pn532Result RfidUploadSelect(uint8_t* uid, uint8_t& length) {
   ++pnStages; ++selectedStages;
@@ -60,6 +61,7 @@ struct FakeReader {
   Pn532Result readNtag21xConfig(uint8_t lockPage, uint8_t* data, const Pn532Deadline& deadline) {
     assert(lockPage == 40 || lockPage == 130 || lockPage == 226);
     configReads.push_back(lockPage);
+    if (reject216Config && lockPage == 226) return Pn532Result::TagError;
     return readPages(lockPage - 1, data, deadline);
   }
   Pn532Result readNtagI2cSession(uint8_t* data, const Pn532Deadline& deadline) {
@@ -173,6 +175,58 @@ int main(int argc, char** argv) {
       const uint8_t expected[] = {1,3,0xA0,0x0C,0x34}; assert(!memcmp(memoryPages[4], expected, 5));
     } else { const uint8_t empty[5] = {}; assert(!memcmp(memoryPages[4], empty, 5)); }
     auto count = writes.size(); for (int i=0;i<100;++i) tick(); assert(writes.size() == count);
+  } else if (scenario.rfind("compat215_", 0) == 0) {
+    versionBytes[6] = 0x13; memoryPages[3][2] = 0x3E;
+    memoryPages[131][3] = 0xFF; reject216Config = true;
+    const uint8_t old[] = {1,3,0xA0,0x10,0x44,3,9,0xD1,1,5,0x55,1,'P','P','P','P',0xFE};
+    memcpy(memoryPages[4], old, sizeof(old));
+    if (scenario == "compat215_cc") memoryPages[3][2] = 0x6D;
+    if (scenario == "compat215_prefix") memoryPages[4][2] = 0x90;
+    if (scenario == "compat215_version") versionBytes[5] = 1;
+    if (scenario == "compat215_static") memoryPages[2][2] = 1;
+    if (scenario == "compat215_readonly") memoryPages[3][3] = 0x0F;
+    if (scenario == "compat215_dynamic") memoryPages[130][1] = 1;
+    if (scenario == "compat215_auth") memoryPages[131][3] = 4;
+    if (scenario == "compat215_access") memoryPages[132][0] = 1;
+    if (scenario == "compat215_mirror") memoryPages[131][0] = 0x40;
+    if (scenario == "compat215_legacy") memoryPages[40][1] = 1;
+    if (scenario == "compat215_duplicate") memcpy(memoryPages[5] + 1, old, 5);
+    arm("write https://MMMM.p.fuzzyline.io");
+    if (scenario == "compat215_changed") {
+      untilStage(UPLOAD_MEMORY);
+      memset(memoryPages[4], 0, 16); memoryPages[4][0] = 0xFE;
+    }
+    if (scenario == "compat215_error") {
+      untilStage(UPLOAD_DYNAMIC); tick(); failNextOperation = Pn532Result::TagError;
+    }
+    if (scenario == "compat215_uid") { untilStage(UPLOAD_MEMORY); tagUid[0] ^= 1; }
+    if (scenario == "compat215_verify") corruptAfterWrite = true;
+    untilDone();
+    if (scenario == "compat215_write" || scenario == "compat215_reset") {
+      assert(says("MODEL NTAG216") && says("PROTECTION NTAG215-compatible"));
+      assert(says("OK WRITE verified") && !memcmp(memoryPages[4], old, 5));
+      assert(!memcmp(memoryPages[7], "MMMM", 4));
+      assert(configReads == std::vector<uint8_t>({130}));
+      assert(memcmp(memoryPages[4], uploadImage.bytes, uploadWriteSize) == 0);
+      bool legacyRead = false; for (uint8_t page : reads) if (page == 40) legacyRead = true;
+      assert(legacyRead);
+      if (scenario == "compat215_reset") {
+        writes.clear(); output.clear(); configReads.clear(); memoryPages[3][2] = 0x6D;
+        arm("write https://MMMM.p.fuzzyline.io"); untilDone();
+        assert(configReads == std::vector<uint8_t>({226}) && writes.empty() && says("ERROR"));
+      }
+    } else if (scenario == "compat215_verify") {
+      assert(!writes.empty() && says("UNKNOWN") && says("verification mismatch") && !says("OK WRITE"));
+    } else {
+      assert(writes.empty() && says("ERROR") && !says("OK WRITE"));
+      if (scenario == "compat215_cc" || scenario == "compat215_prefix")
+        assert(configReads == std::vector<uint8_t>({226}));
+      else if (scenario == "compat215_version" || scenario == "compat215_static" || scenario == "compat215_readonly")
+        assert(configReads.empty());
+      else assert(configReads == std::vector<uint8_t>({130}));
+      if (scenario == "compat215_changed") assert(says("compatibility lock metadata changed"));
+      if (scenario == "compat215_error") assert(says("operation=fast-read page=129 write_attempted=0"));
+    }
   } else if (scenario.rfind("ntag216_", 0) == 0) {
     versionBytes[6] = 0x13; memoryPages[3][2] = 0x6D;
     memoryPages[227][3] = 0xFF;
