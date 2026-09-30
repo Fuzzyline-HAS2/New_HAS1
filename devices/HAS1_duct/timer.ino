@@ -16,17 +16,20 @@ void TimerRun()
 /**
  * @brief 쿨타임 완료 처리. 타이머 만료와 서버 activate(ServerActivate) 양쪽에서 공유한다.
  */
-void CooltimeFinish()
+void CooltimeFinish(bool notify_server)
 {
-    pixels_line.lightColor(line_yellow);
-    pixels_round.lightColor(yellow);
-    pixels_switch.lightColor(yellow);
-
-    has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
+    // Send는 동기 HTTP 요청이다. 통신 전에 사용 가능 상태와 타이머를 확정한다.
     current_time = 0;
     duct_available = true;
     cool_time_neo_bool = false;
     cooltime_timer.deleteTimer(cooltime_timer_id);
+
+    pixels_line.lightColor(line_yellow);
+    pixels_round.lightColor(yellow);
+    pixels_switch.lightColor(yellow);
+
+    if (notify_server)
+        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "activate");
 }
 
 void CooltimeTimerFunc()
@@ -51,5 +54,5 @@ void RfidTagTimerFunc()
 
 void WifiTimerFunc()
 {
-  has2wifi.Loop(DataChange);
+  has2wifi.LoopFresh(DataChange);
 }

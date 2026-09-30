@@ -60,12 +60,15 @@ private:
     Preferences wifi_preferences;
     unsigned long lastWifiScanMs;
     bool wifiCandidatesInitialized;
+    // Setup may have consumed the notification; validate the first fresh poll too.
+    bool freshReceivePending = true;
 
     friend class HTTPUpdate;
 
     String _theme;
 
-    bool HttpRequest(String request, String string_request);
+    bool HttpRequest(String request, String string_request, bool requireFresh = false);
+    bool JsonParsingFresh(String request, String json);
     void JsonParsing(String request, String json);
     void EnsureWifiCandidatesInitialized();
     void ScanNetworks(bool force = false);
@@ -96,6 +99,8 @@ public:
     void SituationAsync(String affected_device_name, String situation, String key_device = "");
     void Loop();
     void Loop(void (*Func)(void));
+    // Invoke callback only after a successful, validated ReceiveMine snapshot.
+    void LoopFresh(void (*Func)(void));
     void FirmwareUpdate(String device_type, String ip_address = "172.30.1.43");
     String GetConnectedSSID();
     void PrintConnectedSSID();

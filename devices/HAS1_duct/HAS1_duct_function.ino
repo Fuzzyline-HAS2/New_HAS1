@@ -159,8 +159,9 @@ void CooltimeCalculation()
 void ServerActivate()
 {
     if (game_state == activate && !duct_available && !duct_close_timer.isEnabled(duct_close_timer_id))
-        CooltimeFinish();
-    ExitTaggerMode();
+        CooltimeFinish(false);
+    // 이미 받은 activate를 동기 HTTP로 되보내며 입력 처리를 막지 않는다.
+    ExitTaggerMode(false);
 }
 
 void TagPlayerSend()

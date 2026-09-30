@@ -693,13 +693,72 @@ void HAS2_Wifi::Loop(void (*Func)(void))
   }
 }
 
+// Opt-in polling for command handlers that act on every received snapshot.
+// Legacy Loop callers retain their existing behavior.
+void HAS2_Wifi::LoopFresh(void (*Func)(void))
+{
+  MaintainWifi();
+  String url = server + "?request=Loop&table=device&mac=" + my_mac;
+  if (!HttpRequest("Loop", url, true)) return;
+
+  bool received = false;
+  // ReceiveMine clears the server flag before returning its body. A lost body
+  // must stay pending locally even when the next Loop reports zero changes.
+  if ((int)shift_machine["shift_machine"] >= 1) freshReceivePending = true;
+  if (freshReceivePending)
+  {
+    url = server + "?request=ReceiveMine&table=device&mac=" + my_mac;
+    received = HttpRequest("ReceiveMine", url, true);
+    if (received)
+    {
+      freshReceivePending = false;
+      Func();
+    }
+  }
+  if ((int)shift_machine["watchdog"] >= 1)
+  {
+    Send((String)(const char *)my["device_name"], "watchdog", "0");
+    ESP.restart();
+  }
+  if (received && (String)(const char *)my["device_state"] == "update")
+    FirmwareUpdate((String)(const char *)my["device_type"], HOST_NAME.substring(7));
+}
+
+bool HAS2_Wifi::JsonParsingFresh(String request, String json)
+{
+  // Parsing in place can leave a valid-looking activate prefix after truncation.
+  // Never expose a failed or incomplete parse to the device state machine.
+  StaticJsonDocument<2048> snapshot;
+  if (deserializeJson(snapshot, json) || !snapshot.is<JsonObject>()) return false;
+  if (request == "Loop")
+  {
+    for (const char *key : {"shift_machine", "watchdog"})
+    {
+      if (snapshot[key].is<int>()) continue;
+      if (!snapshot[key].is<const char *>()) return false;
+      const char *value = snapshot[key].as<const char *>();
+      if (!*value) return false;
+      for (; *value; ++value)
+        if (*value < '0' || *value > '9') return false;
+    }
+    return shift_machine.set(snapshot);
+  }
+  if (request == "ReceiveMine")
+  {
+    if (!snapshot["device_state"].is<const char *>() ||
+        !snapshot["game_state"].is<const char *>()) return false;
+    return my.set(snapshot);
+  }
+  return false;
+}
+
 /**
  * @brief [private] Http 통신
  *
  * @param request 원하는 명령
  * @param string_request Http에게 보내는 형식 문자열
  */
-bool HAS2_Wifi::HttpRequest(String request, String string_request)
+bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireFresh)
 {
   //   int httpRequestCnt = 0;
   // ReRequsetHttp:
@@ -734,11 +793,15 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request)
           _has2DebugPrint->println("HTTP GET... code: 200, empty body, request: " + string_request);
         }
       }
-      if (request != "Send")
+      if (requireFresh)
       {
-        JsonParsing(request, payload);
+        ok = JsonParsingFresh(request, payload);
       }
-      ok = true;
+      else
+      {
+        if (request != "Send") JsonParsing(request, payload);
+        ok = true;
+      }
     }
     else
     {

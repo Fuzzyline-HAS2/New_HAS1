@@ -30,12 +30,14 @@ sensor = (ROOT / "sensor.ino").read_text()
 audio = (ROOT / "audio_queue.ino").read_text().replace('#include "HAS1_duct.h"', '')
 body = core + "\n" + "\n".join(function(game, n) for n in
     ["ApplyCurrentNeopixel", "EnterTaggerMode", "ExitTaggerMode", "SettingFunc", "ReadyFunc", "ActivateFunc",
-     "ActivateRunOnce"])
+     "ActivateRunOnce", "DataChange"])
 body += "\n" + function(timer, "CooltimeTimerFunc") + "\n" + function(timer, "CooltimeFinish")
 body += "\n" + "\n".join(function(sensor, name) for name in
                            ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder"])
 prototypes = "\n".join(re.findall(r"^(?:void|int|bool)\s+\w+\([^)]*\)", body, re.M))
 prototypes = prototypes.replace("void DuctOpen(bool switch_push)", "void DuctOpen(bool switch_push = false)")
+prototypes = prototypes.replace("void CooltimeFinish(bool notify_server)", "void CooltimeFinish(bool notify_server = true)")
+prototypes = prototypes.replace("void ExitTaggerMode(bool notify_server)", "void ExitTaggerMode(bool notify_server = true)")
 prototypes = ";\n".join(prototypes.splitlines()) + ";\n"
 source = (Path(__file__).with_name("host_harness.cpp").read_text()
           .replace("// FIRMWARE_GLOBALS", globals_ + "\n" + prototypes)
@@ -52,6 +54,7 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "server_cooltime_fallback",
          "audio_0", "audio_28", "audio_60", "audio_90",
          "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close",
+         "cooldown_report_state", "server_activate_data_change", "server_activate_blockade_data_change", "server_activate_unpolled_lock",
          "open_audio_paths", "server_activate", "server_activate_door_open", "server_activate_blockade",
          "blockade_left_time", "blockade_left_time_reset"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
