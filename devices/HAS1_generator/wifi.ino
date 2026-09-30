@@ -204,8 +204,8 @@ void WaitFunc(){
 void SettingFunc(void){
     Serial.println("SETTING");
     AllNeoOn(WHITE);
+    EncoderDetach(); // 이전 라운드 대기 카운트를 먼저 비운 뒤 리셋
     encoderValue = 100;
-    EncoderDetach();
     GameTimer.deleteTimer(gameTimerId);
 
     BlinkTimer.deleteTimer(blinkTimerId);

@@ -20,6 +20,7 @@
 // 세션 시작/종료 시점에도 같은 기준으로 칸 수를 읽기 위해 한 곳에 모아둔다.
 int StarterGaugeCnt()
 {
+    EncoderLoop(); // RFID/서버 조회 중 쌓인 ISR 카운트도 세션 경계에 반영
     int cnt = encoderValue / starterEncoderUnit;
     if (cnt > NumPixels[GAUGE]) cnt = NumPixels[GAUGE];
     if (cnt < 0) cnt = 0;   // encoderValue는 GameTimerFunc가 0에서 잡아주지만 방어적으로
@@ -39,8 +40,8 @@ void ContribBegin(const String &user, int cnt)
 //
 // 전송은 응답을 기다리지 않는 has2wifi.SituationAsync()로 보낸다 (Core 0 별도 태스크).
 // 블로킹 Situation()을 쓰면 안 된다 — 손잡이를 당기다 카드가 흔들려 "뗌"으로 판정될 때마다
-// 왕복 시간(실측 300ms~수 초)만큼 loop()가 멈추고, 그 사이 돌린 펄스는 곧바로 이어지는
-// EncoderDetach()/EncoderAttach()의 카운터 리셋에 버려져 게이지가 끊기며 덜 찬다.
+// 왕복 시간(실측 300ms~수 초)만큼 loop()가 멈추면 게이지 표시/카드 감지가 지연된다.
+// ISR 대기 카운트는 EncoderLoop()/EncoderDetach()에서 보존해 반영한다.
 // 응답 바디를 쓰지 않고 실패해도 재시도하지 않으므로 결과를 기다릴 이유도 없다.
 // 성공/실패와 소요 시간은 비동기 태스크가 "[RFID] Situation send ... (async)"로 남긴다.
 void ContribEnd(int cnt)

@@ -31,7 +31,7 @@ void setup() {
     CrashReportInit();  // 직전 재부팅이 워치독/패닉이었다면 마지막 위치를 로그로 남김 (crash.ino)
     NeopixelInit();  // 네오픽셀 4개 스트립 초기화 (전체 흰색 점등)
     RfidInit();      // PN532 RFID 리더 초기화
-    EncoderInit();   // 엔코더용 하드웨어 펄스 카운터(PCNT) 초기화
+    EncoderInit();   // 엔코더 입력 핀 초기화 (게임에서 CHANGE 인터럽트 시작)
     WireInit();      // 배선 감지 핀 4개 INPUT_PULLUP 설정
     Mp3_Init();      // DFPlayer(MP3) 모듈 초기화
     TimerInit();     // SimpleTimer 3종 등록(및 정지)
@@ -98,14 +98,14 @@ void setup() {
 
 // ---------------------------------------------------------------------------------
 // loop(): 전원이 켜져 있는 동안 반복 실행되는 메인 루프.
-// 매 프레임마다 (1) 엔코더 하드웨어 카운터를 읽어 반영하고,
+// 매 프레임마다 (1) 엔코더 ISR 대기 카운트를 반영하고,
 // (2) 현재 게임 모드에 해당하는 함수를 실행하고,
 // (3) 등록된 SimpleTimer들을 갱신한다.
 // 블로킹(delay 등)을 최소화해 WiFi 통신·네오픽셀 갱신·엔코더 반영이 최대한 끊기지 않게 한다.
 // ---------------------------------------------------------------------------------
 void loop() {
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
-    EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영
+    EncoderLoop();     // ISR 대기 카운트 → encoderValue 반영
     // 스타터를 벗어난 채 열려 있는 기여도 세션을 정리한다.
     // [중요] ptrCurrentMode() "앞"이어야 한다 — 이 위치가 두 가지를 동시에 보장한다:
     //  1) 직전 프레임 끝의 TimerRun()->DataChanged()가 모드를 바꿨다면, 새 모드 함수가
