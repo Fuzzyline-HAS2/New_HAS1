@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2022
  */
 
-#define FIRMWARE_VER 71
+#define FIRMWARE_VER 72
 #define PARTITION_VER 5
 #include "HAS1_revival_machine.h"
 
