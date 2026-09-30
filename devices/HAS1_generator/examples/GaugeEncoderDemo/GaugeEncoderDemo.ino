@@ -4,7 +4,7 @@
 // HAS1_generator 실기(핀 번호 동일)에서 와이파이/RFID/DFPlayer/배선 감지 등은 전부 빼고
 // "엔코더(손잡이)를 돌리면 GAUGE 네오픽셀이 파란색으로 차오른다"만 확인하기 위한 간단 예제.
 //
-// - 엔코더 카운팅은 실제 HAS1_generator(encoder.ino)와 동일하게 ESP32 하드웨어 펄스
+// - 이 독립 예제는 메인 펌웨어의 ISR 방식과 달리 ESP32 하드웨어 펄스
 //   카운터(PCNT)를 사용한다. A상/B상 모두 "엣지마다 +1"로 세므로 방향은 구분하지 않는다.
 // - GAUGE 스트립(핀/픽셀 수 동일)에 encoderValue를 STARTER_ENCODER_UNIT으로 나눈
 //   칸 수만큼 파란색을 채운다.
@@ -27,7 +27,7 @@ Adafruit_NeoPixel gauge(GAUGE_PIXEL_COUNT, GAUGE_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ
 int starterEncoderUnit = 4000;
 long encoderValue = 0;
 
-// ---- 엔코더 (ESP32 하드웨어 PCNT — encoder.ino와 동일 방식) ----
+// ---- 엔코더 (ESP32 하드웨어 PCNT — 메인 펌웨어의 ISR 방식과 별도 예제) ----
 pcnt_unit_handle_t pcntUnit = NULL;
 int lastPcntCount = 0;
 
