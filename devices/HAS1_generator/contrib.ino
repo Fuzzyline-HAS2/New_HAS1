@@ -12,7 +12,7 @@
 // 아직 표시되지 않은 칸이 누락된다. 세션의 시작값과 끝값이 둘 다 목표값 기준이라 뺄셈은
 // 자기일관적이고, 방치 감소로 표시가 거꾸로 따라가는 중이어도 어긋나지 않는다.
 //
-// 전송은 기존 has2wifi.Situation()을 그대로 쓴다 (부활기가 이미 같은 API로 이벤트를 남긴다).
+// 전송은 has2wifi.SituationAsync()를 쓴다 (부활기와 같은 Situation API, 응답을 기다리지 않음).
 //   GET has2.php?request=Situation&table=generator_gauge&key=<발전기>&value=<GxPx>:<delta>
 // =================================================================================
 
@@ -37,11 +37,12 @@ void ContribBegin(const String &user, int cnt)
 // 세션 종료 — 순증(delta)이 1칸 이상이면 서버에 한 행을 남긴다.
 // 세션이 열려 있지 않으면 아무 것도 하지 않으므로 호출부에서 따로 검사할 필요가 없다.
 //
-// has2wifi.Situation()은 블로킹 HTTP GET이다. 이 함수가 불리는 세 순간(카드 뗀 직후,
-// 수리 완료 처리 직전, 스타터 이탈 다음 프레임)은 모두 엔코더가 멈춰 있거나 이미 블로킹
-// 오디오가 들어 있는 loop() 컨텍스트다. DataChanged() 콜백 안에서는 절대 부르지 않는다 —
-// BatteryFinish()가 ptrCurrentMode 대입으로 피해 둔 재진입과 같은 문제가 생긴다.
-// 엔코더 펄스는 PCNT 하드웨어가 세므로 이 정지 동안 유실되지 않는다.
+// 전송은 응답을 기다리지 않는 has2wifi.SituationAsync()로 보낸다 (Core 0 별도 태스크).
+// 블로킹 Situation()을 쓰면 안 된다 — 손잡이를 당기다 카드가 흔들려 "뗌"으로 판정될 때마다
+// 왕복 시간(실측 300ms~수 초)만큼 loop()가 멈추고, 그 사이 돌린 펄스는 곧바로 이어지는
+// EncoderDetach()/EncoderAttach()의 카운터 리셋에 버려져 게이지가 끊기며 덜 찬다.
+// 응답 바디를 쓰지 않고 실패해도 재시도하지 않으므로 결과를 기다릴 이유도 없다.
+// 성공/실패와 소요 시간은 비동기 태스크가 "[RFID] Situation send ... (async)"로 남긴다.
 void ContribEnd(int cnt)
 {
     if (starterContribUser.length() == 0) return;   // 열린 세션 없음
@@ -63,8 +64,8 @@ void ContribEnd(int cnt)
     }
 
     BREADCRUMB("ContribEnd:send");
-    bool ok = has2wifi.Situation(user + ":" + String(delta), "generator_gauge");
-    Serial.println(line + (ok ? " OK" : " FAIL"));
+    has2wifi.SituationAsync(user + ":" + String(delta), "generator_gauge");
+    Serial.println(line + " sent(async)");
 }
 
 // loop()에서 ptrCurrentMode() 바로 앞에 호출된다.

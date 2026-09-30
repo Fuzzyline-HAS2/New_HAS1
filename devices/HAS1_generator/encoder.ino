@@ -96,6 +96,9 @@ void EncoderAttach()
 void EncoderDetach()
 {
     if (encoderAttached){
+        // 멈추기 전에 아직 encoderValue에 반영 안 된 펄스를 거둔다 — 이 프레임에서 loop()가
+        // 막혔던 동안(HTTP 등) 쌓인 펄스가, 다음 EncoderAttach()의 카운터 리셋에 버려지지 않게.
+        EncoderLoop();
         pcnt_unit_stop(pcntUnit);
         encoderAttached = false;
     }

@@ -68,7 +68,11 @@ static bool DetectAndRead(uint8_t outData[32])
 bool RfidPresenceCheck()
 {
   BREADCRUMB("RfidPresenceCheck");
-  uint8_t data[32];
+  // 반드시 0으로 초기화한다 — ntag2xx_ReadPage()는 앞 4바이트(page 7)만 채우므로, 초기화하지
+  // 않으면 나머지 28바이트는 스택 쓰레기다. 아래 memcmp가 32바이트를 비교하기 때문에, 락온 뒤
+  // 다른 호출(has2wifi.Receive 등)이 스택을 덮어쓰면 같은 카드인데도 "다른 태그"로 판정되어
+  // 카드가 얹혀 있는데도 제거 처리됐다(스타터에서 레버를 당기는 내내 엔코더가 꺼지던 원인).
+  uint8_t data[32] = {0};
 
   if (!rfid_tagLocked)
   {
