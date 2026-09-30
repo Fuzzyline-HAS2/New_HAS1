@@ -68,12 +68,31 @@ void DataChanged()
     }
   }
 
+  // Resume the interrupted starter directly: keep its decay timer and current gauge.
+  bool deviceStateChanged = (String)(const char*)my["device_state"] != (String)(const char*)cur["device_state"];
+  if (!gameStateChanged && deviceStateChanged && starterTaggerActive &&
+      (String)(const char*)my["game_state"] == "activate" &&
+      (String)(const char*)my["device_state"] == "battery_max") {
+    TaggerReset();
+    ptrCurrentMode = StarterActivate;
+    StarterGaugeUpdate(true);
+    receiveMineOn = false;
+    cur = my;
+    return;
+  }
+  // A tagger command must not be consumed as the echo of our battery_max send.
+  if (deviceStateChanged && (String)(const char*)my["device_state"] == "tagger" &&
+      (String)(const char*)my["game_state"] == "activate") receiveMineOn = false;
+  if (deviceStateChanged && (String)(const char*)my["device_state"] != "tagger") {
+    TaggerReset();
+  }
+
   // receiveMineOn이 true인 동안은(StartFinish 등에서 직접 상태를 전환 중) 아래 device_state 분기를
   // 건너뛴다 — 서버 폴링 결과가 방금 로컬에서 결정한 상태를 덮어쓰지 않도록 하는 가드.
   if(receiveMineOn == false){
     // battery_pack 값 변화(activate 상태에서 배선 충전 중일 때) — 배선 방식(WirePollMain)이 도입되기 전의
     // 경로로, 현재는 서버 쪽에서 battery_pack이 바뀌는 다른 경로가 있을 경우를 대비한 안전망 성격이 크다.
-    if(gameStateChanged == false && cur.containsKey("battery_pack") && (String)(const char*)my["game_state"] == "activate" && (int)my["battery_pack"] != (int)cur["battery_pack"]){
+    if(ptrCurrentMode == WirePollMain && (String)(const char*)my["device_state"] == "activate" && gameStateChanged == false && cur.containsKey("battery_pack") && (String)(const char*)my["game_state"] == "activate" && (int)my["battery_pack"] != (int)cur["battery_pack"]){
       BREADCRUMB("DataChanged:batteryPackSafetyNet");
       BatteryPackSend();
       if((int)my["battery_pack"] > (int)cur["battery_pack"]) Mp3PlayLargeFolder(1, 7);  // 늘어날 때만 재생
@@ -130,7 +149,7 @@ void DataChanged()
         ActivateFunc();
       }
       else if((String)(const char*)my["device_state"] == "starter_finish"){
-        // (별도 처리 없음 — 상태 값만 존재, 실제 전환은 ActivateFunc 진입 시 device_state 검사로 처리됨)
+        if ((String)(const char*)cur["device_state"] == "tagger") ActivateFunc();
       }
       else if((String)(const char*)my["device_state"] == "activate"){
         BREADCRUMB("DataChanged:activate");
@@ -161,16 +180,10 @@ void DataChanged()
         AllNeoOn(RED);
         Mp3PlayLargeFolder(1, 1);  // TODO: PG_PLAYER_LOSE 음원 지정
       }
-      else if((String)(const char*)my["device_state"] == "tagger"){
+      else if((String)(const char*)my["device_state"] == "tagger" &&
+              (String)(const char*)my["game_state"] == "activate"){
         BREADCRUMB("DataChanged:tagger");
-        // 쇼타임 연출 — 4개 스트립 보라색 상시 점등, player/revival 태그 시 보라색 점멸은 TaggerRfidLoop에서 처리
-        ptrRfidMode = WaitFunc;
-        ptrCurrentMode = TaggerRfidLoop;
-        // GameTimer는 일부러 멈추지 않는다 — 스타터 진행 중(방치 감소 타이머가 이미 돌고 있던 경우)
-        // tagger로 인터럽트돼도 게이지가 시간 경과에 맞춰 계속 자연스럽게 줄어들게 하기 위함.
-        // battery_max로 돌아오면 BatteryFinish()가 encoderValue를 리셋하지 않고 그대로 이어받는다.
-        BlinkTimer.deleteTimer(blinkTimerId);
-        AllNeoOn(PURPLE);
+        if (ptrCurrentMode != TaggerRfidLoop) TaggerEnter();
       }
       else if((String)(const char*)my["device_state"] == "github"){
         BREADCRUMB("DataChanged:github:otaCheck");
@@ -202,6 +215,7 @@ void WaitFunc(){
 
 // game_state == "setting" 진입 시 호출 — 다음 라운드를 준비하며 모든 진행 상태를 초기값으로 되돌린다.
 void SettingFunc(void){
+    TaggerReset();
     Serial.println("SETTING");
     AllNeoOn(WHITE);
     encoderValue = 100;
@@ -220,8 +234,17 @@ void SettingFunc(void){
 //   2) "battery_max"   : 배터리팩이 이미 가득 찬 상태로 시작 — BatteryFinish()로 스타터 진입
 //   3) 그 외(기본)      : 배선 충전 단계부터 시작 — WirePollMain을 메인 루프로 등록
 void ActivateFunc(void){
+    TaggerReset();
     BREADCRUMB("ActivateFunc:start");
     Serial.println("ACTIVATE");
+    if ((String)(const char*)my["device_state"] == "tagger") {
+        // A new active game can already be in tagger with no device-state diff.
+        EncoderDetach();
+        GameTimer.deleteTimer(gameTimerId);
+        ptrCurrentMode = WaitFunc;
+        TaggerEnter();
+        return;
+    }
     AllNeoOn(YELLOW);
     BatteryPackSend();
     EncoderDetach();
@@ -256,6 +279,7 @@ void ActivateFunc(void){
 
 // game_state == "ready" 진입 시 호출 — 라운드 시작 직전 대기 상태. 모든 진행을 멈추고 빨간 LED로 표시한다.
 void ReadyFunc(void){
+    TaggerReset();
     Serial.println("READY");
     AllNeoOn(RED);
     EncoderDetach();

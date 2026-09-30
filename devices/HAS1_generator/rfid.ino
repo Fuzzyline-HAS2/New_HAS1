@@ -20,6 +20,10 @@ static bool          rfid_tagLocked  = false;   // 태그를 찾아 유지 중�
 static uint8_t       rfid_lockedData[32];        // 유지 중인 태그의 page7 데이터 — 동일 태그 판별 기준
 static unsigned long rfid_lastSeenMs = 0;        // 유지 중 태그를 마지막으로 확인한 시각
 
+void RfidPresenceReset() {
+  rfid_tagLocked = false;
+}
+
 // 유지 중이던 태그가 두 Gain 모두에서 이 시간 이상 연속으로 안 잡히면 그제서야 제거로 판정.
 // (단 한 번의 Read 실패로 바로 태그 제거 처리하지 않기 위한 디바운스 — 500~1000ms 범위에서 조정 가능)
 #define TAG_REMOVE_TIME_MS 500
@@ -177,6 +181,8 @@ void RfidLoopMain()
   }
 }
 
+bool taggerLastTagState = false;
+
 // device_state == "tagger"일 때 ptrCurrentMode로 등록됨.
 // player/revival 태그가 새로 리더 위에 올라올 때마다 안내 음원(1,9)을 먼저 재생한 뒤
 // 4개 스트립을 보라색으로 2회 점멸하고 보라색 상시 점등으로 복귀한다.
@@ -185,11 +191,13 @@ void RfidLoopMain()
 void TaggerRfidLoop()
 {
   BREADCRUMB("TaggerRfidLoop");
-  static bool lastTagState = false;
+  TaggerFeedbackLoop();
+  if (starterTaggerActive) StarterGaugeUpdate(false);
+  if (TaggerFeedbackBusy()) return;
   uint8_t data[32];
   bool tagOnReader = RfidDetectTag(data);
 
-  if (tagOnReader && !lastTagState){
+  if (tagOnReader && !taggerLastTagState){
     String tagUser = "";
     for(int i = 0; i < 4; i++) tagUser += (char)data[i];
     Serial.println("Tagger tag_user_data : " + tagUser);
@@ -197,12 +205,16 @@ void TaggerRfidLoop()
     String role = (String)(const char*)tag["role"];
     if (role == "player" || role == "revival"){
       Serial.println("Tagger Tag: " + role);
+      if (starterTaggerActive) {
+        TaggerFeedbackStart();
+      } else {
       Mp3PlayLargeFolderAndWait(1, 9); // 오디오 우선 재생
       AllNeoBlink(PURPLE, 2, 400);     // 그 다음 보라색 2회 점멸
       AllNeoOn(PURPLE);                // 점멸 종료 후 보라색 상시 점등으로 복귀
+      }
     }
   }
-  lastTagState = tagOnReader;
+  taggerLastTagState = tagOnReader;
 }
 
 // 태그에서 읽어온 4바이트("GxPx" 형식의 그룹/플레이어 코드)를 문자열로 조립하고,
@@ -272,12 +284,15 @@ void BatteryFinish()
     gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 시작
   }
   // GAUGE는 스타터 진행률 표시로 넘어가므로 초록(완충 표시), 나머지 3개는 파랑으로 전환
-  NeoLightColor(GAUGE, color[GREEN]);
+  if (displayedGaugeNeoCnt < 0) displayedGaugeNeoCnt = StarterGaugeCnt();
+  EncoderNeopixelOn(displayedGaugeNeoCnt);
   NeoLightColor(STARTER, color[BLUE]);
   NeoLightColor(DEVICESTATE, color[BLUE]);
   NeoLightColor(CIRCUIT, color[BLUE]);
-  EncoderAttach();  // 엔코더 카운팅 시작 — 이제부터 손잡이를 돌리면 encoderValue가 증가함
-  delay(100);
+  EncoderDetach();
+  starterRfidNeedsValidation = true;
+  if (!GameTimer.isEnabled(gameTimerId))
+    gameTimerId = GameTimer.setInterval(gameTime, GameTimerFunc);
   ptrCurrentMode = StarterActivate; // 다음 loop부터 스타터 미니게임 루프로 전환
 }
 

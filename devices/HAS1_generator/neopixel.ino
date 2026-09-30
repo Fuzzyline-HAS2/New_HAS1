@@ -61,10 +61,11 @@ void BatteryGaugeShow(int cnt, int maxCnt){
 // neoNum번째 픽셀까지는 파란색(진행 완료 구간), 그 뒤는 초록색(남은 구간)으로 표시한다.
 // BatteryGaugeShow와 달리 "꺼짐" 대신 초록색을 써서 스타터 단계임을 구분한다.
 void EncoderNeopixelOn(int neoNum){
+  int background = starterTaggerActive ? (taggerPurpleVisible ? PURPLE : BLACK) : GREEN;
   for(int i = 0; i < neoNum; i++)
     pixels[GAUGE].setPixelColor(i,pixels[GAUGE].Color(color[BLUE][0], color[BLUE][1], color[BLUE][2]));
   for(int i = neoNum; i < NumPixels[GAUGE]; i++)
-    pixels[GAUGE].setPixelColor(i,pixels[GAUGE].Color(color[GREEN][0],color[GREEN][1],color[GREEN][2]));
+    pixels[GAUGE].setPixelColor(i,pixels[GAUGE].Color(color[background][0],color[background][1],color[background][2]));
   pixels[GAUGE].show();
 }
 

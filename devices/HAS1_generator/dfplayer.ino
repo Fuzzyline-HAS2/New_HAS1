@@ -75,3 +75,15 @@ void LeftGenerator() {
 void BatteryPackSend() {
     BatteryGaugeShow((int)my["battery_pack"], (int)my["max_battery_pack"]);
 }
+
+// Starter tagger feedback waits across loop iterations, so decay and WiFi keep running.
+static unsigned long taggerAudioStarted = 0;
+void Mp3TaggerStart() {
+    if (dfPlayerReady && myDFPlayer.available()) myDFPlayer.readType();
+    Mp3PlayLargeFolder(1, 9);
+    taggerAudioStarted = millis();
+}
+bool Mp3TaggerFinished() {
+    return !dfPlayerReady || millis() - taggerAudioStarted >= MP3_WAIT_TIMEOUT_MS ||
+        (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished);
+}

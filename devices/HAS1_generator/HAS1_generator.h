@@ -73,6 +73,18 @@ bool blinkOn = false; // BlinkTimerFunc()가 네오픽셀을 켬/끔 번갈아 �
 // StarterActivate()의 함수-지역 static이었으나 contrib.ino의 ContribLoop()이 세션을 강제
 // 종료한 뒤 false로 되돌려야 해서 전역으로 올림 — 그래야 카드가 리더에 그대로 얹혀 있어도
 // 스타터로 복귀했을 때 "새 태그"로 다시 인식되어 새 세션이 열린다.
+extern bool taggerLastTagState;
+bool starterTaggerActive = false;
+bool starterRfidNeedsValidation = true;
+bool taggerPurpleVisible = true;
+void StarterGaugeUpdate(bool forceRender);
+void TaggerEnter();
+void TaggerReset();
+void TaggerFeedbackStart();
+void TaggerFeedbackLoop();
+bool TaggerFeedbackBusy();
+void Mp3TaggerStart();
+bool Mp3TaggerFinished();
 bool starterLastTagState = false; // 직전 200ms 체크에서 태그가 리더 위에 있었는지
 //****************************************Contribution Log****************************************************************
 // "누가 게이지를 얼만큼 채웠는지" 기록 — 플레이어 카드가 올라와 있는 동안만 엔코더가 돌아가는
@@ -129,7 +141,7 @@ void BatteryPackSend(); // 배선 충전량을 게이지 네오픽셀에 반영 
 int ledBrightness = DEFAULT_BRIGHTNESS; // 현재 적용 중인 네오픽셀 밝기 (0~255, 서버 값으로 UpdateBrightness()에서 갱신됨)
 void NeopixelInit();       // 4개 네오픽셀 스트립 초기화 + 전체 흰색 점등 (neopixel.ino)
 void UpdateBrightness();   // 서버에서 받은 밝기(1~100)를 0~255로 매핑해 전체 스트립에 적용 (neopixel.ino)
-void EncoderNeopixelOn();  // 스타터 게이지 진행률만큼 GAUGE 네오픽셀을 채움 (neopixel.ino)
+void EncoderNeopixelOn(int neoNum);  // 스타터 게이지 진행률만큼 GAUGE 네오픽셀을 채움 (neopixel.ino)
 void NeoBlink(int neo, int neoColor, int cnt, int blinkTime); // 지정 스트립을 cnt회 blocking 방식으로 점멸 (neopixel.ino)
 void AllNeoBlink(int neoColor, int cnt, int blinkTime); // 4개 스트립 전체를 동시에 cnt회 blocking 방식으로 점멸 (neopixel.ino)
 void BatteryGaugeShow(int cnt, int maxCnt); // 배선 충전 비율(cnt/maxCnt)만큼 GAUGE 네오픽셀을 채움 (neopixel.ino)
@@ -177,6 +189,7 @@ void RfidInit(void);   // PN532 리더 초기화 (rfid.ino)
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 // StarterActivate(Game_system.ino)에서도 사용하므로 여기서 프로토타입 선언.
 bool RfidPresenceCheck();
+void RfidPresenceReset();
 void RfidLoop(void);   // (프로토타입만 존재 — 실제 정의는 RfidLoopMain()이라는 이름으로 rfid.ino에 있음)
 void TaggerRfidLoop(void); // device_state == "tagger"일 때 ptrCurrentMode로 등록 — player/revival 태그 시 오디오+보라색 점멸 (rfid.ino)
 void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프로토타입만 존재 — 실제 정의는 rfid.ino의 CheckingPlayers(uint8_t rfidData[32])와 시그니처가 다름, 미사용 프로토타입으로 보임)
