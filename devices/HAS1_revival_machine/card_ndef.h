@@ -11,8 +11,8 @@ enum class Layout { Game, Standard };
 
 struct Settings {
   Format format = Format::Uri;
-  Prefix prefix = Prefix::Auto;
-  Layout layout = Layout::Game;
+  Prefix prefix = Prefix::Https;
+  Layout layout = Layout::Standard;
   char pattern[97] = "https://{code}.p.fuzzyline.io";
 };
 

@@ -23,13 +23,18 @@ whether the chosen input can actually be encoded. `read`, `write`, and `save`
 require active server mode. All jobs require removal followed by a fresh tag.
 Settings changes require an idle job; `cancel`, `status`, and `preview` remain
 available. NVS namespace `revival-card`, key `config`, stores a versioned 105-byte
-settings blob only. Pending data, UID, mode, and jobs are never saved.
+settings blob only. CU02 saves preserve explicit choices; CU01 factory URI/auto/game
+settings with the default template load as URI/HTTPS/standard, while custom CU01
+settings remain unchanged. Loading never writes NVS. Pending data, UID, mode, and jobs are never saved.
 
 Writes require a supported NTAG213/215/216 version response, compatible readable
 CC with at least 144 bytes, writable CC, zero static/dynamic lock bytes, disabled
 password protection, default ACCESS flags, and no active mirror. Configuration
-inspection reads the last user page through CFG1, excluding PWD/PACK. Custom TLVs
-are refused; the exact NTAG213 factory lock TLV is accepted and preserved. The
+inspection uses raw FAST_READ through InCommunicateThru for the last user page
+through CFG1, excluding PWD/PACK. Custom TLVs are refused except the exact NTAG213
+factory lock TLV and leading `01 03 A0 10 44` on the NTAG216 profile. The latter
+requires the additional two lock bytes at page40 to be zero and preserves all
+five metadata bytes, without bypassing native216 protection checks. The
 write range is limited to pages 4–39. No lock, CC, configuration, password, or
 manufacturer page is written.
 
@@ -69,12 +74,19 @@ Run the actual engine and encoder with deterministic NVS/card fakes:
 python3 devices/HAS1_revival_machine/tests/run_card_upload_tests.py
 ```
 
-The 58 cases run with ASan/UBSan and cover supported models, factory metadata,
+The 71 cases run with ASan/UBSan and cover supported models, factory metadata,
 short standard and long literal writes, commit order, readback, UID changes,
 uncertain writes, interruption, deadlines/wrap, locking/protection refusal,
 mode/exit gates, Telnet overflow/IAC/CRLF/backspace, and settings persistence.
+Default tests write the full MMMM URL without setup commands and exercise old
+factory migration, legacy custom settings, and newly saved explicit game settings.
 NT3H1101 cases additionally cover exact model matching, read/write, live-session
 changes after the first write, lock/config refusals, session failures, and
-preservation of uncertainty after a write attempt.
+preservation of uncertainty after a write attempt. NTAG216 regressions reproduce
+the observed legacy layout and the exact `https://MMMM.p.fuzzyline.io` command,
+asserting page7 `MMMM`, preserved metadata, native/additional lock refusals,
+malformed/duplicate descriptor refusal, and stage/page diagnostics on errors.
+The separate transport runner tests the raw FAST_READ wire bytes for all three
+models, response lengths/status/deadlines, and rejected ranges/selection state.
 They never open a serial port and cannot validate RF reliability, EEPROM behavior,
 actual card authenticity, or physical timing. Hardware testing remains separate.

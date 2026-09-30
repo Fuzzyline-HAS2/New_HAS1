@@ -39,6 +39,7 @@ public:
   Pn532Result readTarget(uint8_t *uid, uint8_t &uidLength, const Pn532Deadline &deadline);
   Pn532Result readPage7(uint8_t *data, const Pn532Deadline &deadline);
   Pn532Result readPages(uint8_t page, uint8_t *data16, const Pn532Deadline &deadline);
+  Pn532Result readNtag21xConfig(uint8_t lockPage, uint8_t *data16, const Pn532Deadline &deadline);
   Pn532Result getTagVersion(uint8_t *data8, const Pn532Deadline &deadline);
   // Original NTAG I2C: sector 3 F8/F9, restored and verified in sector 0 before
   // publishing eight bytes. Whole operation <=250ms. Failure requires recovery:

@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 TESTS = Path(__file__).resolve().parent
 DEVICE = TESTS.parent
-CASES = ('write213','write215','write216','factory_tlv','standard_write','long_literal','read','held_requires_removal',
+CASES = ('default_url','legacy_defaults','legacy_custom','saved_explicit_game','ntag216_legacy_write','ntag216_native_locked','ntag216_protected','ntag216_mirror',
+         'ntag216_legacy_locked','ntag216_malformed','ntag216_duplicate','ntag216_guard_error','ntag216_legacy_error','write213','write215','write216','factory_tlv','standard_write','long_literal','read','held_requires_removal',
          'uid_change_before','uid_change_after','lost_tag','transport_error',
          'uncertain_write','verify_mismatch','disconnect_before','disconnect_after',
          'mode_change_after','cancel_after','timeout_after_write','timeout','timeout_wrap','static_lock',

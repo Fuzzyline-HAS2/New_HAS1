@@ -8,6 +8,8 @@ import tempfile
 TESTS = Path(__file__).resolve().parent
 DEVICE = TESTS.parent
 CASES = (
+    'config_fast_213', 'config_fast_215', 'config_fast_216', 'config_fast_short',
+    'config_fast_extra', 'config_fast_tag_error', 'config_fast_flags', 'config_fast_timeout',
     'abort', 'abort_budget', 'no_target', 'target', 'target_uid10', 'wake_sam', 'page', 'version', 'config_drains',
     'status_overrun', 'status_tx_empty', 'response_status_fault', 'status_reserved', 'ack_timeout', 'response_timeout',
     'cumulative_budget', 'wrap_budget', 'expired', 'limited_budget',

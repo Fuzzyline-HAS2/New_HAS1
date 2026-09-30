@@ -177,6 +177,8 @@ static void expectSessionBlocked(RevivalPn532& reader) {
          "Dirty sector/CRC must block UID re-selection until recovery");
   expect(reader.readPages(4, output, {millis(), 100}) == Pn532Result::TransportFault,
          "Dirty sector/CRC must block all page reads");
+  expect(reader.readNtag21xConfig(226, output, {millis(), 100}) == Pn532Result::TransportFault,
+         "Dirty sector/CRC must block raw config reads");
   expect(reader.getTagVersion(output, {millis(), 100}) == Pn532Result::TransportFault,
          "Dirty sector/CRC must block raw tag version reads");
   expect(reader.writePage(7, output, {millis(), 100}) == Pn532Result::TransportFault,
@@ -375,6 +377,36 @@ int main(int argc, char** argv) {
                "UID, CC, lock/config and unsupported pages must never be written");
     }
     expect(commands == 0, "Rejected write must not access card");
+  } else if (scenario.rfind("config_fast_", 0) == 0) {
+    expect(reader.readNtag21xConfig(226, data, {millis(), 100}) == Pn532Result::TransportFault,
+           "FAST_READ needs an active selected target");
+    expect(commands == 0, "Unselected config read must not access SPI");
+    const auto invalidCommands = commands;
+    for (uint8_t invalid : {0, 39, 41, 129, 131, 225, 227, 255})
+      expect(reader.readNtag21xConfig(invalid, data, {millis(), 100}) == Pn532Result::TagError,
+             "FAST_READ config ranges must exclude arbitrary and password pages");
+    expect(reader.readNtag21xConfig(226, nullptr, {millis(), 100}) == Pn532Result::TagError,
+           "Null output must be rejected");
+    expect(commands == invalidCommands, "Invalid config request must not access SPI");
+    queue({0x4A, 1, 0}, foundTarget());
+    assert(reader.readTarget(uid, length, {millis(), 100}) == Pn532Result::Ok);
+    uint8_t lockPage = scenario == "config_fast_213" ? 40 : scenario == "config_fast_215" ? 130 : 226;
+    auto response = pageData(); response[1] = 0x43;
+    if (scenario == "config_fast_short") response.pop_back();
+    if (scenario == "config_fast_extra") response.push_back(0);
+    if (scenario == "config_fast_tag_error") response[2] = 0x13;
+    if (scenario == "config_fast_flags") response[2] = 0x40;
+    queue({0x42, 0x3A, uint8_t(lockPage - 1), uint8_t(lockPage + 2)}, response);
+    if (scenario == "config_fast_timeout") planned.back().responseDelayMs = 120;
+    result = reader.readNtag21xConfig(lockPage, data, {millis(), 100});
+    if (scenario == "config_fast_213" || scenario == "config_fast_215" || scenario == "config_fast_216")
+      expect(result == Pn532Result::Ok && data[15] == 15 && data[16] == 0xCC,
+             "Config FAST_READ must return exactly four safe pages via raw RF");
+    else {
+      const auto expected = scenario == "config_fast_timeout" ? Pn532Result::Deadline :
+          scenario == "config_fast_tag_error" ? Pn532Result::TagError : Pn532Result::TransportFault;
+      expect(result == expected && data[0] == 0xCC, "Invalid config response must fail closed");
+    }
   } else if (scenario == "upload_read" || scenario == "tag_version" || scenario == "tag_version_short" ||
              scenario == "upload_write" || scenario == "upload_write_error" ||
              scenario == "upload_write_extra" || scenario == "upload_write_timeout") {

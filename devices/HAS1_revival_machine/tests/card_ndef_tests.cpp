@@ -51,6 +51,15 @@ static Image accepted(const Settings &settings, const char *input)
   return image;
 }
 
+static void defaultUrl()
+{
+  Settings settings;
+  CHECK(settings.format == Format::Uri && settings.prefix == Prefix::Https && settings.layout == Layout::Standard);
+  Image image = accepted(settings, "https://MMMM.p.fuzzyline.io");
+  CHECK(!strcmp(image.content, "https://MMMM.p.fuzzyline.io"));
+  CHECK(image.prefixCode == 4 && !memcmp(image.bytes + 12, "MMMM", 4));
+}
+
 static void goldenUri()
 {
   Settings settings;
@@ -65,6 +74,7 @@ static void goldenUri()
   CHECK(!strcmp(image.code, "G1P2"));
   CHECK(image.prefixCode == 4);
 
+  settings.prefix = Prefix::Auto;
   image = accepted(settings, "https://www.G2P3.p.fuzzyline.io");
   const uint8_t expectedWww[] = {
     0,0,0,0,0, 0x03,0x18,0xD1,0x01,0x14,0x55,0x02,
@@ -153,6 +163,7 @@ static void prefixesAndTemplates()
 
   settings = Settings();
   settings.prefix = Prefix::None;
+  settings.layout = Layout::Game;
   rejected(settings, "G1P2", "game_code_too_late");
   settings.layout = Layout::Standard;
   image = accepted(settings, "G1P2");
@@ -166,6 +177,7 @@ static void prefixesAndTemplates()
 static void gameCodeRules()
 {
   Settings settings;
+  settings.layout = Layout::Game;
   rejected(settings, "https://example.com/G1P2", "game_code_too_late");
   rejected(settings, "https://a/G1P2", "game_code_not_at_uri_start");
   rejected(settings, "https://G1P2.example/G3P4", "ambiguous_game_code");
@@ -271,7 +283,7 @@ static void utf8AndLimits()
 
   settings = Settings(); settings.layout = Layout::Standard; settings.prefix = Prefix::HttpsWww;
   rejected(settings, maximum, "content_too_long");
-  settings = Settings(); pattern(settings, "{code}");
+  settings = Settings(); settings.prefix = Prefix::Auto; pattern(settings, "{code}");
   memcpy(maximum, "G1P2.", 5);
   image = accepted(settings, maximum);
   CHECK(image.size == 144 && strlen(image.content) == 128);
@@ -323,7 +335,7 @@ static void boundariesAndDeterminism()
 
 int main()
 {
-  goldenUri(); goldenTextAndNone(); prefixesAndTemplates(); gameCodeRules();
+  defaultUrl(); goldenUri(); goldenTextAndNone(); prefixesAndTemplates(); gameCodeRules();
   settingsAndInputErrors(); utf8AndLimits(); boundariesAndDeterminism();
-  printf("PASS: 7 NDEF suites, %u checks including 3000 bounded-input cases\n", checks);
+  printf("PASS: 8 NDEF suites, %u checks including 3000 bounded-input cases\n", checks);
 }
