@@ -191,12 +191,12 @@ void WirePollMain();      // loop()에서 매 프레임 호출되어 배선 개�
 void WireTheftMonitorLoop(); // battery_max/starter_finish/repaired 단계에서도 배선이 빠지면 감지해 서버에 반영 (ptrCurrentMode와 무관하게 loop()에서 매 프레임 호출) (wire.ino)
 
 //****************************************ENCODER SETUP****************************************************************
-// HAS2 second_store와 같은 A/B CHANGE 인터럽트 상태 전이 판독
-void EncoderInit();     // 입력 핀 설정 — setup()에서 1회 호출 (카운팅은 Attach에서 시작)
-void EncoderAttach();   // 카운팅 시작 (재시작) — 현재 핀 상태부터 세며 게임 누적값은 유지
+// 인터럽트(ISR) 대신 ESP32 하드웨어 펄스 카운터(PCNT) 사용
+void EncoderInit();     // PCNT 유닛/채널 설정 및 카운팅 시작 — setup()에서 1회 호출 (encoder.ino)
+void EncoderAttach();   // 카운팅 시작 (재시작) — 값은 초기화하고 이어서 셈
 void EncoderDetach();   // 카운팅 정지 — 스타터 단계가 아닐 때 불필요한 카운팅을 막음
-void EncoderLoop();     // 매 loop마다 ISR 대기 카운트 → encoderValue 반영
-bool encoderAttached = false; // loop 문맥에서만 접근하는 인터럽트 등록 상태
+void EncoderLoop();     // 매 loop마다 하드웨어 카운터 → encoderValue 반영
+bool encoderAttached = false; // EncoderInit()에서 true로 전환 — 현재 PCNT가 카운팅 중인지 여부
 
 long encoderValue = 0;     //현재 엔코더 값 — starterEncoderUnit으로 나눈 값이 스타터 게이지 칸 수가 됨
 
