@@ -43,7 +43,7 @@ source = (Path(__file__).with_name("host_harness.cpp").read_text()
           .replace("// FIRMWARE_GLOBALS", globals_ + "\n" + prototypes)
           .replace("// DOMAIN_AUDIO_FACTORY",
                    function(audio, "Mp3LanguageFolder") + "\n" + function(audio, "Mp3MakePhrase"))
-          .replace("// ACTUAL_AUDIO_FUNCTIONS", audio)
+          .replace("// ACTUAL_AUDIO_FUNCTIONS", audio + "\n" + function(sensor, "Mp3Init"))
           .replace("// FIRMWARE_FUNCTIONS", body))
 cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "admin_available", "admin_cooldown", "admin_block_before_close",
@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
         subprocess.run([str(exe), case], check=True)
     audio_cases = ["audio_fifo", "audio_door_timers", "audio_v2_blockade", "audio_overflow", "audio_duplicate",
                    "audio_missing", "audio_wrap", "audio_language", "audio_stale", "audio_folder9_language",
-                   "audio_blockade_left_time"]
+                   "audio_blockade_left_time", "audio_boot_volume_kr", "audio_boot_volume_en"]
     audio_main = Path(__file__).with_name("audio_harness.cpp").read_text()
     src.write_text(source[:source.index("int main(int argc")] + audio_main)
     subprocess.run(["clang++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DACTUAL_AUDIO",

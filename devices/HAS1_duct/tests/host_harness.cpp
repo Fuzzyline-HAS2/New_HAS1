@@ -28,7 +28,7 @@ int digitalRead(int pin) { return pin == RELAY_PIN ? relay : pin == SW_PIN ? swi
 // Record blocking audio delays without advancing the timer scheduler.
 void delay(unsigned long ms) { audioEvents.push_back("delay:" + std::to_string(ms)); }
 unsigned long millis() { return now; }
-struct Logger { template<class T> void print(T) {} template<class T> void println(T) {} } Serial;
+struct Logger { void println() {} template<class T> void print(T) {} template<class T> void println(T) {} } Serial;
 struct Pixels {
     std::array<int, 3> color{};
     void lightColor(const int* value, int = 30) { color = {value[0], value[1], value[2]}; }
@@ -64,12 +64,21 @@ void recordTrack(uint8_t folder, uint16_t file) {
     audioStartTimes.push_back(now);
 }
 #ifdef ACTUAL_AUDIO
+#define F(text) text
+constexpr int DFPlayerCardOnline = 2, DFPlayerUSBOnline = 3;
+constexpr int DFPLAYER_EQ_NORMAL = 0, DFPLAYER_DEVICE_SD = 2;
+int MySerial2 = 0;
+std::vector<int> volumeCommands;
 struct Player {
     int events = 0;
     bool available() { return events > 0; }
-    int readType() { return 0; }
+    int readType() { return DFPlayerCardOnline; }
     int read() { --events; return 0; }
-    void volume(int) {}
+    void setTimeOut(int) {}
+    bool begin(int, bool) { return true; }
+    void EQ(int) {}
+    void outputDevice(int) {}
+    void volume(int value) { volumeCommands.push_back(value); }
     void playLargeFolder(uint8_t folder, uint16_t file) { recordTrack(folder, file); }
 } myDFPlayer;
 #else

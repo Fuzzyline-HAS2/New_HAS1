@@ -12,7 +12,7 @@ enum Mp3RemainingSource { MP3_REMAINING_NONE, MP3_REMAINING_COOLDOWN, MP3_REMAIN
 struct Mp3Phrase {
     Mp3Track tracks[3];
     uint8_t count;
-    uint8_t volume;
+    bool english;
     Mp3RemainingSource remaining_source;
 };
 
@@ -22,7 +22,6 @@ Mp3Phrase mp3_pending[MP3_QUEUE_CAPACITY];
 Mp3Phrase mp3_active_phrase;
 uint8_t mp3_pending_count = 0;
 uint8_t mp3_active_track = 0;
-uint8_t mp3_last_volume = 0;
 bool mp3_phrase_active = false;
 bool mp3_track_playing = false;
 unsigned long mp3_track_started_ms = 0;

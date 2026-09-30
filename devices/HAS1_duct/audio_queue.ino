@@ -13,7 +13,7 @@ Mp3Phrase Mp3MakePhrase(uint8_t folder, uint16_t file)
     Mp3Phrase phrase = {};
     bool english = (String)(const char *)shift_machine["selected_language"] == "EN";
     phrase.count = 1;
-    phrase.volume = english ? 26 : 30;
+    phrase.english = english;
     phrase.tracks[0].folder = (uint8_t)Mp3LanguageFolder(folder, english);
     phrase.tracks[0].file = file;
     return phrase;
@@ -30,7 +30,7 @@ bool Mp3PreparePhrase(Mp3Phrase &phrase, bool refresh_remaining)
         int remaining = phrase.remaining_source == MP3_REMAINING_TAGGER
             ? TaggerRemainingSeconds() : cooltime - current_time;
         if (remaining < 0) remaining = 0;
-        uint8_t language_offset = phrase.volume == 26 ? 4 : 0;
+        uint8_t language_offset = phrase.english ? 4 : 0;
         int minutes = remaining / 60;
         phrase.tracks[1].folder = (minutes > 0 ? 2 : 3) + language_offset;
         phrase.tracks[1].file = minutes > 0 ? minutes : remaining % 60;
@@ -119,11 +119,6 @@ void Mp3Run()
         if (!Mp3PreparePhrase(mp3_active_phrase, true)) continue;
         mp3_active_track = 0;
         mp3_phrase_active = true;
-    }
-    if (mp3_last_volume != mp3_active_phrase.volume)
-    {
-        myDFPlayer.volume(mp3_active_phrase.volume);
-        mp3_last_volume = mp3_active_phrase.volume;
     }
     const Mp3Track &track = mp3_active_phrase.tracks[mp3_active_track];
     myDFPlayer.playLargeFolder(track.folder, track.file);
