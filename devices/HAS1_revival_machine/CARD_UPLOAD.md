@@ -6,26 +6,37 @@ command arms exactly one job, which expires after 30 seconds. The job first
 requires two clean no-card observations spanning at least 400 ms; then present
 one card and keep it still until the result is printed.
 
-## Game URL
+## Quick write
 
 Set `device_state` to `card-upload` on the server, connect to the device's IP
-using Telnet, and enter:
+using Telnet, and enter this one line:
 
 ```text
-defaults
-preview https://G1P1.p.fuzzyline.io
-write https://G1P1.p.fuzzyline.io
+write https://MMMM.p.fuzzyline.io
 ```
 
-The defaults are `format uri`, `prefix auto`, `layout game`, and
-`template https://{code}.p.fuzzyline.io`. With these defaults, `write G1P1`
-produces the same URL. `preview` shows content, padded user-memory size, actual
-NDEF URI prefix identifier, and the four page-7 bytes without accessing a card.
+The source defaults are `format uri`, `prefix https://`, `layout standard`, and
+`template https://{code}.p.fuzzyline.io`. No `cancel`, settings commands, or
+`preview` are required when no job is pending. Enter the plain URL without
+Markdown brackets. Remove any existing card, wait for `Ready`, then present
+one card and hold it still until `OK WRITE verified`.
 
-The game layout keeps `G#P#` in page 7. Normal gameplay still performs its existing
-single page-7 READ; it does not parse the complete URL or contact the website.
-Game codes remain uppercase, single-digit `G0P0` through `G9P9`, matching the
-existing reader. `MMMM` is not a supported game-writing value.
+For this exact URL the page-7 bytes are `4D4D4D4D` (`MMMM`). An optional
+`preview https://MMMM.p.fuzzyline.io` shows this without accessing a card.
+`write G1P1` still expands to `https://G1P1.p.fuzzyline.io`, with `G1P1` at
+page 7. Normal gameplay reads that page without parsing the complete URL.
+Game codes remain uppercase, single-digit `G0P0` through `G9P9`.
+
+Previously saved factory settings (`uri` / `auto` / `game` / the default
+template, CU01) automatically load as the new defaults. Custom saved settings
+are preserved; use `defaults` then `save` once to replace a custom configuration.
+New saves use CU02, so deliberately saved `layout game` remains honored.
+`layout game` still rejects `MMMM`; standard layout allows general URLs and
+makes no page-7 compatibility guarantee for arbitrary URLs.
+
+This guide describes the current source. The new defaults and NTAG216 support
+require firmware containing these changes. Successful writing on the user's
+physical NTAG216 card remains unverified.
 
 ## Formats and prefixes
 
@@ -102,8 +113,28 @@ codes later in the URL, and Text records cannot use this game layout. Use
 - Before writing, the device checks the capability container, static/dynamic
   locks, password protection, mirroring, and the existing TLV layout. Custom
   memory/lock/proprietary layouts are refused. NTAG213's factory lock-control
-  TLV is accepted and included in the new image; NTAG215/216 use reserved NULL
-  TLVs. UID, CC, lock bits, password, and configuration pages are never written.
+  TLV is accepted and included in the new image; blank NTAG215/216 use reserved
+  NULL TLVs. One compatibility exception accepts the exact leading descriptor
+  `01 03 A0 10 44` on cards reporting NTAG216. This is NTAG203-style metadata,
+  not NTAG216 factory metadata. Its two referenced lock bytes at page 40 must
+  also be zero, and the original five-byte descriptor is preserved. Duplicate,
+  relocated, or different custom descriptors are refused. The native NTAG216
+  lock and configuration checks remain mandatory; legacy metadata never changes
+  the detected model or substitutes for those checks. UID, CC, lock bits, password, and configuration pages are never written.
+- NTAG21x native protection checks use a bounded raw `FAST_READ` through PN532
+  `InCommunicateThru`: pages 39–42 (213), 129–132 (215), or 225–228 (216).
+  These read the last user page, dynamic locks, CFG0, and CFG1, excluding PWD/PACK.
+  This avoids the PN532 `InDataExchange` MIFARE command handler. A failed
+  protection read still stops the job before any write; there is no model
+  downgrade, protection bypass, or automatic fallback.
+- Failures print `CARD stage=... operation=... page=... write_attempted=...`
+  before reader recovery can reset transport diagnostics. `page` is the first
+  page of the four-page read, or `-1` for operations without a page. `CC` also
+  reports the four capability-container bytes. A 216 failure at
+  `operation=fast-read page=225` means its native protection checks could not
+  complete; a failure at `stage=legacy-lock page=40` is the additional legacy
+  metadata check. The reported `0x13` alone does not establish the physical
+  card's memory size or prove a genuine NTAG216.
 - NT3H1101 uses its own dynamic-lock page and live session-register checks;
   NTAG21x password/configuration offsets are not reused. Its default empty NDEF
   layout is accepted without inserting NTAG213 lock metadata. Before each user
@@ -142,7 +173,7 @@ write-enablement gate, not per-client authentication; enable it only for the
 intended maintenance session. This change adds no website requests or external
 card-data logging.
 
-The normal firmware has been uploaded to Academy AR with unchanged bootloader,
+Historical v68 testing: the firmware was uploaded to Academy AR with unchanged bootloader,
 partition table, and NVS. PN532 initialization and the Telnet maintenance mode
 were verified. On 2026-09-25, the user supplied successful NT3H1101 read logs
 before and after writing. The recorded URI decoded to
@@ -154,3 +185,9 @@ Protocol references: [NXP PN532 user manual](https://www.nxp.com/docs/en/user-gu
 [NXP NTAG213/215/216 datasheet](https://www.nxp.com/docs/en/data-sheet/NTAG213_215_216.pdf),
 [NXP NT3H1101/1201 datasheet, Rev. 3.3 (distributor copy)](https://www.mouser.com/datasheet/2/302/NT3H1101_1201-1127167.pdf),
 [NDEF record representations](https://w3c-cg.github.io/web-nfc/#the-ndefrecord-interface).
+
+The NTAG216 compatibility changes are covered by host tests for exact raw
+FAST_READ command bytes, failed/short/extra responses, protection refusal, and
+the observed legacy layout rewritten to `https://MMMM.p.fuzzyline.io` with
+page 7 equal to `MMMM`. They have not yet been verified on the user's physical
+card. Host tests do not establish successful physical NTAG216 writing.

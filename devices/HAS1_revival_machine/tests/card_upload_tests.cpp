@@ -28,6 +28,7 @@ static bool writeThenFail = false, corruptAfterWrite = false;
 struct Write { uint8_t page; std::vector<uint8_t> data; };
 static std::vector<Write> writes;
 static std::vector<uint8_t> reads;
+static std::vector<uint8_t> configReads;
 static std::vector<Pn532Result> observed;
 Pn532Result RfidUploadSelect(uint8_t* uid, uint8_t& length) {
   ++pnStages; ++selectedStages;
@@ -55,6 +56,11 @@ struct FakeReader {
     if (versionBytes[3] == 5) assert(page <= 36 || page == 0xE2);
     else assert(unsigned(page) + 3 < passwordPage); // Never include PWD/PACK in a four-page read.
     memcpy(data, memoryPages[page], 16); return next();
+  }
+  Pn532Result readNtag21xConfig(uint8_t lockPage, uint8_t* data, const Pn532Deadline& deadline) {
+    assert(lockPage == 40 || lockPage == 130 || lockPage == 226);
+    configReads.push_back(lockPage);
+    return readPages(lockPage - 1, data, deadline);
   }
   Pn532Result readNtagI2cSession(uint8_t* data, const Pn532Deadline& deadline) {
     ++pnStages; ++sessionChecks;
@@ -167,6 +173,37 @@ int main(int argc, char** argv) {
       const uint8_t expected[] = {1,3,0xA0,0x0C,0x34}; assert(!memcmp(memoryPages[4], expected, 5));
     } else { const uint8_t empty[5] = {}; assert(!memcmp(memoryPages[4], empty, 5)); }
     auto count = writes.size(); for (int i=0;i<100;++i) tick(); assert(writes.size() == count);
+  } else if (scenario.rfind("ntag216_", 0) == 0) {
+    versionBytes[6] = 0x13; memoryPages[3][2] = 0x6D;
+    memoryPages[227][3] = 0xFF;
+    const uint8_t old[] = {1,3,0xA0,0x10,0x44,3,9,0xD1,1,5,0x55,1,'P','P','P','P',0xFE};
+    memcpy(memoryPages[4], old, sizeof(old));
+    if (scenario == "ntag216_native_locked") memoryPages[226][0] = 1;
+    if (scenario == "ntag216_protected") memoryPages[227][3] = 4;
+    if (scenario == "ntag216_mirror") memoryPages[227][0] = 0x40;
+    if (scenario == "ntag216_legacy_locked") memoryPages[40][1] = 1;
+    if (scenario == "ntag216_malformed") memoryPages[4][2] = 0x90;
+    if (scenario == "ntag216_duplicate") memcpy(memoryPages[5] + 1, old, 5);
+    arm("write https://MMMM.p.fuzzyline.io");
+    if (scenario == "ntag216_guard_error") {
+      untilStage(UPLOAD_DYNAMIC); tick(); failNextOperation = Pn532Result::TagError;
+    }
+    if (scenario == "ntag216_legacy_error") {
+      untilStage(UPLOAD_LEGACY_LOCK); tick(); failNextOperation = Pn532Result::TagError;
+    }
+    untilDone();
+    assert(configReads == std::vector<uint8_t>({226}));
+    if (scenario == "ntag216_legacy_write") {
+      assert(says("OK WRITE verified") && !memcmp(memoryPages[4], old, 5));
+      assert(!memcmp(memoryPages[7], "MMMM", 4));
+      assert(says("CC=E1106D00"));
+    } else {
+      assert(writes.empty() && says("ERROR") && !says("OK WRITE"));
+      if (scenario == "ntag216_guard_error")
+        assert(says("stage=dynamic-lock/config operation=fast-read page=225 write_attempted=0"));
+      if (scenario == "ntag216_legacy_error")
+        assert(says("stage=legacy-lock operation=read page=40 write_attempted=0"));
+    }
   } else if (scenario == "standard_write" || scenario == "long_literal") {
     command("layout standard");
     std::string input;
@@ -261,6 +298,30 @@ int main(int argc, char** argv) {
     for(auto byte:negotiation) CardUploadInput(byte);
     for(auto byte:std::string("write G9P3\b2\r\n")) CardUploadInput(byte);
     assert(uploadJob==UPLOAD_WRITE && std::string(uploadImage.code)=="G9P2");
+  } else if (scenario == "default_url") {
+    assert(uploadSettings.format == CardNdef::Format::Uri && uploadSettings.prefix == CardNdef::Prefix::Https);
+    assert(uploadSettings.layout == CardNdef::Layout::Standard);
+    arm("write https://MMMM.p.fuzzyline.io"); untilDone();
+    assert(says("OK WRITE verified") && !memcmp(memoryPages[7], "MMMM", 4));
+    assert(uploadImage.prefixCode == 4 && !strcmp(uploadImage.content, "https://MMMM.p.fuzzyline.io"));
+  } else if (scenario == "legacy_defaults" || scenario == "legacy_custom" || scenario == "saved_explicit_game") {
+    command("prefix auto"); command("layout game");
+    if (scenario == "legacy_custom") command("template https://{code}.custom.example");
+    command("save");
+    assert(!memcmp(savedPreferences.data(), "CU02", 4));
+    if (scenario != "saved_explicit_game") memcpy(savedPreferences.data(), "CU01", 4);
+    CardUploadDisconnected(); CardUploadConnected();
+    assert(preferencesWrites == 1 && uploadJob == UPLOAD_NONE);
+    if (scenario == "legacy_defaults") {
+      assert(uploadSettings.layout == CardNdef::Layout::Standard && uploadSettings.prefix == CardNdef::Prefix::Https);
+      arm("write https://MMMM.p.fuzzyline.io"); untilDone();
+      assert(says("OK WRITE verified") && !memcmp(memoryPages[7], "MMMM", 4));
+    } else {
+      assert(uploadSettings.layout == CardNdef::Layout::Game && uploadSettings.prefix == CardNdef::Prefix::Auto);
+      if (scenario == "legacy_custom") assert(!strcmp(uploadSettings.pattern, "https://{code}.custom.example"));
+      command("write https://MMMM.p.fuzzyline.io");
+      assert(uploadJob == UPLOAD_NONE && says("missing_game_code") && writes.empty());
+    }
   } else if (scenario == "settings_persist") {
     command("format text"); command("layout standard"); command("template badge-{code}"); command("save");
     assert(preferencesWrites==1 && uploadSettings.format==CardNdef::Format::Text);

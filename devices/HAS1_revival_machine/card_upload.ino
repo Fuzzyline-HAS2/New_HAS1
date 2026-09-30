@@ -20,6 +20,7 @@ static uint8_t uploadTelnetState = 0; // data, IAC, option, subnegotiation, subn
 static char uploadLastResult[100] = "idle";
 static uint8_t uploadUid[10], uploadUidLength = 0;
 static uint8_t uploadLockPage = 0;
+static bool uploadLegacyLock = false;
 static bool uploadNtagI2c = false, uploadSessionChecked = false;
 static uint16_t uploadOffset = 0, uploadWriteSize = 0;
 static uint32_t uploadStarted = 0, uploadNextPoll = 0, uploadAbsentSince = 0;
@@ -27,7 +28,7 @@ static uint8_t uploadAbsentCount = 0;
 static bool uploadAttemptedWrite = false, uploadSelected = false;
 enum UploadJob { UPLOAD_NONE, UPLOAD_READ, UPLOAD_WRITE };
 enum UploadStage { UPLOAD_REMOVE, UPLOAD_PRESENT, UPLOAD_VERSION, UPLOAD_STATIC,
-                   UPLOAD_DYNAMIC, UPLOAD_MEMORY, UPLOAD_INVALIDATE, UPLOAD_EMPTY,
+                   UPLOAD_DYNAMIC, UPLOAD_MEMORY, UPLOAD_LEGACY_LOCK, UPLOAD_INVALIDATE, UPLOAD_EMPTY,
                    UPLOAD_BODY, UPLOAD_COMMIT, UPLOAD_CODE, UPLOAD_VERIFY };
 static UploadJob uploadJob = UPLOAD_NONE;
 static UploadStage uploadStage = UPLOAD_REMOVE;
@@ -58,20 +59,28 @@ static void UploadLoadSettings()
   bool read = preferences.getBytesLength("config") == sizeof(bytes) &&
               preferences.getBytes("config", bytes, sizeof(bytes)) == sizeof(bytes);
   preferences.end();
-  if (!read || memcmp(bytes, "CU01", 4) || !memchr(bytes + 8, 0, 97)) return;
+  if (!read || !memchr(bytes + 8, 0, 97)) return;
+  const bool legacy = !memcmp(bytes, "CU01", 4);
+  if (!legacy && memcmp(bytes, "CU02", 4)) return;
   CardNdef::Settings candidate;
   candidate.format = (CardNdef::Format)bytes[4];
   candidate.prefix = (CardNdef::Prefix)bytes[5];
   candidate.layout = (CardNdef::Layout)bytes[6];
   memcpy(candidate.pattern, bytes + 8, sizeof(candidate.pattern));
-  if (UploadSettingsValid(candidate)) uploadSettings = candidate;
+  if (!UploadSettingsValid(candidate)) return;
+  // Migrate only the former factory settings. Preserve custom CU01 settings
+  // and explicit CU02 choices, including users who opt back into game layout.
+  if (legacy && candidate.format == CardNdef::Format::Uri &&
+      candidate.prefix == CardNdef::Prefix::Auto && candidate.layout == CardNdef::Layout::Game &&
+      !strcmp(candidate.pattern, uploadSettings.pattern)) return;
+  uploadSettings = candidate;
 }
 
 static void UploadSaveSettings()
 {
   if (!UploadSettingsValid(uploadSettings)) { UploadSay("ERROR invalid settings"); return; }
   uint8_t bytes[105] = {};
-  memcpy(bytes, "CU01", 4);
+  memcpy(bytes, "CU02", 4);
   bytes[4] = (uint8_t)uploadSettings.format;
   bytes[5] = (uint8_t)uploadSettings.prefix;
   bytes[6] = (uint8_t)uploadSettings.layout;
@@ -139,7 +148,7 @@ static void UploadArm(bool writing, const char *value)
   uploadAbsentCount = 0;
   uploadSelected = false;
   uploadAttemptedWrite = false;
-  uploadNtagI2c = uploadSessionChecked = false;
+  uploadNtagI2c = uploadSessionChecked = uploadLegacyLock = false;
   uploadUidLength = 0;
   uploadOffset = 0;
   memset(uploadMemory, 0, sizeof(uploadMemory));
@@ -317,6 +326,16 @@ static bool UploadWritableTlv()
       if (memcmp(uploadMemory + offset, factoryLock, sizeof(factoryLock))) return false;
       offset += sizeof(factoryLock); factoryLockSeen = true; continue;
     }
+    // Some cards reporting NTAG216 retain NTAG203-style lock metadata.
+    // Accept only this bounded, known descriptor at the reserved prefix. Its
+    // two lock bytes at byte160/page40 are checked IN ADDITION to native216
+    // locks/configuration, never used as evidence of a different chip model.
+    if (type == 1 && !uploadNtagI2c && uploadLockPage == 226 &&
+        offset == 1 && !ndefSeen && !factoryLockSeen) {
+      const uint8_t legacyLock[] = {3, 0xA0, 0x10, 0x44};
+      if (memcmp(uploadMemory + offset, legacyLock, sizeof(legacyLock))) return false;
+      offset += sizeof(legacyLock); factoryLockSeen = uploadLegacyLock = true; continue;
+    }
     if (type != 3 || ndefSeen || offset >= sizeof(uploadMemory)) return false;
     ndefSeen = true;
     uint16_t length = uploadMemory[offset++];
@@ -330,15 +349,39 @@ static bool UploadWritableTlv()
   return true; // Blank memory or an exactly bounded NDEF; no other TLV accepted.
 }
 
-static bool UploadCheckResult(Pn532Result result)
+static const char *UploadStageName()
 {
+  switch (uploadStage) {
+    case UPLOAD_VERSION: return "version";
+    case UPLOAD_STATIC: return "capability/static-lock";
+    case UPLOAD_DYNAMIC: return "dynamic-lock/config";
+    case UPLOAD_MEMORY: return "user-memory";
+    case UPLOAD_LEGACY_LOCK: return "legacy-lock";
+    case UPLOAD_INVALIDATE: return "invalidate-code";
+    case UPLOAD_EMPTY: return "empty-ndef";
+    case UPLOAD_BODY: return "write-body";
+    case UPLOAD_COMMIT: return "commit-header";
+    case UPLOAD_CODE: return "commit-code";
+    case UPLOAD_VERIFY: return "verify";
+    default: return "selection";
+  }
+}
+
+static bool UploadCheckResult(Pn532Result result, const char *operation, int page)
+{
+  // Recovery can reset PN532 diagnostics. Print the failing operation before
+  // handing the result to reader-health recovery.
+  if (result != Pn532Result::Ok) {
+    UploadSay("CARD stage=%s operation=%s page=%d write_attempted=%u",
+              UploadStageName(), operation, page, uploadAttemptedWrite ? 1 : 0);
+    UploadSay("PN532 phase=%s fault=%s tag_status=0x%02X",
+              pn532.phaseName(), pn532.faultName(), pn532.lastTagStatus());
+    UploadSay("PN532 session_step=%s response_len=%u response_first=%02X%02X",
+              pn532.lastSessionStep(), pn532.lastSessionResponseLength(),
+              pn532.lastSessionResponseByte(0), pn532.lastSessionResponseByte(1));
+  }
   RfidUploadObserve(result);
   if (result == Pn532Result::Ok) return true;
-  UploadSay("PN532 phase=%s fault=%s tag_status=0x%02X",
-            pn532.phaseName(), pn532.faultName(), pn532.lastTagStatus());
-  UploadSay("PN532 session_step=%s response_len=%u response_first=%02X%02X",
-            pn532.lastSessionStep(), pn532.lastSessionResponseLength(),
-            pn532.lastSessionResponseByte(0), pn532.lastSessionResponseByte(1));
   UploadFinish("card/transport failure; inspect card before retry", false);
   return false;
 }
@@ -391,7 +434,7 @@ void CardUploadLoop()
   if (uploadNtagI2c && uploadStage >= UPLOAD_MEMORY && !uploadSessionChecked) {
     uint8_t session[8] = {};
     const Pn532Deadline sessionDeadline = {(uint32_t)millis(), 250};
-    if (!UploadCheckResult(pn532.readNtagI2cSession(session, sessionDeadline))) return;
+    if (!UploadCheckResult(pn532.readNtagI2cSession(session, sessionDeadline), "i2c-session", -1)) return;
     if (session[7] || !(session[6] & 1)) {
       UploadFinish("invalid NTAG I2C live session registers", false); return;
     }
@@ -409,7 +452,7 @@ void CardUploadLoop()
   Pn532Result result;
   if (uploadStage == UPLOAD_VERSION) {
     result = pn532.getTagVersion(bytes, deadline);
-    if (!UploadCheckResult(result)) return;
+    if (!UploadCheckResult(result, "get-version", -1)) return;
     UploadHex("VERSION=", bytes, 8);
     const uint8_t versionPrefix[] = {0, 4, 4, 2, 1, 0};
     const uint8_t ntagI2cVersion[] = {0, 4, 4, 5, 2, 1, 0x13, 3};
@@ -432,7 +475,8 @@ void CardUploadLoop()
     uploadStage = UPLOAD_STATIC;
   } else if (uploadStage == UPLOAD_STATIC) {
     result = pn532.readPages(2, bytes, deadline);
-    if (!UploadCheckResult(result)) return;
+    if (!UploadCheckResult(result, "read", 2)) return;
+    UploadHex("CC=", bytes + 4, 4);
     if (bytes[4] != 0xE1 || bytes[5] != 0x10 || bytes[6] < 0x12 || (bytes[7] & 0xF0)) {
       UploadFinish("unsupported capability container", false); return;
     }
@@ -448,7 +492,7 @@ void CardUploadLoop()
       // E2 is the original I2C 1K dynamic-lock page. READ fills subsequent
       // invalid pages with zero; these are not NTAG21x AUTH0/ACCESS registers.
       result = pn532.readPages(0xE2, bytes, deadline);
-      if (!UploadCheckResult(result)) return;
+      if (!UploadCheckResult(result, "read", 0xE2)) return;
       if (bytes[0] || bytes[1] || bytes[2]) {
         UploadFinish("NTAG I2C dynamic lock refused", false); return;
       }
@@ -456,26 +500,37 @@ void CardUploadLoop()
       return;
     }
     // Last user page + dynamic locks + CFG0 + CFG1. Never reads PWD/PACK pages.
-    result = pn532.readPages((uint8_t)(uploadLockPage - 1), bytes, deadline);
-    if (!UploadCheckResult(result)) return;
+    result = pn532.readNtag21xConfig(uploadLockPage, bytes, deadline);
+    if (!UploadCheckResult(result, "fast-read", uploadLockPage - 1)) return;
     if (bytes[4] || bytes[5] || bytes[6] || bytes[11] != 0xFF || bytes[12] || (bytes[8] & 0xC0)) {
       UploadFinish("locked, protected or mirrored tag refused", false); return;
     }
     uploadStage = UPLOAD_MEMORY;
   } else if (uploadStage == UPLOAD_MEMORY) {
     result = pn532.readPages((uint8_t)(4 + uploadOffset / 4), bytes, deadline);
-    if (!UploadCheckResult(result)) return;
+    if (!UploadCheckResult(result, "read", 4 + uploadOffset / 4)) return;
     memcpy(uploadMemory + uploadOffset, bytes, 16);
     if (uploadJob == UPLOAD_READ) { char label[24]; snprintf(label, sizeof(label), "page%u=", 4 + uploadOffset / 4); UploadHex(label, bytes, 16); }
     uploadOffset += 16;
     if (uploadOffset == sizeof(uploadMemory)) {
       if (uploadJob == UPLOAD_READ) { UploadFinish("READ complete: 144 user-memory bytes", true); return; }
       if (!UploadWritableTlv()) { UploadFinish("custom or out-of-range TLV refused", false); return; }
-      uploadStage = UPLOAD_INVALIDATE; uploadOffset = 4;
+      if (uploadLegacyLock) {
+        memcpy(uploadImage.bytes, uploadMemory, 5);
+        uploadStage = UPLOAD_LEGACY_LOCK;
+      } else uploadStage = UPLOAD_INVALIDATE;
+      uploadOffset = 4;
     }
+  } else if (uploadStage == UPLOAD_LEGACY_LOCK) {
+    result = pn532.readPages(40, bytes, deadline);
+    if (!UploadCheckResult(result, "read", 40)) return;
+    if (bytes[0] || bytes[1]) {
+      UploadFinish("legacy lock-control bytes locked; refused", false); return;
+    }
+    uploadStage = UPLOAD_INVALIDATE;
   } else if (uploadStage == UPLOAD_VERIFY) {
     result = pn532.readPages((uint8_t)(4 + uploadOffset / 4), bytes, deadline);
-    if (!UploadCheckResult(result)) return;
+    if (!UploadCheckResult(result, "read", 4 + uploadOffset / 4)) return;
     uint16_t count = uploadWriteSize - uploadOffset;
     if (count > 16) count = 16;
     if (memcmp(bytes, uploadImage.bytes + uploadOffset, count)) { UploadFinish("verification mismatch; inspect card", false); return; }
@@ -493,7 +548,7 @@ void CardUploadLoop()
     else { page = (uint8_t)(4 + uploadOffset / 4); data = uploadImage.bytes + uploadOffset; }
     uploadAttemptedWrite = true; // A failed ACK does not establish that EEPROM was unchanged.
     result = pn532.writePage(page, data, deadline);
-    if (!UploadCheckResult(result)) return;
+    if (!UploadCheckResult(result, "write", page)) return;
     if (uploadStage == UPLOAD_INVALIDATE) uploadStage = UPLOAD_EMPTY;
     else if (uploadStage == UPLOAD_EMPTY) { uploadStage = UPLOAD_BODY; uploadOffset = 4; }
     else if (uploadStage == UPLOAD_COMMIT) uploadStage = UPLOAD_CODE;

@@ -1,6 +1,10 @@
 # Telnet 생명칩 업로더 사용법
 
-생명장치의 PN532에 카드를 대고 Telnet 명령으로 NDEF URL 또는 텍스트를 기록합니다. 이 문서는 **생명장치 펌웨어 v68** 기준입니다. 연결만으로 기록되지 않으며, `write` 명령 한 번에 카드 한 장만 처리합니다.
+생명장치의 PN532에 카드를 대고 Telnet 명령으로 NDEF URL 또는 텍스트를 기록합니다. 이 문서는 **현재 생명장치 소스** 기준입니다. 연결만으로 기록되지 않으며, `write` 명령 한 번에 카드 한 장만 처리합니다.
+
+> 새 기본 설정과 NTAG216 호환성 보완을 사용하려면 이 변경이 포함된 펌웨어가 필요합니다.
+> 호스트 테스트는 통과했지만, 사용자의 실물 NTAG216 카드에 성공적으로 기록되는지는
+> 아직 확인하지 않았습니다.
 
 ## 1. 준비 및 접속
 
@@ -38,16 +42,12 @@ status
 카드를 리더에서 떼어 둔 뒤, Telnet에 한 줄씩 입력합니다. 아래 코드는 명령 자체이므로 따옴표나 코드 블록 표시를 붙이지 않습니다.
 
 ```text
-defaults
-preview G1P1
 write G1P1
 ```
 
-- `defaults`: 게임용 기본 설정으로 되돌립니다.
-- `preview G1P1`: 생성할 URL이 `https://G1P1.p.fuzzyline.io`인지 확인합니다. 카드를 읽거나 쓰지 않습니다.
-- `write G1P1`: 한 번의 기록 작업을 시작합니다.
+`write G1P1` 한 줄로 기록 작업을 시작합니다. `defaults`나 `preview`는 필수가 아닙니다. 필요하면 `preview G1P1`로 URL과 page 7을 미리 확인할 수 있으며, 카드를 읽거나 쓰지는 않습니다.
 
-`preview`에서 다음 항목을 확인합니다.
+선택적으로 실행한 `preview`에서는 다음 항목을 확인합니다.
 
 ```text
 content=https://G1P1.p.fuzzyline.io
@@ -117,10 +117,12 @@ write G1P2
 
 ```text
 format uri
-prefix auto
-layout game
+prefix https://
+layout standard
 template https://{code}.p.fuzzyline.io
 ```
+
+이전 CU01 형식으로 저장한 공장 기본값(`uri`/`auto`/`game`/기본 템플릿)은 재접속 시 새 기본값으로 자동 적용합니다. 사용자 지정 저장 설정은 보존합니다. 사용자 지정 설정을 새 기본값으로 바꾸려면 한 번만 `defaults`, `save`를 실행합니다. 새 CU02 형식으로 명시적으로 저장한 `layout game`도 보존합니다.
 
 설정 변경과 `defaults`는 `save` 전까지 현재 접속에서만 유지됩니다. 재접속하면 마지막으로 저장한 설정을 불러옵니다. 기본값을 다음 접속에도 유지하려면 `defaults` 다음에 `save`를 실행합니다. 카드 기록을 위해 반드시 `save`할 필요는 없습니다.
 
@@ -130,7 +132,7 @@ template https://{code}.p.fuzzyline.io
 
 ### 게임용 생명칩
 
-일반적인 생명칩은 **`format uri` + `prefix auto` + `layout game`**을 사용합니다. 게임 코드는 대문자 한 자리씩인 `G0P0`부터 `G9P9`까지입니다. `G10P1`, `g1p1`, 관리자 코드 `MMMM`은 게임용 기록값으로 지원하지 않습니다.
+기본 설정에서도 `write G1P1`은 생명칩 URL을 생성하고 page 7에 `G1P1`을 배치합니다. 게임 코드 형식을 강제하려면 `layout game`을 선택할 수 있습니다. 게임 코드는 대문자 한 자리씩인 `G0P0`부터 `G9P9`까지입니다. `layout game`에서는 `G10P1`, `g1p1`, `MMMM`을 허용하지 않습니다.
 
 URI 모드에서 템플릿은 **입력 전체가 정확히 `G#P#`일 때만** 적용됩니다. 전체 URL이나 호스트 이름을 입력하면 그대로 사용합니다. 게임 중 장치는 page 7의 네 글자만 읽으며, 전체 URL을 해석하거나 웹사이트에 접속하지 않습니다.
 
@@ -180,6 +182,19 @@ UTF-8 Text 레코드에 `TEST001`을 기록합니다. Text 모드에서는 모�
 
 **Text 레코드는 `layout game`과 함께 사용할 수 없습니다.** 일반 NDEF 카드 제작 후 게임용 생명칩으로 돌아갈 때는 `defaults`로 설정을 복원합니다.
 
+### `MMMM` URL 기록
+
+새 기본 설정에서는 아래 한 줄만 입력하면 됩니다. 링크 표시용 대괄호나 괄호를 붙이지 않습니다.
+
+```text
+write https://MMMM.p.fuzzyline.io
+```
+
+진행 중인 작업이 없다면 `cancel`, `layout`, `format`, `prefix`, `preview`는 필요 없습니다.
+서버의 `card-upload` 모드는 필요합니다. 이 URL과 기본 설정은 page 7에 `MMMM`을 기록합니다.
+선택적으로 `preview https://MMMM.p.fuzzyline.io`를 실행하면 `page7=4D4D4D4D`를 확인할 수 있습니다.
+`Ready: present one tag`가 나온 뒤 카드를 대고 `OK WRITE verified`까지 유지합니다.
+
 ## 5. 카드 읽기 및 결과 확인
 
 ```text
@@ -211,7 +226,7 @@ OK READ complete: 144 user-memory bytes
 | `server device_state must be card-upload` | 서버에서 해당 장치의 모드를 변경하고 `status` 확인 |
 | `job timed out; no automatic retry` | 총 30초 초과. 카드를 제거하고 새 작업 실행. `UNKNOWN`이면 먼저 읽기 확인 |
 | `different UID; no retry` | 도중에 다른 카드 감지. 한 장만 두고 다시 진행 |
-| `unsupported tag` | 지원 모델/버전 확인. 구형 펌웨어라면 v68 지원 여부 확인 |
+| `unsupported tag` | 지원 모델/버전 확인. 구형 펌웨어라면 해당 모델 지원 변경이 포함됐는지 확인 |
 | `locked, protected or mirrored tag refused` | 잠금·보호·미러링 상태로 기록 거부. 이 업로더에는 잠금 해제 기능 없음 |
 | `NTAG I2C mirrored, pass-through, busy or RF write disabled` | I2C 카드의 모드·점유·RF 쓰기 조건 확인. 연결된 I2C 호스트는 작업 중 유휴 상태 유지 |
 | `PN532 phase=... fault=...` | 카드/리더 통신 실패. 카드 위치를 안정적으로 고정하고 로그 보관. 쓰기 시도 후라면 내용부터 확인 |
@@ -227,6 +242,24 @@ OK READ complete: 144 user-memory bytes
 - UID, CC, 잠금 비트, 암호 및 설정 페이지는 쓰지 않습니다. 쓰기 전에 잠금·보호·기존 메모리 구조 등을 검사하며, 지원하지 않는 사용자 정의 구조는 거절합니다.
 - NT3H1101은 추가 상태 확인 때문에 다른 지원 칩보다 작업이 오래 걸릴 수 있습니다. 연결된 I2C 호스트는 카드 작업 중 유휴 상태여야 합니다.
 
+### NTAG216 호환성 보완
+
+NTAG216의 보호 검사는 PN532 원시 `FAST_READ`로 page 225~228을 읽습니다.
+기본 잠금·암호 보호·미러링 검사와 같은 UID 확인은 계속 적용하며, 보호 검사 실패를
+무시하거나 용량이 작은 다른 모델로 바꿔서 쓰지 않습니다.
+
+NTAG216으로 응답하는 카드의 맨 앞에 정확히 `01 03 A0 10 44`가 있으면,
+추가로 이 메타데이터가 가리키는 page 40의 잠금 두 바이트가 모두 0인지 확인합니다.
+검사를 통과하면 원래 메타데이터 5바이트를 보존하여 기록합니다. 이는 NTAG203 방식의
+기존 메타데이터 호환 처리이며 NTAG216의 공장 기본 구조라는 뜻은 아닙니다.
+다른 위치·중복·다른 내용의 사용자 정의 잠금 메타데이터는 허용하지 않습니다.
+
+오류에는 `CARD stage=... operation=... page=... write_attempted=...`가 추가됩니다.
+`operation=fast-read page=225`는 NTAG216 기본 보호 검사 실패,
+`stage=legacy-lock page=40`은 추가 메타데이터 잠금 검사 실패를 뜻합니다.
+`CC`는 카드 용량·접근 정보 4바이트입니다. `0x13`만으로 카드의 실제 모델이나
+메모리 용량을 확정할 수 없습니다. 다시 실패하면 이 항목을 포함한 전체 로그를 확인합니다.
+
 ## 8. 업로드 모드 종료 후 게임 복귀
 
 1. 진행 중인 작업을 완료합니다. 중단해야 한다면 `cancel`하고, `UNKNOWN`이면 카드 내용을 확인합니다.
@@ -239,14 +272,14 @@ Telnet을 끊는 것만으로 서버의 `card-upload` 모드가 해제되지는 
 
 ## 참고
 
-문서 기준: 2026-09-25, 펌웨어 v68. 최신 내용은 [GitHub 사용 가이드](https://github.com/Fuzzyline-HAS2/New_HAS1/blob/main/devices/HAS1_revival_machine/CARD_UPLOAD_KO.md)에서 확인합니다.
+문서 기준: 2026-10-01, 현재 소스. 최신 내용은 [GitHub 사용 가이드](https://github.com/Fuzzyline-HAS2/New_HAS1/blob/main/devices/HAS1_revival_machine/CARD_UPLOAD_KO.md)에서 확인합니다.
 
 [Notion 사용 가이드](https://app.notion.com/p/3e60bd3810bf81f99d54d2251c483baf)에서도 같은 사용 절차를 확인할 수 있습니다.
 
 이 기능은 기존 LAN Telnet 콘솔을 사용하며 별도의 사용자 로그인은 없습니다. 서버의 `card-upload` 모드가 기록 허용 조건입니다. 작업할 때만 해당 모드를 활성화합니다.
 
-2026-09-25 Academy AR에서 NT3H1101 읽기·기록 및 정상 동작을 사용자 테스트로 확인했습니다. 이 결과는 해당 장치·카드 조합 기준이며 휴대전화별 인식 여부는 별도 확인 대상입니다.
+과거 v68 검증: 2026-09-25 Academy AR에서 NT3H1101 읽기·기록 및 정상 동작을 사용자 테스트로 확인했습니다. 이 결과는 해당 장치·카드 조합 기준이며 휴대전화별 인식 여부는 별도 확인 대상입니다.
 
 - [영문 기술 설명 및 프로토콜 참고 자료](CARD_UPLOAD.md)
 - [생명장치 README](README.md)
-- [v68 릴리즈](https://github.com/Fuzzyline-HAS2/New_HAS1/releases/tag/HAS1_revival_machine)
+- [생명장치 릴리즈](https://github.com/Fuzzyline-HAS2/New_HAS1/releases/tag/HAS1_revival_machine)

@@ -248,6 +248,26 @@ Pn532Result RevivalPn532::readPages(uint8_t page, uint8_t *data16, const Pn532De
   return Pn532Result::Ok;
 }
 
+Pn532Result RevivalPn532::readNtag21xConfig(uint8_t lockPage, uint8_t *data16, const Pn532Deadline &deadline)
+{
+  if (!data16 || (lockPage != 40 && lockPage != 130 && lockPage != 226))
+    return fail(Pn532Fault::PageResponse, Pn532Result::TagError);
+  if (sessionSectorDirty_ || sessionRxModeDirty_) return fail(Pn532Fault::SessionState);
+  if (!target_) return fail(Pn532Fault::TargetResponse);
+  // NTAG21x FAST_READ through raw RF avoids InDataExchange's MIFARE command
+  // handling. Exactly last user page, dynamic locks, CFG0 and CFG1: no PWD/PACK.
+  const uint8_t request[] = {0x42, 0x3A, (uint8_t)(lockPage - 1), (uint8_t)(lockPage + 2)};
+  uint8_t response[62], length;
+  Pn532Result result = command(request, sizeof(request), response, length, deadline.limited(100));
+  if (result != Pn532Result::Ok) return result;
+  if (!length) return fail(Pn532Fault::PageResponse);
+  tagStatus_ = response[0];
+  if (tagStatus_ & 0x3F) return Pn532Result::TagError;
+  if (tagStatus_ || length != 17) return fail(Pn532Fault::PageResponse);
+  memcpy(data16, response + 1, 16);
+  return Pn532Result::Ok;
+}
+
 Pn532Result RevivalPn532::getTagVersion(uint8_t *data8, const Pn532Deadline &deadline)
 {
   if (sessionSectorDirty_ || sessionRxModeDirty_) return fail(Pn532Fault::SessionState);
