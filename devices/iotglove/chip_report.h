@@ -19,7 +19,7 @@ class ChipReportPolicy {
     if (!name) return false;
     const size_t length = strlen(name);
     if (length < 4 || length > 6 || name[0] != 'G' ||
-        (name[1] != '1' && name[1] != '2') || name[2] != 'P') return false;
+        (name[1] != '1' && name[1] != '2' && name[1] != '9') || name[2] != 'P') return false;
     for (size_t i = 3; i < length; ++i)
       if (name[i] < '0' || name[i] > '9') return false;
     return true;

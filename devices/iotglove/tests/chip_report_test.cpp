@@ -4,20 +4,20 @@
 #include <string.h>
 using namespace iotglove;
 
-static void initialAndDedup(bool present) {
+static void initialAndDedup(bool present, const char* device) {
   ChipReportPolicy policy;
   ChipReportPolicy::Request request;
   assert(!policy.begin(0, request));
   policy.observe(present);
   assert(!policy.begin(0, request));
-  policy.bind("G1P1", false, -1);
+  policy.bind(device, false, -1);
   assert(policy.begin(0, request));
-  assert(request.present == present && !strcmp(request.device, "G1P1"));
+  assert(request.present == present && !strcmp(request.device, device));
   assert(!policy.begin(1, request));
   policy.finish(request, true, 1);
   for (unsigned i = 2; i < 20; ++i) {
     policy.observe(present);
-    policy.bind("G1P1", true, present ? 1 : 0);
+    policy.bind(device, true, present ? 1 : 0);
     assert(!policy.due(i));
   }
   policy.observe(!present);
@@ -106,7 +106,7 @@ static void serverValueChanges() {
 }
 
 static void identityValidationAndWrap() {
-  const char* rejected[] = {nullptr, "", "G", "G1", "G1P", "G1P-1", "G1P1234", "G3P1", "G9P1", "G1P1x", "g1p1"};
+  const char* rejected[] = {nullptr, "", "G", "G1", "G1P", "G1P-1", "G1P1234", "G0P1", "G3P1", "G8P1", "G9P", "G9P-1", "G9P1234", "G9P1x", "G1P1x", "g1p1"};
   for (const char* name : rejected) {
     ChipReportPolicy policy;
     policy.observe(true); policy.bind(name, true, 1);
@@ -114,6 +114,9 @@ static void identityValidationAndWrap() {
   }
   assert(ChipReportPolicy::liveDevice("G1P1"));
   assert(ChipReportPolicy::liveDevice("G2P99"));
+  assert(ChipReportPolicy::liveDevice("G9P1"));
+  assert(ChipReportPolicy::liveDevice("G9P99"));
+  assert(ChipReportPolicy::liveDevice("G9P999"));
   ChipReportPolicy policy;
   ChipReportPolicy::Request request;
   policy.observe(true); policy.bind("G1P8", false, -1);
@@ -126,7 +129,10 @@ static void identityValidationAndWrap() {
 }
 
 int main() {
-  initialAndDedup(false); initialAndDedup(true);
+  const char* devices[] = {"G1P1", "G2P1", "G9P1"};
+  for (const char* device : devices) {
+    initialAndDedup(false, device); initialAndDedup(true, device);
+  }
   newestOnlyAndConcurrentReadback(); failedWriteAndRetry();
   identityAndServerRestart(); serverValueChanges(); identityValidationAndWrap();
   puts("chip report policy tests passed");

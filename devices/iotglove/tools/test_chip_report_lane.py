@@ -118,6 +118,12 @@ int main() {
   reportChip(); assert(wifi.writes == 2 && server["life_chip"].text == "1");
   reportChip(); assert(wifi.writes == 2);
   reset("ended"); server["device_name"].text = "G9P1";
+  assert(readChipIdentity());
+  reportChip(); assert(wifi.writes == 1 && server["life_chip"].text == "0");
+  reportChip(); assert(wifi.writes == 1);
+  physicalChip.store(1); reportChip(); assert(wifi.writes == 2 && server["life_chip"].text == "1");
+  reportChip(); assert(wifi.writes == 2);
+  reset("ended"); server["device_name"].text = "G3P1";
   assert(!readChipIdentity()); reportChip(); assert(wifi.writes == 0);
 }
 '''
