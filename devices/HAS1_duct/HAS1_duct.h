@@ -110,7 +110,7 @@ void ReadyFunc();
 void ActionFunc();
 void DataChange();
 void EnterTaggerMode();
-void ExitTaggerMode();
+void ExitTaggerMode(bool notify_server = true);
 void ServerActivate();
 
 //=============================== Neopixel ===============================
@@ -195,7 +195,7 @@ int wifi_timer_id;
 int tagger_blink_timer_id;
 
 void TimerRun();
-void CooltimeFinish();
+void CooltimeFinish(bool notify_server = true);
 void CooltimeTimerFunc();
 void RfidTagTimerFunc();
 void WifiTimerFunc();

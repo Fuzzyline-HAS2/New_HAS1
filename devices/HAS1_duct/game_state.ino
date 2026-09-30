@@ -161,16 +161,15 @@ void DataChange()
         else if((String)(const char *)my["device_state"] == "back"){
             ExitTaggerMode();
         }
-        // 게임 중에는 game_state 가 이미 activate 라 재전송해도 변경 감지에 걸리지 않는다.
-        // 봉쇄 해제를 device_state=activate 로도 받을 수 있게 한다(봉쇄 중 device_state 는
-        // tagger 이므로 실제로 값이 바뀐다). ExitTaggerMode 가 되보내는 activate 는
-        // 이미 cur 에 반영된 뒤라 재진입하지 않는다.
-        else if((String)(const char *)my["device_state"] == "activate"){
-            ServerActivate();
-        }
         else if((String)(const char *)my["device_state"] == "open"){
             MmmmOpen();
         }
+    }
+
+    // lock을 폴링하기 전에 운영자가 activate를 보내면 cur도 여전히 activate일 수 있다.
+    // 로컬 상태로 멱등 처리하므로 수신 스냅샷마다 확인해도 중복 보고/타이머 재시작은 없다.
+    if ((String)(const char *)my["device_state"] == "activate") {
+        ServerActivate();
     }
 
     // game_state 전환(setting/ready/activate)은 동결보다 우선한다.
@@ -235,16 +234,17 @@ void EnterTaggerMode()
 
 /**
  * @brief "이로운 효과" 해제 - back 수신 시 동결을 풀고 원래 game_state 색상으로 복귀.
- *        값들은 동결 중 변하지 않았으므로 별도 복원 없이 재페인트만 수행 (서버 전송 없음).
+ *        값들은 동결 중 변하지 않았으므로 별도 복원 없이 재페인트한다.
+ *        back은 복원 상태를 보고하고, 서버 activate 수신 경로는 중복 보고를 생략한다.
  */
-void ExitTaggerMode()
+void ExitTaggerMode(bool notify_server)
 {
     if (!tagger_mode) return;  // tagger 상태일 때만 동작
     tagger_mode = false;       // RFID / 쿨타임 게이팅 해제 (멈췄던 지점부터 재개)
     ApplyCurrentNeopixel();    // 복원된 game_state / duct_available 기준 색 복원
     Serial.println("Exit Tagger Mode");
 
-    if (game_state == activate)
+    if (notify_server && game_state == activate)
     {
         if (duct_available)
             has2wifi.Send((String)(const char *)my["device_name"], "device_state", "activate");

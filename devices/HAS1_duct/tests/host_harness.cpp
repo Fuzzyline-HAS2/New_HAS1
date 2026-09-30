@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <limits>
+#include <functional>
 using String = std::string;
 using uint8_t = unsigned char;
 using uint16_t = unsigned short;
@@ -36,13 +37,22 @@ struct Pixels {
 struct Value {
     String text;
     Value& operator=(const char* s) { text = s; return *this; }
+    template<class T> bool is() const { return !text.empty(); }
+    template<class T> T as() const { return text.c_str(); }
     operator const char*() const { return text.c_str(); }
     explicit operator int() const { return std::atoi(text.c_str()); }
 };
-std::map<String, Value> my, tag, shift_machine;
+using JsonDocument = std::map<String, Value>;
+JsonDocument my, tag, shift_machine;
+struct Has1BleBeacon { static void setDeviceName(const char*) {} };
+struct Ota { void check() {} } ota;
 struct Wifi {
     std::vector<String> states, receives;
-    void Send(String, String key, String value) { if (key == "device_state") states.push_back(value); }
+    std::function<void()> onSend;
+    void Send(String, String key, String value) {
+        if (key == "device_state") states.push_back(value);
+        if (onSend) onSend();
+    }
     void Receive(String value) { receives.push_back(value); }
 } has2wifi;
 int cooldownAnnouncements = 0, blockedAnnouncements = 0;
@@ -345,6 +355,45 @@ int main(int argc, char** argv) {
         audioEvents.clear(); MmmmOpen();
         check(relay == HIGH && audioEvents == std::vector<String>{"play:9:712"}, "admin card plays the outside opening line");
         advance(4000); check(relay == LOW && !mmmm_open, "admin opening closes");
+    } else if (test == "cooldown_report_state") {
+        openNormal(); advance(6000);
+        has2wifi.onSend = []() {
+            check(duct_available && current_time == 0 && !cool_time_neo_bool,
+                  "local cooldown completion is committed before synchronous HTTP reporting");
+            check(!cooltime_timer.isEnabled(cooltime_timer_id),
+                  "cooldown timer is removed before synchronous HTTP reporting");
+        };
+        finished();
+    } else if (test == "server_activate_data_change" || test == "server_activate_blockade_data_change" || test == "server_activate_unpolled_lock") {
+        my["game_state"] = "ready"; my["device_state"] = "ready"; DataChange();
+        my["game_state"] = "activate"; my["device_state"] = "activate";
+        my["cool_time"] = "5"; my["cool_time_add"] = "5"; DataChange();
+        openNormal(); DataChange();
+        check(!duct_available && relay == HIGH && duct_close_timer.isEnabled(duct_close_timer_id),
+              "activate snapshot during opening preserves the pending close");
+        advance(6000);
+        if (test != "server_activate_unpolled_lock") {
+            my["device_state"] = "lock"; DataChange(); DataChange();
+            check(!duct_available && current_time == 2 && cooltime_timer.isEnabled(cooltime_timer_id),
+                  "normal and repeated lock snapshots preserve the running cooldown");
+        }
+        if (test == "server_activate_blockade_data_change") {
+            my["device_state"] = "tagger"; DataChange();
+        }
+        has2wifi.states.clear();
+        has2wifi.onSend = []() { check(false, "server activate must not wait for redundant HTTP acknowledgement"); };
+        my["device_state"] = "activate"; DataChange();
+        check(duct_available && switch_available && !tagger_mode && current_time == 0 && !cool_time_neo_bool,
+              "actual DataChange activation restores all input gates and elapsed state");
+        check(!cooltime_timer.isEnabled(cooltime_timer_id), "actual DataChange activation removes the old timer");
+        check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "actual DataChange activation paints available state");
+        DataChange(); advance(10000);
+        check(duct_available && current_time == 0, "repeated snapshots and old deadline cannot undo activation");
+        has2wifi.onSend = nullptr;
+        pressSwitch(); check(relay == HIGH && use_duct_num == 2, "button works immediately after server activation");
+        advance(10000); check(duct_available, "next opening uses a new cooldown timer");
+        DuctTag("G1P2"); check(relay == HIGH && use_duct_num == 3 && cooltime == 10,
+              "RFID opening and use-count escalation still work after server activation");
     } else if (test == "server_activate") {
         openNormal(); advance(6000); check(!duct_available && current_time == 2, "cooldown in progress");
         has2wifi.states.clear();
@@ -353,7 +402,7 @@ int main(int argc, char** argv) {
               "server activate ends the cooldown immediately");
         check(use_duct_num == 1, "server activate keeps the use counter");
         check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "server activate paints yellow");
-        check(has2wifi.states == std::vector<String>{"activate"}, "server activate reports activate once");
+        check(has2wifi.states.empty(), "server activate needs no redundant report");
         has2wifi.states.clear(); ServerActivate();
         check(duct_available && has2wifi.states.empty(), "server activate while available changes nothing");
         DuctTag("G1P2"); check(relay == HIGH && use_duct_num == 2, "duct opens again after forced activation");
@@ -375,11 +424,11 @@ int main(int argc, char** argv) {
         openNormal(); advance(6000); EnterTaggerMode(); has2wifi.states.clear();
         ServerActivate();
         check(!tagger_mode && duct_available && current_time == 0, "server activate releases blockade and cooldown together");
-        check(!has2wifi.states.empty() && has2wifi.states.back() == "activate", "server reports activate after release");
+        check(has2wifi.states.empty(), "server activation releases locally without redundant report");
         check(pixels_line.color == std::array<int, 3>{255, 255, 0}, "released duct is yellow");
         EnterTaggerMode(); has2wifi.states.clear(); ServerActivate();
-        check(!tagger_mode && duct_available && has2wifi.states == std::vector<String>{"activate"},
-              "available blockade release keeps existing exit behaviour");
+        check(!tagger_mode && duct_available && has2wifi.states.empty(),
+              "available blockade release skips redundant server acknowledgement");
     } else if (test == "blockade_left_time") {
         my["left_time"] = "3";   // 이전 봉쇄에서 남아 있던 값
         EnterTaggerMode(); TaggerLeftTimeUpdate();
