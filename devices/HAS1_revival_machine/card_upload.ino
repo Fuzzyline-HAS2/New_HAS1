@@ -22,6 +22,8 @@ static uint8_t uploadUid[10], uploadUidLength = 0;
 static uint8_t uploadLockPage = 0; // Reported GET_VERSION model.
 static uint8_t uploadConfigLockPage = 0; // Effective protection layout.
 static bool uploadCompat215 = false;
+static bool uploadPlain215Candidate = false;
+static uint8_t uploadPlainPrefix[8];
 static bool uploadLegacyLock = false;
 static bool uploadNtagI2c = false, uploadSessionChecked = false;
 static uint16_t uploadOffset = 0, uploadWriteSize = 0;
@@ -150,7 +152,7 @@ static void UploadArm(bool writing, const char *value)
   uploadAbsentCount = 0;
   uploadSelected = false;
   uploadAttemptedWrite = false;
-  uploadNtagI2c = uploadSessionChecked = uploadLegacyLock = uploadCompat215 = false;
+  uploadNtagI2c = uploadSessionChecked = uploadLegacyLock = uploadCompat215 = uploadPlain215Candidate = false;
   uploadConfigLockPage = 0;
   uploadUidLength = 0;
   uploadOffset = 0;
@@ -352,6 +354,28 @@ static bool UploadWritableTlv()
   return true; // Blank memory or an exactly bounded NDEF; no other TLV accepted.
 }
 
+// This observed profile has no lock-control descriptor. Require a complete,
+// bounded single NDEF TLV, with at most the encoder's five reserved NULL bytes.
+// A terminator may only be followed by NULL padding, never hidden control TLVs.
+static bool UploadPlain215Layout()
+{
+  if (memcmp(uploadMemory, uploadPlainPrefix, sizeof(uploadPlainPrefix))) return false;
+  uint16_t offset = 0;
+  while (offset < 5 && uploadMemory[offset] == 0) ++offset;
+  if (uploadMemory[offset++] != 3) return false;
+  uint16_t length = uploadMemory[offset++];
+  if (length == 255) {
+    length = (uint16_t)((uploadMemory[offset] << 8) | uploadMemory[offset + 1]);
+    offset += 2;
+  }
+  if (!length || length > sizeof(uploadMemory) - offset) return false;
+  offset += length;
+  if (offset == sizeof(uploadMemory)) return true;
+  if (uploadMemory[offset++] != 0xFE) return false;
+  while (offset < sizeof(uploadMemory)) if (uploadMemory[offset++] != 0) return false;
+  return true;
+}
+
 static const char *UploadStageName()
 {
   switch (uploadStage) {
@@ -494,10 +518,16 @@ void CardUploadLoop()
     const uint8_t compatCcAndPrefix[] = {0xE1, 0x10, 0x3E, 0, 1, 3, 0xA0, 0x10, 0x44};
     uploadCompat215 = !uploadNtagI2c && uploadLockPage == 226 &&
                       !memcmp(bytes + 4, compatCcAndPrefix, sizeof(compatCcAndPrefix));
+    const uint8_t plainCc[] = {0xE1, 0x10, 0x3E, 0};
+    uint8_t prefixOffset = 0;
+    while (prefixOffset < 5 && bytes[8 + prefixOffset] == 0) ++prefixOffset;
+    uploadPlain215Candidate = !uploadNtagI2c && uploadLockPage == 226 &&
+        !memcmp(bytes + 4, plainCc, sizeof(plainCc)) && bytes[8 + prefixOffset] == 3;
+    if (uploadPlain215Candidate) memcpy(uploadPlainPrefix, bytes + 8, sizeof(uploadPlainPrefix));
     uploadConfigLockPage = uploadCompat215 ? 130 : uploadLockPage;
     if (uploadCompat215)
       UploadSay("PROTECTION NTAG215-compatible (reported NTAG216); config pages=129-132; legacy lock page=40");
-    uploadStage = uploadJob == UPLOAD_WRITE ? UPLOAD_DYNAMIC : UPLOAD_MEMORY;
+    uploadStage = uploadJob == UPLOAD_WRITE && !uploadPlain215Candidate ? UPLOAD_DYNAMIC : UPLOAD_MEMORY;
   } else if (uploadStage == UPLOAD_DYNAMIC) {
     if (uploadNtagI2c) {
       // E2 is the original I2C 1K dynamic-lock page. READ fills subsequent
@@ -516,7 +546,9 @@ void CardUploadLoop()
     if (bytes[4] || bytes[5] || bytes[6] || bytes[11] != 0xFF || bytes[12] || (bytes[8] & 0xC0)) {
       UploadFinish("locked, protected or mirrored tag refused", false); return;
     }
-    uploadStage = UPLOAD_MEMORY;
+    // Plain compatibility is selected only after the entire existing layout has
+    // been validated. Its memory phase is already complete at this point.
+    uploadStage = uploadPlain215Candidate ? UPLOAD_INVALIDATE : UPLOAD_MEMORY;
   } else if (uploadStage == UPLOAD_MEMORY) {
     result = pn532.readPages((uint8_t)(4 + uploadOffset / 4), bytes, deadline);
     if (!UploadCheckResult(result, "read", 4 + uploadOffset / 4)) return;
@@ -525,6 +557,21 @@ void CardUploadLoop()
     uploadOffset += 16;
     if (uploadOffset == sizeof(uploadMemory)) {
       if (uploadJob == UPLOAD_READ) { UploadFinish("READ complete: 144 user-memory bytes", true); return; }
+      if (uploadPlain215Candidate) {
+        if (!UploadPlain215Layout()) {
+          UploadFinish("invalid or changed plain NDEF compatibility layout; refused", false); return;
+        }
+        // Keep the strict NULL-tail profile valid even after long-to-short
+        // rewrites. Clear and verify only the same bounded user-memory region.
+        memset(uploadImage.bytes + uploadImage.size, 0, sizeof(uploadImage.bytes) - uploadImage.size);
+        uploadWriteSize = sizeof(uploadImage.bytes);
+        uploadCompat215 = true;
+        uploadConfigLockPage = 130;
+        UploadSay("PROTECTION NTAG215-compatible (reported NTAG216); config pages=129-132; plain NDEF");
+        uploadOffset = 4;
+        uploadStage = UPLOAD_DYNAMIC;
+        return;
+      }
       if (!UploadWritableTlv()) { UploadFinish("custom or out-of-range TLV refused", false); return; }
       if (uploadCompat215 && !uploadLegacyLock) {
         UploadFinish("compatibility lock metadata changed; refused", false); return;
