@@ -6,7 +6,6 @@ void StepMotorInit(){
 
 void EscapeClose(){
     digitalWrite(DIR_PIN, LOW); // 모터 역방향
-    digitalWrite(RELAY_PIN, HIGH); // 모터 전원 ON (HIGH=ON, LOW=OFF)
     Serial.println("Escapse Close");
     Serial.println("[DEBUG] SW_PIN initial=" + String(digitalRead(SW_PIN)));
 
@@ -48,7 +47,6 @@ void EscapeClose(){
     } else {
         Serial.println("[DEBUG] SW_PIN triggered at step=" + String(stepCount));
     }
-    digitalWrite(RELAY_PIN, LOW); // 닫힘 완료 후 모터 전원 OFF
     // maxSteps 강제 종료로 빠져나온 경우에도 홈으로 본다. 닫힘 방향 1500스텝은 열림
     // 1000스텝을 넘으므로 기계적으로 홈이거나 그 너머고, 모터가 아예 안 돌았다면
     // 플래그와 무관하게 다음 동작도 움직이지 않는다.
@@ -64,7 +62,6 @@ void EscapeOpen(){
         return;
     }
     digitalWrite(DIR_PIN, HIGH); // 모터 정방향
-    digitalWrite(RELAY_PIN, LOW);
     Serial.println("Escapse Open");
 
     for(int x = 0; x < (stepsPerRevolution*10); x++)

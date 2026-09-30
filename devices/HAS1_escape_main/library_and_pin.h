@@ -18,7 +18,7 @@
 #define HWSERIAL_RX 18
 #define HWSERIAL_TX 23
 
-#define RELAY_PIN    14
+#define RELAY_PIN    14  // 조명 릴레이 (LOW=켜짐, HIGH=꺼짐), 모터와 무관
 
 #define SW_PIN      4
 
