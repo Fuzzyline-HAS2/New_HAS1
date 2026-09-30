@@ -127,6 +127,7 @@ static bool ToggleRfField(bool on)
   return ok;
 }
 
+// readPage7는 앞 4바이트만 채우므로 호출부의 카드 버퍼는 전체를 0으로 초기화한다.
 static bool DetectAndRead(uint8_t outData[32])
 {
   if (rfid_recovery_required || !rfid_gain_known) {
@@ -292,7 +293,7 @@ Pn532Result RfidUploadSelect(uint8_t *uid, uint8_t &length)
   length = 0;
   if (!RfidEnsureReady(true)) return Pn532Result::Deadline;
   rfidUploadUidOnly = true;
-  uint8_t unused[32];
+  uint8_t unused[32] = {0};
   bool found = DetectWithGainSwitch(unused);
   rfidUploadUidOnly = false;
   if (found) {
@@ -395,7 +396,7 @@ void RfidLoop()
   }
 
   if (!RfidEnsureReady(true)) return;
-  uint8_t data[32];
+  uint8_t data[32] = {0};
 #if REVIVAL_RFID_RUNTIME_TRACE
   RfidTraceScanBegin("gameplay");
 #endif
@@ -417,7 +418,7 @@ void AdminCardPollPending()
       millis() - revival_approval_last_admin_poll_ms < REVIVAL_ADMIN_POLL_MS) return;
 
   if (!RfidEnsureReady(false)) return;
-  uint8_t data[32];
+  uint8_t data[32] = {0};
 #if REVIVAL_RFID_RUNTIME_TRACE
   RfidTraceScanBegin("admin_pending");
 #endif
@@ -453,7 +454,7 @@ void AdminCardPollReady()
   }
 
   if (!RfidEnsureReady(true)) return;
-  uint8_t data[32];
+  uint8_t data[32] = {0};
 #if REVIVAL_RFID_RUNTIME_TRACE
   RfidTraceScanBegin("admin_ready");
 #endif

@@ -27,6 +27,8 @@ bool isBoxOpened();
 // Arduino가 .ino 파일들을 병합할 때 자동 생성 함수 프로토타입을 스케치 맨 앞(이 헤더 include
 // 다음, 각 .ino 탭의 실제 코드보다 앞)에 삽입하므로, rfid.ino 안에서만 정의하면 그 프로토타입
 // 자리에서 "GainMode를 아직 모른다"는 컴파일 에러가 난다.
+// NTAG page7의 사용자 코드는 정확히 4바이트. 태그 동일성은 이 범위만 비교한다.
+constexpr unsigned int RFID_CODE_SIZE = 4;
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 void RfidInit();
 void RfidHalUpdate();
