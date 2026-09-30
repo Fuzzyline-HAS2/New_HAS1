@@ -6,7 +6,11 @@ import subprocess
 import tempfile
 TESTS = Path(__file__).resolve().parent
 DEVICE = TESTS.parent
-CASES = ('default_url','legacy_defaults','legacy_custom','saved_explicit_game','ntag216_legacy_write','ntag216_native_locked','ntag216_protected','ntag216_mirror',
+CASES = ('compat215_write','compat215_reset','compat215_cc','compat215_prefix','compat215_version',
+         'compat215_static','compat215_readonly','compat215_dynamic','compat215_auth','compat215_access',
+         'compat215_mirror','compat215_legacy','compat215_duplicate','compat215_changed','compat215_error',
+         'compat215_uid','compat215_verify',
+         'default_url','legacy_defaults','legacy_custom','saved_explicit_game','ntag216_legacy_write','ntag216_native_locked','ntag216_protected','ntag216_mirror',
          'ntag216_legacy_locked','ntag216_malformed','ntag216_duplicate','ntag216_guard_error','ntag216_legacy_error','write213','write215','write216','factory_tlv','standard_write','long_literal','read','held_requires_removal',
          'uid_change_before','uid_change_after','lost_tag','transport_error',
          'uncertain_write','verify_mismatch','disconnect_before','disconnect_after',

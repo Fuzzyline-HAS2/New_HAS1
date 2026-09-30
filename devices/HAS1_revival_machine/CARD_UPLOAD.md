@@ -118,15 +118,21 @@ codes later in the URL, and Text records cannot use this game layout. Use
   `01 03 A0 10 44` on cards reporting NTAG216. This is NTAG203-style metadata,
   not NTAG216 factory metadata. Its two referenced lock bytes at page 40 must
   also be zero, and the original five-byte descriptor is preserved. Duplicate,
-  relocated, or different custom descriptors are refused. The native NTAG216
-  lock and configuration checks remain mandatory; legacy metadata never changes
-  the detected model or substitutes for those checks. UID, CC, lock bits, password, and configuration pages are never written.
+  relocated, or different custom descriptors are refused. Native NTAG216
+  protection checks remain the default. The exact combination of VERSION
+  `00 04 04 02 01 00 13 03`, CC `E1 10 3E 00`, and that leading descriptor
+  selects an explicit NTAG215-compatible protection layout (pages 129–132).
+  The console retains `MODEL NTAG216` and prints the selected `PROTECTION`
+  profile separately. This tuple was observed in read-only hardware probes;
+  it does not establish authenticity or exact physical capacity. The descriptor
+  must still match when the full user memory is checked. Dynamic locks, AUTH0,
+  ACCESS, mirroring, and the additional page-40 lock check all remain mandatory. UID, CC, lock bits, password, and configuration pages are never written.
 - NTAG21x native protection checks use a bounded raw `FAST_READ` through PN532
   `InCommunicateThru`: pages 39–42 (213), 129–132 (215), or 225–228 (216).
   These read the last user page, dynamic locks, CFG0, and CFG1, excluding PWD/PACK.
   This avoids the PN532 `InDataExchange` MIFARE command handler. A failed
-  protection read still stops the job before any write; there is no model
-  downgrade, protection bypass, or automatic fallback.
+  protection read still stops the job before any write; there is no protection bypass or automatic fallback after a failed read.
+  The compatibility profile is selected from metadata before the protection read.
 - Failures print `CARD stage=... operation=... page=... write_attempted=...`
   before reader recovery can reset transport diagnostics. `page` is the first
   page of the four-page read, or `-1` for operations without a page. `CC` also
@@ -189,5 +195,9 @@ Protocol references: [NXP PN532 user manual](https://www.nxp.com/docs/en/user-gu
 The NTAG216 compatibility changes are covered by host tests for exact raw
 FAST_READ command bytes, failed/short/extra responses, protection refusal, and
 the observed legacy layout rewritten to `https://MMMM.p.fuzzyline.io` with
-page 7 equal to `MMMM`. They have not yet been verified on the user's physical
-card. Host tests do not establish successful physical NTAG216 writing.
+page 7 equal to `MMMM`. The exact NTAG215-compatible profile also has host
+coverage for metadata near misses, protection failures, changed or duplicate
+lock metadata, UID changes, verification failure, and resetting the profile
+between jobs. Read-only probes on the user's card confirmed readable protection
+registers at pages 129–132 and failures at 225–228. Successful physical writing
+with the compatibility profile remains unverified; host tests do not establish it.
