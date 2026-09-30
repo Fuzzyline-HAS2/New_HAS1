@@ -6,7 +6,7 @@ Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS1);
 // HAL 내부 캐시 — RfidHalUpdate()만 쓰고, RfidTagPresent/ReadTag는 읽기만 한다
 static bool    rfid_tagPresent = false;
 static bool    rfid_dataReady  = false;
-static uint8_t rfid_tagData[32];
+static uint8_t rfid_tagData[RFID_CODE_SIZE];
 
 // ── PN532 근접 인식 Dead Zone 대응 — RxGain 동적 전환 ───────────────────────
 // 일부 생산 로트의 PN532는 기본 RxGain(38dB)에서 태그를 안테나 중심에 맞춰 대면
@@ -19,7 +19,7 @@ static uint8_t rfid_tagData[32];
 
 static GainMode      currentGain     = GAIN_NEAR;
 static bool          rfid_tagLocked  = false;   // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
-static uint8_t       rfid_lockedData[32];        // 유지 중인 태그의 page7 데이터 — 동일 태그 판별 기준
+static uint8_t       rfid_lockedData[RFID_CODE_SIZE];        // 유지 중인 태그의 page7 데이터 — 동일 태그 판별 기준
 static unsigned long rfid_lastSeenMs = 0;        // 유지 중 태그를 마지막으로 확인한 시각
 
 // 유지 중이던 태그가 두 Gain 모두에서 이 시간 이상 연속으로 안 잡히면 그제서야 제거로 판정.
@@ -54,7 +54,7 @@ static bool ApplyGain(int mode) {
 
 // 현재 칩에 적용된 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
 // 성공 시 outData에 태그 데이터(4바이트 "GxPx" 등)를 채우고 true를 반환한다.
-static bool DetectAndRead(uint8_t outData[32]) {
+static bool DetectAndRead(uint8_t outData[RFID_CODE_SIZE]) {
     byte buf[64] = {0};
     if (!nfc.sendCommandCheckAck(buf, 1)) return false;
     if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
@@ -93,7 +93,7 @@ void RfidInit() {
 //   → 그래도 둘 다 실패하면 TAG_REMOVE_TIME_MS 동안은 유지로 간주(단발성 미스 무시)
 //   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
 void RfidHalUpdate() {
-    uint8_t data[32];
+    uint8_t data[RFID_CODE_SIZE] = {0};
 
     if (!rfid_tagLocked) {
         if (!DetectAndRead(data)) {
@@ -106,18 +106,18 @@ void RfidHalUpdate() {
         }
         // 태그 발견 — 지금 이 Gain을 유지하며 락온
         rfid_tagLocked = true;
-        memcpy(rfid_lockedData, data, 32);
-        memcpy(rfid_tagData, data, 32);
+        memcpy(rfid_lockedData, data, RFID_CODE_SIZE);
+        memcpy(rfid_tagData, data, RFID_CODE_SIZE);
         rfid_lastSeenMs = millis();
         rfid_tagPresent = rfid_dataReady = true;
         return;
     }
 
-    bool found = DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0;
+    bool found = DetectAndRead(data) && memcmp(data, rfid_lockedData, RFID_CODE_SIZE) == 0;
     if (!found) {
         GainMode otherGain = (currentGain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
         ApplyGain(otherGain);
-        if (DetectAndRead(data) && memcmp(data, rfid_lockedData, 32) == 0) {
+        if (DetectAndRead(data) && memcmp(data, rfid_lockedData, RFID_CODE_SIZE) == 0) {
             currentGain = otherGain;  // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
             found = true;
         } else {
@@ -129,7 +129,7 @@ void RfidHalUpdate() {
         rfid_lastSeenMs = millis();
         rfid_tagPresent = true;
         if (!rfid_dataReady) {  // 이미 소비된 상태였다면 재갱신 (동일 락온 데이터라 재읽기 불필요)
-            memcpy(rfid_tagData, rfid_lockedData, 32);
+            memcpy(rfid_tagData, rfid_lockedData, RFID_CODE_SIZE);
             rfid_dataReady = true;
         }
         return;
@@ -174,7 +174,9 @@ bool RfidScanNeeded() {
 // 다음 RfidHalUpdate(200ms)에서 태그 유지 중이면 자동 재읽기.
 bool RfidReadTag(uint8_t data[32]) {
     if (!rfid_dataReady) return false;
-    memcpy(data, rfid_tagData, 32);
+    // HAL의 기존 32바이트 출력 계약은 유지하되, page7 이외의 영역은 항상 0으로 반환.
+    memset(data, 0, 32);
+    memcpy(data, rfid_tagData, RFID_CODE_SIZE);
     rfid_dataReady = false;
     return true;
 }
@@ -183,6 +185,8 @@ bool RfidReadTag(uint8_t data[32]) {
 // 카드)가 내용만 훑어보고, 소비는 그 태그가 실제로 자신이 처리할 대상일 때만 하도록 하기 위함.
 bool RfidPeekTag(uint8_t data[32]) {
     if (!rfid_dataReady) return false;
-    memcpy(data, rfid_tagData, 32);
+    // HAL의 기존 32바이트 출력 계약은 유지하되, page7 이외의 영역은 항상 0으로 반환.
+    memset(data, 0, 32);
+    memcpy(data, rfid_tagData, RFID_CODE_SIZE);
     return true;
 }

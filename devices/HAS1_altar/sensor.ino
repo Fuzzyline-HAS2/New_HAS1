@@ -87,7 +87,7 @@ void SensorInit()
 // (HAS1_tagmachine_sub/rfid.ino와 동일 기법 - 그쪽에서 실측 검증됨)
 static GainMode pn532_gain = GAIN_NEAR;
 static bool pn532_tag_locked = false;      // 태그를 찾아 유지 중인지 (탐색 모드 vs 유지 모드)
-static uint8_t pn532_locked_data[32];       // 유지 중인 태그의 page7 데이터 - 동일 태그 판별 기준
+static uint8_t pn532_locked_data[RFID_PAGE_DATA_SIZE];       // 유지 중인 태그의 page7 데이터 - 동일 태그 판별 기준
 static unsigned long pn532_last_seen_ms = 0; // 유지 중 태그를 마지막으로 확인한 시각
 
 // RFConfiguration(0x32) CfgItem 0x0A(Type A 106kbps Analog Setting)로 RxGain을 전환한다.
@@ -117,7 +117,7 @@ static bool ApplyGain(GainMode mode)
 }
 
 // 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
-static bool DetectAndRead(uint8_t outData[32])
+static bool DetectAndRead(uint8_t outData[RFID_PAGE_DATA_SIZE])
 {
   byte buf[64] = {0};
   BREADCRUMB("RfidLoop:sendCmd");
@@ -163,7 +163,7 @@ void RfidLoop()
     return;
   }
 
-  uint8_t data[32];
+  uint8_t data[RFID_PAGE_DATA_SIZE] = {0};
   bool tag_present = false;
 
   if (!pn532_tag_locked)
@@ -183,7 +183,7 @@ void RfidLoop()
 
     if (pn532_tag_locked)
     {
-      memcpy(pn532_locked_data, data, 32);
+      memcpy(pn532_locked_data, data, sizeof(pn532_locked_data));
       pn532_last_seen_ms = millis();
       tag_present = true;
       CardChecking(data);
@@ -194,12 +194,12 @@ void RfidLoop()
     // 유지 모드: 현재 Gain으로 먼저 확인 → 실패하면 반대 Gain으로 즉시 재확인
     //   → 그래도 둘 다 실패하면 TAG_REMOVE_TIME_MS 동안은 유지로 간주(단발성 미스 무시)
     //   → 유예시간 초과 시에만 최종적으로 태그 제거 판정, 이후 탐색 모드로 복귀
-    bool found = DetectAndRead(data) && memcmp(data, pn532_locked_data, 32) == 0;
+    bool found = DetectAndRead(data) && memcmp(data, pn532_locked_data, sizeof(pn532_locked_data)) == 0;
     if (!found)
     {
       GainMode otherGain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
       ApplyGain(otherGain);
-      if (DetectAndRead(data) && memcmp(data, pn532_locked_data, 32) == 0)
+      if (DetectAndRead(data) && memcmp(data, pn532_locked_data, sizeof(pn532_locked_data)) == 0)
       {
         pn532_gain = otherGain; // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
         found = true;
@@ -250,11 +250,11 @@ void RfidLoop()
  *
  * @param rfidData 태그된 NFC의 데이터
  */
-void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확인용
+void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]) // 어떤 카드가 들어왔는지 확인용
 {
   BREADCRUMB("CardChecking:recv");
   String tagUser = "";
-  for (int i = 0; i < 4; i++) // GxPx 데이터만 배열에서 추출해서 string으로 저장
+  for (size_t i = 0; i < RFID_PAGE_DATA_SIZE; i++) // GxPx 데이터만 배열에서 추출해서 string으로 저장
     tagUser += (char)rfidData[i];
   Serial.println("tag_user_data : " + tagUser);
 

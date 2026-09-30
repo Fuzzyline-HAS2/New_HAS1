@@ -76,6 +76,9 @@ bool send_nfc_err = false;
 // sensor.ino 안에서만 정의하면 그 프로토타입 자리에서 "GainMode를 아직 모른다"는 컴파일 에러가 난다.
 enum GainMode { GAIN_NEAR, GAIN_FAR };
 
+// ntag2xx_ReadPage는 한 페이지(4바이트)만 반환한다. page7의 GxPx 코드 길이.
+static constexpr size_t RFID_PAGE_DATA_SIZE = 4;
+
 // 유지 중이던 태그가 두 Gain 모두에서 이 시간 이상 연속으로 안 잡히면 그제서야 제거로 판정.
 // tagmachine_sub(연속 폴링, 500ms)와 달리 altar의 RfidLoop는 1초에 한 번만 도므로, 단발성
 // 미스 한 번(=최대 1000ms 공백)도 흡수할 수 있게 폴링 주기의 2배 이상으로 잡는다.
@@ -83,7 +86,7 @@ enum GainMode { GAIN_NEAR, GAIN_FAR };
 
 void RfidInit(void);
 void RfidLoop(void);
-void CardChecking(uint8_t rfidData[32]);
+void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]);
 void RunAltarSuccess(); // 태그+칩이 확인됐을 때 공통 처리 (순서 무관하게 CardChecking/IrSensorLoop에서 호출)
 
 //=============================== Neopixel ===============================
