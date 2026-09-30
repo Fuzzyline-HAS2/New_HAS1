@@ -14,6 +14,9 @@
 #include "HAS1_escape_main.h"
 
 void setup() {
+    // 조명 릴레이는 active-low. 네트워크 연결/홈잉 전에 소등한다.
+    pinMode(RELAY_PIN, OUTPUT);
+    SetEscapeLight(false);
     delay(500);
     Serial.begin(115200);
     // 기본 RX 버퍼는 256바이트 = T 패킷(25바이트) 약 10개분인데, 모터가 도는 4초 동안
@@ -47,8 +50,6 @@ void setup() {
     TimerInit();
     Mp3_Setup();
     StepMotorInit();
-    pinMode(RELAY_PIN, OUTPUT);
-    digitalWrite(RELAY_PIN, HIGH);
     // 부팅 홈잉. 재부팅 직전 날개가 어디 있었는지 알 수 없으므로, 서버 상태를 반영하는
     // DataChanged() 전에 리미트 스위치까지 닫아 홈을 잡는다. 이미 닫혀 있었다면
     // EscapeClose()의 while이 한 번도 돌지 않아 0스텝으로 즉시 끝난다.

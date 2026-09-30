@@ -31,7 +31,8 @@ SecureOTA ota(
 );
 void DataChanged();
 void SettingFunc(void);
-void ActivateFunc(void);
+void SetEscapeLight(bool on);
+void ActivateFunc(bool lightOn = true);
 void ReadyFunc(void);
 void WaitFunc();
 void WifiIntervalLoop(unsigned long intervalValue);

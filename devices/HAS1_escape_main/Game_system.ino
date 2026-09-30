@@ -13,6 +13,7 @@ void TagCount(){
         Mp3PlayLargeFolder(1, VE3);
     }
     else if(tagCnt >= 3){
+        SetEscapeLight(false); // 로컬 탈출 즉시 소등, 서버 전송 실패와 무관
         Serial.println("Escape Activate");
         Mp3PlayLargeFolder(1, VE4);
         SendDeviceStateWithRetry("escape");
