@@ -12,7 +12,24 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     String test = argv[1]; game_state = activate; cooltime_set = 5; cooltime_add = 0;
     my["device_name"] = "duct"; mp3_available = true;
-    if (test == "audio_fifo") {
+    if (test == "audio_boot_volume_kr" || test == "audio_boot_volume_en") {
+        shift_machine["selected_language"] = test == "audio_boot_volume_en" ? "EN" : "KR";
+        mp3_available = false;
+        Mp3Init();
+        check(mp3_available && volumeCommands == std::vector<int>{30},
+              "boot sets volume 30 once before the first playback in either language");
+        check(audioEvents.empty(), "boot does not play a track");
+        Mp3PlayLargeFolder(1, 2); drainAudio();
+        shift_machine["selected_language"] = "EN";
+        Mp3PlayLargeFolder(1, 2); drainAudio();
+        shift_machine["selected_language"] = "KR";
+        Mp3PlayLargeFolder(1, 2); drainAudio();
+        check(audioEvents == std::vector<String>{test == "audio_boot_volume_en" ? "play:5:2" : "play:1:2",
+                                               "play:5:2", "play:1:2"},
+              "first playback and subsequent language switches use the correct tracks");
+        check(volumeCommands == std::vector<int>{30},
+              "first playback and language switches never resend a volume command");
+    } else if (test == "audio_fifo") {
         cooltime = 28; duct_available = false;
         check(Mp3TrackDurationMs(1, 2) == 3289, "measured V2 opening track fixture");
         Mp3PlayLargeFolder(1, 2); RemainingTimeMp3(1, 3, 28); Mp3PlayLargeFolder(4, 1);
