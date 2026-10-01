@@ -1,8 +1,12 @@
 # New_HAS1
 
+## ESP32-S3 8채널 HA 릴레이
+
+[ESPHome 릴레이 프로젝트](devices/HAS1_ha_relay8/README.md)는 Wi-Fi와 암호화된 Native API로 Home Assistant에 장치 1개와 스위치 8개를 제공합니다. 독립 ESPHome 펌웨어로, 아래 기존 매장 장치용 `HAS2_Wifi` 및 PHP 서버 연동을 사용하지 않습니다. 배선, 비밀정보 설정, 빌드, USB/OTA 업로드와 HA 등록 절차는 프로젝트 문서를 참고하세요.
+
 ## ⚠️ HAS2_Wifi 라이브러리 안내 (필독)
 
-**New_HAS1(1호점)의 모든 기기는 반드시 `Fuzzyline-HAS/libraries`의 `HAS2_Wifi` 중
+**New_HAS1(1호점)에서 `HAS2_Wifi`를 사용하는 기기는 반드시 `Fuzzyline-HAS/libraries`의 `HAS2_Wifi` 중
 `first_store` 브랜치를 써야 합니다.** 다른 브랜치(예: 다른 매장이 쓰는 `third_store`
 등)로 빌드하면 WiFi SSID/서버 IP 같은 매장별 하드코딩 값이 달라서, **컴파일은 되지만
 엉뚱한 WiFi/서버에 붙는 식으로 조용히 잘못 동작할 수 있습니다.**
