@@ -10,6 +10,8 @@
  */
 
 #include "HAS2_Wifi.h"
+#include <esp_wifi.h>
+#include <esp_private/wifi.h>
 
 static String _activeHost = "http://172.30.1.43";
 static Print *_has2DebugPrint = &Serial;
@@ -203,6 +205,69 @@ void HAS2_Wifi::ScanNetworks(bool force)
   WiFi.scanDelete();
 }
 
+void HAS2_Wifi::EnableLegacy1Mbps()
+{
+  legacy1MbpsEnabled = true;
+}
+
+bool HAS2_Wifi::ApplyLegacy1Mbps()
+{
+  if (!legacy1MbpsEnabled)
+  {
+    return true;
+  }
+
+  // Arduino-ESP32 3.3.11 / IDF 5.5.5: pre-initialize without TX aggregation.
+  // esp_wifi_init is idempotent; Arduino's following mode() adopts this driver
+  // and installs its own events/netifs. Reapply after every full Wi-Fi teardown.
+  if (!WiFi.mode(WIFI_OFF) || !Network.begin())
+  {
+    HAS2DebugPrintf("[WiFi] 802.11b/1Mbps network initialization failed\n");
+    return false;
+  }
+  wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
+  if (!WiFi.useStaticBuffers())
+  {
+    // Match Arduino's dynamic-buffer policy, changing only TX AMPDU.
+    config.static_tx_buf_num = 0;
+    config.dynamic_tx_buf_num = 32;
+    config.tx_buf_type = 1;
+    config.cache_tx_buf_num = 4;
+    config.static_rx_buf_num = 4;
+    config.dynamic_rx_buf_num = 32;
+  }
+  config.ampdu_tx_enable = 0;
+  esp_err_t error = esp_wifi_init(&config);
+  if (error != ESP_OK)
+  {
+    HAS2DebugPrintf("[WiFi] 802.11b/1Mbps init failed: %s\n", esp_err_to_name(error));
+    return false;
+  }
+  if (!WiFi.mode(WIFI_STA))
+  {
+    HAS2DebugPrintf("[WiFi] 802.11b/1Mbps STA start failed\n");
+    // Best-effort cleanup: Arduino can retain a partially initialized driver.
+    // The next TryConnect retries STA start/teardown; exhausted attempts restart.
+    WiFi.mode(WIFI_OFF);
+    return false;
+  }
+  error = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
+  if (error == ESP_OK)
+  {
+    // Unlike esp_wifi_config_80211_tx_rate (raw frames only), this also fixes
+    // normal TCP/IP data and management TX. Driver must already be started.
+    error = esp_wifi_internal_set_fix_rate(WIFI_IF_STA, true, WIFI_PHY_RATE_1M_L);
+  }
+  if (error != ESP_OK)
+  {
+    HAS2DebugPrintf("[WiFi] 802.11b/1Mbps profile failed: %s\n", esp_err_to_name(error));
+    WiFi.disconnect(true, true);
+    return false;
+  }
+  HAS2DebugPrintf("[WiFi] 802.11b DSSS TX fixed at 1 Mbps (long preamble)\n");
+  return true;
+}
+
 bool HAS2_Wifi::TryConnect(const char *new_ssid, const char *new_password, unsigned long timeoutMs)
 {
   _has2DebugPrint->print("Try WiFi: ");
@@ -224,6 +289,10 @@ bool HAS2_Wifi::TryConnect(const char *new_ssid, const char *new_password, unsig
     delay(20);
   }
 
+  if (!ApplyLegacy1Mbps())
+  {
+    return false;
+  }
   WiFi.begin(new_ssid, new_password);
 
   unsigned long started_ms = millis();

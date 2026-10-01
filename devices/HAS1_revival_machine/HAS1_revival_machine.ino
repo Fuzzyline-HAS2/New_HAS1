@@ -18,6 +18,7 @@
  */
 void TempleInit()
 {
+  has2wifi.EnableLegacy1Mbps();
   has2wifi.Setup("badland");
   has2wifi.Send((String)(const char *)my["device_name"], "esp_version", String(FIRMWARE_VER));
   CardUploadInit();

@@ -4,7 +4,15 @@ Run from the repository root with Python 3.9+ and a C++17 compiler:
 
 ```sh
 python3 devices/HAS1_revival_machine/tests/run_host_tests.py
+python3 devices/HAS1_revival_machine/tests/run_wifi_profile_tests.py
 ```
+
+The Wi-Fi suite extracts the production opt-in profile and `TryConnect` methods.
+Its fake driver loses protocol/rate settings on teardown and preserves the first
+initialization config on repeated initialization. It verifies normal-device
+defaults, 1 Mbps application before connection, reconnect and failed-AP fallback,
+buffer settings, and failure paths that must never connect or claim success.
+It does not measure RF performance or replace a real ESP32 compile/hardware test.
 
 The runner compiles production `approval.ino`, `game_state.ino`, and `timer.ino`
 directly. It extracts the current main `loop`, RFID dispatch functions,

@@ -1,5 +1,38 @@
 # HAS1_revival_machine
 
+## Wi-Fi: 802.11b / 1 Mbps TX
+
+Normal firmware enables `HAS2_Wifi::EnableLegacy1Mbps()` before connecting.
+Each connection attempt, including saved-AP startup, AP fallback, and reconnect,
+uses 802.11b only and fixes station management/data transmission to DSSS 1 Mbps
+with a long preamble. Other devices retain the library's default radio behavior.
+The existing no-modem-sleep setting remains in effect after connection.
+
+This requires an AP that accepts 802.11b and 1 Mbps clients. It fixes the ESP32's
+transmit rate; the AP still selects its downlink transmit rate. Lower throughput
+also means OTA transfers can take longer. Weak coverage, interference, power,
+and antenna faults still require measurement; this change does not establish an
+RF improvement on installed devices. The current scan filter still skips APs
+below -70 dBm, so this does not extend the AP-selection RSSI threshold.
+
+The implementation targets the deployment core, Arduino-ESP32 3.3.11 / ESP-IDF
+5.5.5. It pre-initializes Wi-Fi with TX AMPDU disabled before Arduino adopts the
+driver, preserving Arduino's buffer policy. It uses
+`esp_wifi_internal_set_fix_rate`, which affects normal TCP/IP frames; the public
+`esp_wifi_config_80211_tx_rate` API only controls raw 802.11 injection. This
+internal API and the idempotent driver initialization must be rechecked when
+upgrading the core. See [Espressif's pinned fixed-rate API contract](https://github.com/espressif/esp-idf/blob/v5.5.5/components/esp_wifi/include/esp_private/wifi.h).
+
+Successful profile application prints `[WiFi] 802.11b DSSS TX fixed at 1 Mbps
+(long preamble)` before connection. Any setup error is logged and rejects that
+connection attempt instead of silently using an automatic TX rate. Check these
+Serial logs on initial boot and reconnection, then confirm actual traffic with
+AP/packet-capture diagnostics and compare request failures/latency on the affected
+units. Hardware validation and firmware upload are separate from the code change.
+
+CI uses this repository's `libraries/HAS2_Wifi` for this device. Local Arduino
+builds must use that same copy; an older global library lacks the opt-in API.
+
 ## Telnet card writer
 
 [한국어 사용법: Telnet 생명칩 업로더](CARD_UPLOAD_KO.md)
