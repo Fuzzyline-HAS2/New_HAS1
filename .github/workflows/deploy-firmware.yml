@@ -151,8 +151,8 @@ jobs:
             git -C "$LIB_DIR/SecureOTA" checkout --quiet --detach FETCH_HEAD
             SECUREOTA_ACTUAL=$(git -C "$LIB_DIR/SecureOTA" rev-parse HEAD)
             git clone --depth 1 --branch first_store https://github.com/Fuzzyline-HAS/libraries "$RUNNER_TEMP/has-libraries"
-            if [[ "$TARGET_DEVICE" == "HAS1_duct" ]]; then
-              # Duct requires the validated LoopFresh API committed with its firmware.
+            if [[ "$TARGET_DEVICE" == "HAS1_duct" || "$TARGET_DEVICE" == "HAS1_revival_machine" ]]; then
+              # Duct's LoopFresh and revival's Wi-Fi radio profile are versioned with their firmware.
               cp -r libraries/HAS2_Wifi "$LIB_DIR/HAS2_Wifi"
             else
               cp -r "$RUNNER_TEMP/has-libraries/HAS2_Wifi" "$LIB_DIR/HAS2_Wifi"
@@ -170,7 +170,7 @@ jobs:
           fi
           echo "SecureOTA dependency: $SECUREOTA_ACTUAL"
           if [[ "$TARGET_DEVICE" != "iotglove" && "$TARGET_DEVICE" != "iotglove_beetle" && "$TARGET_DEVICE" != "HAS1_tagmachine_main" && "$TARGET_DEVICE" != "HAS1_tagmachine_sub" ]]; then
-            if [[ "$TARGET_DEVICE" == "HAS1_duct" ]]; then
+            if [[ "$TARGET_DEVICE" == "HAS1_duct" || "$TARGET_DEVICE" == "HAS1_revival_machine" ]]; then
               echo "HAS2_Wifi dependency: repository libraries/HAS2_Wifi at $GITHUB_SHA"
             else
               git -C "$RUNNER_TEMP/has-libraries" log -1 --format='HAS2_Wifi dependency: %H'

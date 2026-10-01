@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - devices/HAS1_revival_machine/**
+      - libraries/HAS2_Wifi/**
       - .github/workflows/revival-tests.yml
   workflow_dispatch:
 
@@ -33,3 +34,5 @@ jobs:
         run: |
           python devices/HAS1_revival_machine/tests/run_card_ndef_tests.py
           python devices/HAS1_revival_machine/tests/run_card_upload_tests.py
+      - name: Wi-Fi profile lifecycle regression
+        run: python devices/HAS1_revival_machine/tests/run_wifi_profile_tests.py

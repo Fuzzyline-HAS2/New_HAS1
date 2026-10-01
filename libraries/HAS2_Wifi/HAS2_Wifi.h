@@ -60,6 +60,7 @@ private:
     Preferences wifi_preferences;
     unsigned long lastWifiScanMs;
     bool wifiCandidatesInitialized;
+    bool legacy1MbpsEnabled = false;
     // Setup may have consumed the notification; validate the first fresh poll too.
     bool freshReceivePending = true;
 
@@ -72,6 +73,7 @@ private:
     void JsonParsing(String request, String json);
     void EnsureWifiCandidatesInitialized();
     void ScanNetworks(bool force = false);
+    bool ApplyLegacy1Mbps();
     bool TryConnect(const char *new_ssid, const char *new_password, unsigned long timeoutMs = 3000);
     bool TryConnectOrdered();
     bool TryConnectSaved();
@@ -85,6 +87,8 @@ public:
     HAS2_Wifi(String host, String php = "/has2.php");
 
     void SetDebugPrint(Print *debugPrint);
+    // Call before Setup/Connect. Applied on every connection attempt; default is off.
+    void EnableLegacy1Mbps();
 
     void Setup();
     void Setup(char *new_ssid, char *new_password);

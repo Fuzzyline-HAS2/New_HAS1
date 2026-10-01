@@ -1,7 +1,8 @@
 # libraries/
 
 New_HAS1(first_store) **로컬 개발용**으로 이 저장소 안에 내장(vendor)해둔 사본.
-덕트(`HAS1_duct`) CI/배포는 검증된 `LoopFresh` API를 위해 이 폴더를 사용한다.
+덕트(`HAS1_duct`) CI/배포는 검증된 `LoopFresh` API를 위해, 생명장치
+(`HAS1_revival_machine`)는 Wi-Fi 무선 설정 API를 위해 이 폴더를 사용한다.
 다른 장치의 CI/배포는 아래 공용 저장소 정책을 따른다.
 
 ## HAS2_Wifi
@@ -12,7 +13,7 @@ New_HAS1(first_store) **로컬 개발용**으로 이 저장소 안에 내장(ven
 건드리면 다른 store에 영향을 줄 수 있어서, New_HAS1 전용 브랜치(`first_store`)로
 따로 관리한다.
 
-**덕트를 제외한 CI(`deploy-firmware.yml`)는 배포할 때마다 `first_store` 브랜치를 GitHub에서 새로
+**덕트·생명장치를 제외한 CI(`deploy-firmware.yml`)는 배포할 때마다 `first_store` 브랜치를 GitHub에서 새로
 클론해서 쓴다 — 항상 최신 버전.** 반면 이 폴더(`libraries/HAS2_Wifi`)는 로컬 Arduino
 IDE로 개발할 때 편하게 쓰라고 넣어둔 **스냅샷 사본**이라, `first_store`에 새 커밋이
 올라와도 자동으로 안 따라온다. 최신으로 맞추려면 `Fuzzyline-HAS/libraries`의
