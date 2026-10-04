@@ -29,6 +29,8 @@ void TempleInit()
   has2wifi.Setup("badland");                                      // 와이파이 세팅
   LogMemoryStats("Wi-Fi connected");
   TelnetInit();
+  // 다른 장치와 동일하게 부팅 시 현재 펌웨어 버전을 서버에 보고한다.
+  has2wifi.Send((String)(const char *)my["device_name"], "esp_version", String(FIRMWARE_VER));
   BleAdvertiserInit();
   ota.setLogStream(Serial);
   ota.setOnSuccess([]() {
@@ -53,10 +55,14 @@ void TempleInit()
  */
 void setup()
 {
+  SolenoidInit();
   delay(1000);
   Serial.begin(115200);
+  SerialMirror.printf("[boot] firmware=%u\n", static_cast<unsigned>(FIRMWARE_VER));
   CrashReportInit();
   LogMemoryStats("boot");
+  SerialMirror.println("[boot] Solenoid purge for 2000 ms (no chip count)");
+  SolenoidPulse();
   TempleInit();
   DataChange();
 }
