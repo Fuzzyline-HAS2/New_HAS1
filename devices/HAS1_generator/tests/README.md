@@ -18,3 +18,17 @@ Hardware integration still needs a generator: RFID roles/removal/re-entry, PCNT
 input suppression, server-driven transitions (including simultaneous battery
 changes), MP3 completion/timeout, and a new round while feedback is active.
 The harness does not emulate HTTP, PN532, DFPlayer UART, or the Arduino scheduler.
+
+## Telnet logging regression checks
+
+```sh
+python3 devices/HAS1_generator/tests/run_telnet_tests.py
+```
+
+The host harness exercises the production RAM history and bounded sender with
+AddressSanitizer/UndefinedBehaviorSanitizer: partial sends, replay/live ordering,
+backpressure, overwritten history, per-loop send limits, disconnects, ESP-IDF
+message truncation, and preservation of the original reset report. It does not
+simulate FreeRTOS concurrency or a physical Wi-Fi link. See
+[Telnet logging](../TELNET_LOGGING.md) for capture scope and limits. Both generator
+harnesses run in the `Generator tests` pull-request workflow.
