@@ -16,7 +16,7 @@
 
 // Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
 // 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로
-// USB 시리얼 + Telnet 클라이언트 양쪽에 동시 출력된다 (기존 호출부는 수정 불필요).
+// USB 시리얼 + 최근 RAM 로그에 기록되고, TelnetRun에서 논블로킹 전송한다.
 class TelnetDebugConsole : public Stream {
 public:
   void begin(unsigned long baud);
@@ -33,6 +33,7 @@ extern TelnetDebugConsole DebugSerial;
 
 void TelnetInit(); // Telnet 서버 시작 — WiFi 연결 완료 후 호출 (telnet.ino)
 void TelnetRun();  // 클라이언트 접속/데이터 처리 — loop()에서 매 프레임 호출 (telnet.ino)
+void TelnetPreserveCrashReport(); // CrashReportInit 직후 직전 리셋 요약 원문을 별도 보존
 
 const int rfid_num = 1; // 설치된 pn532의 개수
 

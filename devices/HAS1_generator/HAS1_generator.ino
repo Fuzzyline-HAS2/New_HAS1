@@ -28,7 +28,9 @@
 // ---------------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
+    has2wifi.SetDebugPrint(&DebugSerial); // 라이브러리/비동기 통신 로그도 같은 UART + RAM/Telnet 경로로 전달
     CrashReportInit();  // 직전 재부팅이 워치독/패닉이었다면 마지막 위치를 로그로 남김 (crash.ino)
+    TelnetPreserveCrashReport(); // URL용 가공/최근 로그 덮어쓰기 전에 직전 리셋 요약 원문 보관
     NeopixelInit();  // 네오픽셀 4개 스트립 초기화 (전체 흰색 점등)
     RfidInit();      // PN532 RFID 리더 초기화
     EncoderInit();   // 엔코더용 하드웨어 펄스 카운터(PCNT) 초기화
@@ -60,7 +62,7 @@ void setup() {
 
     has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
 
-    TelnetInit(); // Telnet 서버 시작 (WiFi 연결 완료 후) — 이후 Serial.* 출력은 telnet.ino로 미러링됨
+    TelnetInit(); // WiFi 연결 후 서버 시작. 접속 전 최근 로그도 RAM에서 재전송함
 
     // OTA 진행 로그를 시리얼로 출력하도록 설정
     ota.setLogStream(Serial);
