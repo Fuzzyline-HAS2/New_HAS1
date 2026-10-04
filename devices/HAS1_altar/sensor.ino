@@ -27,7 +27,7 @@ static bool tag_data_fetched = false;
 // "확인됐으니 크랭크를 돌리라"는 피드백을 준다. taken_chip 갱신/tagger_name
 // 브로드캐스트(서버 반영)는 여기서 하지 않는다 - 태그+칩만 확인되고 크랭크를 안
 // 돌리면 점수가 올라가면 안 되므로, 실제 반영은 RunAltarSuccess()가 맡고 그건
-// MicroSwLoop가 솔레노이드를 실제로 여는 순간에만 호출한다.
+// MicroSwLoop가 솔레노이드를 열기 전에 호출한다.
 void OnTagChipConfirmed()
 {
   Serial.println("[Altar] Tag + chip confirmed together - waiting for crank");
@@ -35,12 +35,13 @@ void OnTagChipConfirmed()
   NeoFunc = NeoChipBlinkActivate;
 }
 
-// 크랭크가 실제로 돌아가 솔레노이드가 열리는 순간(MicroSwLoop)에만 호출 -
-// taken_chip 갱신으로 서버에 확정 반영한다. (tagger_name 전체 브로드캐스트는
+// 크랭크 입력과 태그+칩 조건이 확인되면 솔레노이드를 열기 전에 호출한다.
+// taken_chip 갱신을 요청한다. Send()는 반환값이 없어 반영 성공을 보장하지 않는다.
+// (tagger_name 전체 브로드캐스트는
 // 더 이상 쓰지 않아 제거 - 플레이어 8명한테 매번 블로킹 HTTP를 쐈었음.)
 void RunAltarSuccess()
 {
-  Serial.println("[Altar] Crank turned -> success committed to server");
+  Serial.println("[Altar] Crank turned -> requesting taken_chip +1 before solenoid opens");
   has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
 
   // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
@@ -70,8 +71,7 @@ void SensorInit()
   // Rfid init
   RfidInit();
 
-  // Solenoid / IR Sensor / Micro Switch init
-  SolenoidInit();
+  // 솔레노이드는 setup()에서 초기화/부팅 배출 완료. IR / Micro Switch init
   IrSensorInit();
   MicroSwInit();
 
@@ -305,7 +305,6 @@ void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]) // 어떤 카드가 들
 
     BREADCRUMB("CardChecking:chipSend");
     has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
-    has2wifi.Send((String)(const char *)tag["device_name"], "taken_chip", "-1");
     has2wifi.Send((String)(const char *)tag["device_name"], "exp", "+100");
 
     // 애니메이션은 delay()로 막지 않고 NeoFunc()에 맡겨 매 loop마다 조금씩 진행시킨다
@@ -599,13 +598,11 @@ void NeoLose()
 
 //******************************************* Solenoid *******************************************
 // 모스펫(IRLZ44N)으로 구동되는 솔레노이드. HIGH = 통전(ON), LOW = 차단(OFF).
-// 평소엔 통전하지 않고, "IR센서가 생명칩을 감지한 뒤 마이크로스위치가 눌리는" 시점에만
-// 짧게 통전한다(IrSensorLoop가 대기 플래그를 세우고, MicroSwLoop가 소비해서 펄스).
+// 부팅 시 한 번 배출하고, 이후 IR 칩 감지 + 마이크로스위치 조건에서 2초 통전한다.
 void SolenoidInit()
 {
   pinMode(SOLENOID_PIN, OUTPUT);
   digitalWrite(SOLENOID_PIN, LOW);
-  solenoid_timer_id = -1;
 }
 
 void SolenoidOn()
@@ -620,23 +617,17 @@ void SolenoidOff()
 
 void SolenoidPulse()
 {
-  SolenoidPulse(SOLENOID_PULSE_MS);
-}
-
-// delay()로 막으면 열려있는 동안(기본 2초) loop()가 통째로 멈춰서 그 사이 들어오는
-// 다음 칩 투입을 못 감지한다 — 타이머로 예약해서 논블로킹으로 닫는다.
-void SolenoidPulse(unsigned long ms)
-{
+  // 통전 중에는 센서/네트워크 처리를 멈추고, 지연이 끝나면 직접 출력을 끈다.
   SolenoidOn();
-  if (solenoid_timer_id != -1) solenoid_timer.deleteTimer(solenoid_timer_id);
-  solenoid_timer_id = solenoid_timer.setTimeout(ms, SolenoidOff);
+  delay(SOLENOID_PULSE_MS);
+  SolenoidOff();
 }
 
 //****************************************** IR Sensor *******************************************
 // 생명칩이 투입구를 통과하면 IR_SENSOR가 LOW로 감지됨. ir_chip_pending을 세우고,
 // 이미 태그가 확인된 상태(tag_active)면 태그+칩이 (이 순서로) 동시에 확인된
 // 것이므로 OnTagChipConfirmed()로 확인 애니메이션만 트리거한다(서버 반영은
-// MicroSwLoop가 크랭크로 솔레노이드를 실제로 열 때 RunAltarSuccess가 담당).
+// MicroSwLoop가 크랭크 입력을 확인하고 개방하기 전에 RunAltarSuccess가 요청).
 // 반대 순서(칩이 먼저 온 경우)는 CardChecking() 쪽에서 태그가 뒤늦게 확인될 때 처리한다.
 void IrSensorInit()
 {
@@ -684,8 +675,8 @@ void IrSensorLoop()
 // "지금 이 순간에도" 태그가 리더에 붙어있을 때(tag_active, blink/activate 무관)만
 // 실제로 연다 - 태그 없이 칩만 넣고 돌리거나, 태그+칩이 한 번 확인된 뒤 태그를
 // 떼고서 돌리는 경우엔 열리지 않는다(태그가 이미 없으므로 tag_active가 false로
-// 리셋돼있음 - RfidLoop 참고). taken_chip+1/tagger_name 서버 반영(RunAltarSuccess)도
-// setting_state가 아니라 실제로 여기서 열리는 시점에만 확정한다. pending_success_sound가
+// 리셋돼있음 - RfidLoop 참고). taken_chip+1 요청(RunAltarSuccess)은
+// setting_state가 아닐 때 개방 전에 보낸다. pending_success_sound가
 // 서있으면(태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
 void MicroSwInit()
 {
@@ -719,22 +710,21 @@ void MicroSwLoop()
         if (tag_active || setting_state)
         {
           Serial.println(setting_state
-              ? "[MicroSw] Setting mode - chip present, solenoid open (no tag needed)"
-              : "[MicroSw] Tag still present + chip confirmed -> solenoid open");
-          SolenoidPulse();
-          // 실제로 열렸을 때만 대기 상태를 소비한다 - 태그가 늦게 도착해서
+              ? "[MicroSw] Setting mode - chip present, opening without chip count"
+              : "[MicroSw] Tag still present + chip confirmed -> request count, then open");
+          // 조건을 충족한 입력만 소비한다 - 태그가 늦게 도착해서
           // 아직 확인 안 된 채로 클릭이 먼저 지나가도(빈 회전 아님, 그냥 아직
           // 대기 중) ir_chip_pending을 꺼버리면 나중에 태그가 와도 이미 늦어버림.
           ir_chip_pending = false;
           ir_chip_confirm_animated = false;
 
-          // 서버 반영(taken_chip+1/tagger_name)은 여기, 크랭크가 실제로 돌아서
-          // 솔레노이드가 열리는 순간에만 확정한다 - setting_state(태그 없이 칩만
-          // 배출)는 실제 게임 진행이 아니므로 제외.
-          if (tag_active)
+          // HTTP 요청이 끝난 다음 개방한다. setting 배출은 남은 태그 상태와
+          // 무관하게 집계하지 않는다. Send() 반환은 서버 반영 성공의 증거가 아니다.
+          if (!setting_state && tag_active)
           {
             RunAltarSuccess();
           }
+          SolenoidPulse();
 
           if (pending_success_sound)
           {

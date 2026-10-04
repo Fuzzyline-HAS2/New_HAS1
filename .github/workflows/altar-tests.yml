@@ -1,0 +1,24 @@
+name: Altar tests
+
+on:
+  pull_request:
+    paths:
+      - devices/HAS1_altar/**
+      - .github/workflows/altar-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: RFID presence regression
+        run: python devices/HAS1_altar/tests/run_rfid_presence_tests.py
+      - name: Solenoid and chip counting regression
+        run: python devices/HAS1_altar/tests/run_solenoid_tests.py

@@ -1,5 +1,6 @@
 #include "HAS1_altar.h"
 #include <esp_log.h>
+#include <lwip/sockets.h>
 
 TelnetSerial SerialMirror;
 
@@ -66,8 +67,26 @@ void TelnetSerial::telnetLoop() {
             _client.stop();
         }
         _client = _server.available();
+        _client.setNoDelay(true);
 
-        // 접속 전 출력된 로그 먼저 재전송 (flush 포함)
+        // 재접속 때마다 현재 정보를 출력하여 부팅 로그가 밀려나도 버전을 확인한다.
+        // generator/duct와 동일하게 느린 진단 클라이언트가 타이머를 지연시키지 않도록
+        // 한 번만 논블로킹 전송을 시도한다. 전송 실패 시 다시 접속해 확인할 수 있다.
+        const int socketFd = _client.fd();
+        if (socketFd >= 0) {
+            const char *deviceName = my["device_name"].as<const char *>();
+            char buffer[128];
+            const int length = snprintf(
+                buffer, sizeof(buffer),
+                "[diagnostics] firmware=%u device=%.18s uptime_ms=%lu\r\n",
+                static_cast<unsigned>(FIRMWARE_VER), deviceName ? deviceName : "",
+                static_cast<unsigned long>(millis()));
+            if (length > 0 && static_cast<size_t>(length) < sizeof(buffer)) {
+                (void)send(socketFd, buffer, static_cast<size_t>(length), MSG_DONTWAIT);
+            }
+        }
+
+        // 현재 진단 정보 다음에 접속 전 출력된 로그 재전송 (flush 포함)
         if (_log_count > 0) {
             _client.println("=== log replay (" + String(_log_count) + " lines) ===");
             for (int i = 0; i < _log_count; i++) {

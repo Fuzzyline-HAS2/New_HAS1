@@ -46,7 +46,6 @@ void SolenoidInit();
 void SolenoidOn();
 void SolenoidOff();
 void SolenoidPulse();
-void SolenoidPulse(unsigned long ms);
 
 //============================== IR Sensor =================================
 // 생명칩이 투입구를 통과하면 감지 (device 로직: sensor.ino)
@@ -87,7 +86,7 @@ static constexpr size_t RFID_PAGE_DATA_SIZE = 4;
 void RfidInit(void);
 void RfidLoop(void);
 void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]);
-void RunAltarSuccess(); // 태그+칩이 확인됐을 때 공통 처리 (순서 무관하게 CardChecking/IrSensorLoop에서 호출)
+void RunAltarSuccess(); // MicroSwLoop에서 태그+칩 확인 후 솔레노이드 개방 전에 집계 요청
 
 //=============================== Neopixel ===============================
 // TODO 네오픽셀 개수 확인
@@ -138,12 +137,10 @@ void NeoLose();
 SimpleTimer rfid_timer;
 SimpleTimer nsec_tag_timer;
 SimpleTimer wifi_timer;
-SimpleTimer solenoid_timer;  // SolenoidPulse()를 논블로킹으로 닫기 위한 타이머
 
 int rfid_timer_id;
 int nsec_tag_timer_id;
 int wifi_timer_id;
-int solenoid_timer_id;
 
 int nsec_tag_num;
 bool nsec_tag_bool;

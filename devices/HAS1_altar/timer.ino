@@ -22,7 +22,6 @@ void TimerRun()
   rfid_timer.run();
   nsec_tag_timer.run();
   wifi_timer.run();
-  solenoid_timer.run();
 }
 
 /**
