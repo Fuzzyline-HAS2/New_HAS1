@@ -205,6 +205,9 @@ void WireInit();          // 배선 감지 핀 4개를 INPUT_PULLUP으로 설정
 int  WireCountPlugged();  // 현재 꽂혀 있는(LOW인) 배선 개수를 반환 (wire.ino)
 void WireResetTracking(); // Re-enter through the shared 1 s filter; no immediate raw publish.
 void WireObserveServerSnapshot();
+void Mp3BatteryStart();
+bool Mp3BatteryFinished();
+void Mp3BatteryCancel();
 void WireSampleInputs(bool force);
 void WireServiceLoop();
 int WireDisplayCount();
