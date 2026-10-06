@@ -488,7 +488,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   if (tagUser == "MMMM")
   {
     Serial.println("[RFID] admin card - opening (state-independent)");
-    SolenoidPulse(SOLENOID_REVIVAL_PULSE_MS);
+    SolenoidPulse(SOLENOID_ADMIN_PULSE_MS);
     return;
   }
 
