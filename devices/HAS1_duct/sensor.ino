@@ -264,13 +264,28 @@ void RemainingTimeMp3(uint8_t intro_folder, uint16_t intro_file, int remaining_s
 
 //******************************************* Switch ********************************************
 /**
- * @brief 비상탈출 스위치를 누르면 인터럽트로 동작하는 함수
+ * @brief 비상탈출 입력을 loop에서 확인하고, 해제 시 현재 운용 상태를 서버에 복원한다.
  */
 void EmegencyPush()
 {
-  // Todo main으로 보내는 코드 추가
-  if (!digitalRead(EMNERGENCY_CHK_PIN) && ((String)(const char *)my["device_state"] != "emergency"))
+  static bool was_pressed = false;
+  bool pressed = !digitalRead(EMNERGENCY_CHK_PIN);
+  bool server_emergency = (String)(const char *)my["device_state"] == "emergency";
+  if (pressed && !server_emergency)
   {
     has2wifi.Send((String)(const char *)my["device_name"], "device_state", "emergency");
   }
+  else if (!pressed && (was_pressed || server_emergency))
+  {
+    // Send는 my를 갱신하지 않는다. 폴링 전 짧게 눌렀다 놓아도 해제를 보내고,
+    // 서버에 emergency가 남아 있으면 다음 loop에서 다시 복원한다(재부팅 포함).
+    // 비상 중 쿨타임/게임 상태가 바뀔 수 있으므로 누르기 전 상태를 저장하지 않는다.
+    const char *state;
+    if (tagger_mode) state = "tagger";
+    else if (game_state == setting) state = "setting";
+    else if (game_state == ready) state = "ready";
+    else state = duct_available ? "activate" : "lock";
+    has2wifi.Send((String)(const char *)my["device_name"], "device_state", state);
+  }
+  was_pressed = pressed;
 }

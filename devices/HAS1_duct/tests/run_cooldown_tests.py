@@ -33,7 +33,7 @@ body = core + "\n" + "\n".join(function(game, n) for n in
      "ActivateRunOnce", "DataChange"])
 body += "\n" + function(timer, "CooltimeTimerFunc") + "\n" + function(timer, "CooltimeFinish")
 body += "\n" + "\n".join(function(sensor, name) for name in
-                           ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder"])
+                           ["CardChecking", "CooltimeMp3", "RemainingTimeMp3", "Mp3PlayLargeFolder", "EmegencyPush"])
 prototypes = "\n".join(re.findall(r"^(?:void|int|bool)\s+\w+\([^)]*\)", body, re.M))
 prototypes = prototypes.replace("void DuctOpen(bool switch_push)", "void DuctOpen(bool switch_push = false)")
 prototypes = prototypes.replace("void CooltimeFinish(bool notify_server)", "void CooltimeFinish(bool notify_server = true)")
@@ -56,7 +56,10 @@ cases = ["normal", "block_close_exit", "block_exit_close", "freeze_resume",
          "blockade_remaining_audio", "blockade_reentry_audio", "blockade_button_preserves_close",
          "cooldown_report_state", "server_activate_data_change", "server_activate_blockade_data_change", "server_activate_unpolled_lock",
          "open_audio_paths", "server_activate", "server_activate_door_open", "server_activate_blockade",
-         "blockade_left_time", "blockade_left_time_reset"]
+         "blockade_left_time", "blockade_left_time_reset",
+         "emergency_available", "emergency_cooldown", "emergency_blockade", "emergency_setting",
+         "emergency_ready", "emergency_quick_release", "emergency_stale_boot", "emergency_retry",
+         "emergency_cooldown_finishes", "emergency_delayed_echo"]
 with tempfile.TemporaryDirectory(prefix="duct-cooldown-") as tmp:
     src, exe = Path(tmp) / "test.cpp", Path(tmp) / "test"
     src.write_text(source)
