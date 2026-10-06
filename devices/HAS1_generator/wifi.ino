@@ -23,10 +23,7 @@
 // 갱신한 뒤 SyncBatteryPackCur()로 이 cur도 같이 맞춰줘야 해서 파일 스코프로 옮김.
 JsonDocument cur;  //저장되어 있는 cur과 읽어온 my 값과 비교후 실행
 
-// WirePollMain()이 배선 변화를 감지해 my["battery_pack"]을 로컬에서 직접 갱신한 직후 호출됨.
-// cur도 함께 동기화해두지 않으면, 그 값이 그대로 서버에 반영되어 돌아온 다음 폴링에서
-// DataChanged()의 battery_pack 안전망 분기가 "서버에서 새로 바뀐 값"으로 착각해 게이지
-// 오디오(1,7)와 BatteryFinish()를 중복 실행시킨다 (배선 꽂을 때 오디오가 2번 나오던 원인).
+// An acknowledged absolute response updates my and this cached comparison value.
 void SyncBatteryPackCur() {
     cur["battery_pack"] = my["battery_pack"];
 }
@@ -34,6 +31,7 @@ void SyncBatteryPackCur() {
 void DataChanged()
 {
   BREADCRUMB("DataChanged:start");
+  WireObserveServerSnapshot();
 
   // 서버 이름만 복사한다. BLE 명령/응답 처리는 loop() 끝에서 진행한다.
   if (my["device_name"].is<const char *>()) {
@@ -81,7 +79,8 @@ void DataChanged()
     return;
   }
   // A tagger command must not be consumed as the echo of our battery_max send.
-  if (deviceStateChanged && (String)(const char*)my["device_state"] == "tagger" &&
+  if (deviceStateChanged && ((String)(const char*)my["device_state"] == "tagger" ||
+                             (String)(const char*)my["device_state"] == "activate") &&
       (String)(const char*)my["game_state"] == "activate") receiveMineOn = false;
   if (deviceStateChanged && (String)(const char*)my["device_state"] != "tagger") {
     TaggerReset();
@@ -90,20 +89,6 @@ void DataChanged()
   // receiveMineOn이 true인 동안은(StartFinish 등에서 직접 상태를 전환 중) 아래 device_state 분기를
   // 건너뛴다 — 서버 폴링 결과가 방금 로컬에서 결정한 상태를 덮어쓰지 않도록 하는 가드.
   if(receiveMineOn == false){
-    // battery_pack 값 변화(activate 상태에서 배선 충전 중일 때) — 배선 방식(WirePollMain)이 도입되기 전의
-    // 경로로, 현재는 서버 쪽에서 battery_pack이 바뀌는 다른 경로가 있을 경우를 대비한 안전망 성격이 크다.
-    if(ptrCurrentMode == WirePollMain && (String)(const char*)my["device_state"] == "activate" && gameStateChanged == false && cur.containsKey("battery_pack") && (String)(const char*)my["game_state"] == "activate" && (int)my["battery_pack"] != (int)cur["battery_pack"]){
-      BREADCRUMB("DataChanged:batteryPackSafetyNet");
-      BatteryPackSend();
-      if((int)my["battery_pack"] > (int)cur["battery_pack"]) Mp3PlayLargeFolder(1, 7);  // 늘어날 때만 재생
-      if((int)my["battery_pack"] == (int)my["max_battery_pack"]){
-        receiveMineOn = true;
-        // 이 안전망도 DataChanged()(has2wifi.Loop() 콜백) 안에서 실행되므로, 블로킹 오디오 재생+Send를
-        // 포함한 BatteryFinish()를 직접 부르지 않고 다음 loop 반복으로 미룬다.
-        ptrCurrentMode = BatteryFinish;
-      }
-    }
-
     // ---- device_state(이 기기의 개별 상태) 변화 처리 ----
     if(receiveMineOn == false && (String)(const char*)my["device_state"] != (String)(const char*)cur["device_state"]){
       if((String)(const char*)my["device_state"] == "repaired_all"){
@@ -133,17 +118,8 @@ void DataChanged()
         ptrCurrentMode = WaitFunc;
       }
       else if((String)(const char*)my["device_state"] == "battery_max"){
-        // 서버가 battery_pack을 최대치로 리셋(다음 라운드 준비 등)한 경우 —
-        // 로컬 배선 카운트와의 차이를 서버에 보정 전송한 뒤 ActivateFunc으로 재진입한다.
-        // [주의] 여기 has2wifi.Send는 DataChanged() 콜백(=has2wifi.Loop() 내부) 안에서
-        // 재진입 호출된다 - BatteryFinish()가 굳이 다음 loop로 미루는 것과 같은 이유로
-        // 이 재진입 자체가 배선을 빠르게 뺐다 꽂았다 반복할 때 와이파이 스택이 먹통되는
-        // 원인일 가능성이 있어 BREADCRUMB로 표시해둔다.
-        BREADCRUMB("DataChanged:battery_max:send");
-        int maxBattery = (int)my["max_battery_pack"] - (int)my["battery_pack"];
-        Serial.println((String)maxBattery);
-        has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", ((String)maxBattery));
-
+        // Absolute physical count is synchronized outside this HTTP callback.
+        // Never send a compensating battery delta here.
         GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료
         BREADCRUMB("DataChanged:battery_max:ActivateFunc");
         ActivateFunc();
@@ -162,10 +138,7 @@ void DataChanged()
         NeoLightColor(STARTER, color[YELLOW]);
         NeoLightColor(DEVICESTATE, color[YELLOW]);
         NeoLightColor(CIRCUIT, color[YELLOW]);
-        // 서버가 임의로 보낸(직전 라운드의) battery_pack 값이 아니라 실제로 꽂혀 있는 배선 개수로
-        // 즉시 재동기화한다. 이미 가득 꽂혀 있는 채로(예: battery_max에서 device_state만 "activate"로
-        // 되돌아온 경우) 재진입했다면, WireResetTracking()이 ptrCurrentMode를 BatteryFinish로 바꿔서
-        // WirePollMain의 디바운스(최대 100ms)를 기다리지 않고 다음 loop에서 바로 완충 처리로 넘어간다.
+        // Re-entry always requires 1 s physical stability and a fresh acknowledgement.
         WireResetTracking();
       }
       else if((String)(const char*)my["device_state"] == "player_win"){
@@ -215,6 +188,7 @@ void WaitFunc(){
 
 // game_state == "setting" 진입 시 호출 — 다음 라운드를 준비하며 모든 진행 상태를 초기값으로 되돌린다.
 void SettingFunc(void){
+    WireResetTracking();
     TaggerReset();
     Serial.println("SETTING");
     AllNeoOn(WHITE);
@@ -270,15 +244,14 @@ void ActivateFunc(void){
         Mp3PlayLargeFolder(1, 1);
         // 배터리팩 충전은 더 이상 RFID 태그가 아니라 물리 배선 4개(WIRE_PIN_1~4)로 실시간 반영됨
         ptrCurrentMode = WirePollMain;
-        // 서버가 들고 있던 my["battery_pack"]는 직전 라운드의 값일 수 있어 그대로 신뢰하지 않고,
-        // WireResetTracking()이 지금 이 순간의 실물 배선 개수로 즉시 재동기화한다. 이미 최대치면
-        // WireResetTracking()이 ptrCurrentMode를 BatteryFinish로 바꿔서 다음 loop에서 처리한다.
+        // Server count alone cannot complete a new charge cycle.
         WireResetTracking();
     }
 }
 
 // game_state == "ready" 진입 시 호출 — 라운드 시작 직전 대기 상태. 모든 진행을 멈추고 빨간 LED로 표시한다.
 void ReadyFunc(void){
+    WireResetTracking();
     TaggerReset();
     Serial.println("READY");
     AllNeoOn(RED);

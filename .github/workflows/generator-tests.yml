@@ -22,3 +22,12 @@ jobs:
         run: python devices/HAS1_generator/tests/run_tagger_tests.py
       - name: Telnet history and nonblocking sender with sanitizers
         run: python devices/HAS1_generator/tests/run_telnet_tests.py
+      - uses: actions/checkout@v4
+        with:
+          repository: bblanchon/ArduinoJson
+          ref: v7.4.3
+          path: .testdeps/ArduinoJson
+      - name: Absolute wire synchronization and completion with sanitizers
+        env:
+          ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
+        run: python devices/HAS1_generator/tests/run_wire_tests.py

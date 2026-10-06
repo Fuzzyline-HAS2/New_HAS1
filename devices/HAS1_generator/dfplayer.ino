@@ -73,7 +73,7 @@ void LeftGenerator() {
 // 나야 하는 음원은 여기서 재생하지 않고, 늘어난 경우인지 판단 가능한 호출부(wire.ino의
 // WirePollMain 등)에서 직접 Mp3PlayLargeFolder(1, 7)을 호출한다.
 void BatteryPackSend() {
-    BatteryGaugeShow((int)my["battery_pack"], (int)my["max_battery_pack"]);
+    BatteryGaugeShow(WireDisplayCount(), (int)my["max_battery_pack"]);
 }
 
 // Starter tagger feedback waits across loop iterations, so decay and WiFi keep running.

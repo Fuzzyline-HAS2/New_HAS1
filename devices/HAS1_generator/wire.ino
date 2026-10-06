@@ -1,173 +1,180 @@
-// =================================================================================
-// wire.ino
-// ---------------------------------------------------------------------------------
-// 배선 4개(WIRE_PIN_1~4) 감지 — 평소 INPUT_PULLUP 1(floating), 배선(GND) 꽂히면 0.
-// 배터리팩 충전을 RFID 태그(기존 BatteryPackCharge) 대신 물리 배선 개수로 실시간 반영한다.
-// 뽑으면 즉시 감소 — 태그 방식과 달리 되돌릴 수 있는 상태값.
-//
-// WirePollMain()은 ActivateFunc()에서 배터리팩 충전 단계에 들어갈 때 ptrCurrentMode로 등록되어
-// loop()마다 호출되며, 배선 개수가 바뀌면 디바운스를 거쳐 my["battery_pack"]과 서버·LED에 반영한다.
-// =================================================================================
-
+// All four connectors share one observed-count filter in every active stage.
+// 100 ms samples, 1 s stability; gaps over 250 ms restart qualification.
 static const uint8_t WIRE_PINS[4] = { WIRE_PIN_1, WIRE_PIN_2, WIRE_PIN_3, WIRE_PIN_4 };
-// 기계식 접점 튐(bounce) 방지 — 커넥터를 꽂는 순간 짧게 튀는 접점을 30ms로는 다 걸러내지
-// 못해 "꽂았는데 순간적으로 빠진 걸로 확정"되는 오판이 있어 100ms로 늘림
-static const unsigned long WIRE_DEBOUNCE_MS = 100;
+static GeneratorWireState wireState;
+static bool wireEnabled = false;
+static bool wireContextValid = false;
+static bool wireAttempted = false;
+static bool wireFenceNeeded = true; // Fence requests left pending by a previous ESP boot.
+static uint32_t wireLastAttempt = 0;
+static GeneratorWireSnapshot wireContext;
+static char wireObservedGame[32] = {};
+static char wireObservedDevice[32] = {};
+static char wireObservedName[32] = {};
 
-static unsigned long wireLastSampleTime = 0; // 마지막으로 핀 상태를 샘플링한 시각 (20ms 주기 샘플링용)
-static int            wireCandidateCnt   = -1; // 아직 확정되지 않은, 방금 새로 읽힌 배선 개수 후보
-static unsigned long  wireCandidateSince = 0;  // wireCandidateCnt가 그 값으로 유지되기 시작한 시각
-static int            wireStableCnt      = -1; // 디바운스를 통과해 실제로 확정(반영)된 배선 개수
+static bool WireTextEquals(const char *a, const char *b) { return a && b && strcmp(a,b) == 0; }
+static bool WireMonitoredState(const char *state) {
+    return WireTextEquals(state,"activate") || WireTextEquals(state,"battery_max") ||
+           WireTextEquals(state,"starter_finish") || WireTextEquals(state,"repaired") ||
+           WireTextEquals(state,"repaired_all") || WireTextEquals(state,"tagger");
+}
 
-// setup()에서 1회 호출: 배선 감지 핀 4개를 내부 풀업(INPUT_PULLUP)으로 설정한다.
 void WireInit() {
-    for (int i = 0; i < 4; i++) pinMode(WIRE_PINS[i], INPUT_PULLUP);
+    for (int i = 0; i < 4; ++i) pinMode(WIRE_PINS[i], INPUT_PULLUP);
 }
-
-// 현재 이 순간 꽂혀 있는(LOW로 읽히는) 배선 개수를 즉시 읽어 반환한다 (디바운스 없음).
 int WireCountPlugged() {
-    int cnt = 0;
-    for (int i = 0; i < 4; i++)
-        if (digitalRead(WIRE_PINS[i]) == LOW) cnt++;
-    return cnt;
+    int count = 0;
+    for (int i = 0; i < 4; ++i) if (digitalRead(WIRE_PINS[i]) == LOW) ++count;
+    return count;
 }
+int WireDisplayCount() { return wireState.stable() < 0 ? 0 : wireState.stable(); }
 
-// ActivateFunc()/DataChanged()가 배선 충전 단계로 (재)진입할 때마다 호출.
-// 예전에는 여기서 디바운스 상태만 초기화하고 실제 재동기화는 다음 WirePollMain() 호출(최소
-// WIRE_DEBOUNCE_MS 뒤)에 맡겼는데, 그 사이 my["battery_pack"]는 여전히 직전 라운드의(서버가
-// 들고 있던) 값이라 호출부가 그 값만 보고 판단하면 실물 배선 수와 어긋난 채로 완충 처리를
-// 하거나(예: 배선을 뺐는데도 여전히 가득 찬 걸로 인식) 반대로 완충 판정이 누락되는 문제가 있었다.
-// 그래서 여기서 바로 실물 배선 개수를 읽어 my["battery_pack"]/서버/게이지까지 즉시 맞춘다.
-// 이미 최대치라면 BatteryFinish()를 직접 부르지 않고 ptrCurrentMode에 대입만 해둔다 — 이 함수는
-// 대개 has2wifi.Loop()의 콜백(DataChanged()) 안에서 실행되는데, BatteryFinish()는 블로킹 오디오
-// 재생(Mp3PlayLargeFolderAndWait)과 has2wifi.Send()를 포함하고 있어 콜백 안에서 곧바로 실행하면
-// 재진입 블로킹으로 와이파이 연결이 불안정해진다. ptrCurrentMode에 대입해두면 다음 loop() 반복에서
-// loop()가 콜백 밖의 컨텍스트로 안전하게 실행해준다(BatteryFinish도 void() 시그니처라 그대로 대입 가능).
 void WireResetTracking() {
-    BREADCRUMB("WireResetTracking:start");
-    int wireCnt = WireCountPlugged();
-    int prevKnown = (int)my["battery_pack"];
-    int delta = wireCnt - prevKnown;
-
-    wireCandidateCnt = wireCnt;
-    wireCandidateSince = millis();
-    wireStableCnt = wireCnt;
-    my["battery_pack"] = wireCnt;
-    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
-
-    // GAUGE 갱신(BatteryPackSend)은 delta와 무관하게 항상 호출한다. tagger 등 다른 상태가
-    // GAUGE를 다른 색(예: 보라색)으로 덮어놓고 activate로 돌아왔을 때, 배선 개수 자체는
-    // 안 바뀌어(delta==0) 있으면 이 호출이 안 일어나서 엉뚱한 색이 그대로 남아있던 문제가 있었다.
-    BatteryPackSend();
-    if (delta != 0) {
-        BREADCRUMB("WireResetTracking:send");
-        has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
-        if (delta > 0) Mp3PlayLargeFolder(1, 7);
-    }
-
-    batteryFinishDone = false; // 새 충전 사이클 시작 — BatteryFinish()가 다시 한 번 실행되도록 재무장
-    if (wireCnt >= (int)my["max_battery_pack"]) {
-        ptrCurrentMode = BatteryFinish;
-    }
-    BREADCRUMB("WireResetTracking:done");
+    wireState.reset();
+    wireContextValid = false;
+    wireFenceNeeded = true; // Re-entry/identity changes must fence any earlier in-flight write.
+    batteryFinishDone = false;
+    batteryFinishAudioPlayed = false;
+    // Never publish raw input or finish while (re)entering a charge cycle.
+    Serial.println("[Wire] reset: waiting for 1 s stable inputs and server acknowledgement");
 }
 
-// ptrCurrentMode로 등록되어 loop()마다 호출됨 (기존 RfidLoopMain 자리)
-// 동작 순서:
-//   1) 20ms보다 자주 재샘플링하지 않음 (과도한 폴링 방지)
-//   2) 읽은 개수가 후보(wireCandidateCnt)와 다르면, 새 후보로 교체하고 타이머를 리셋한 뒤 리턴
-//      (=값이 흔들리는 동안에는 확정하지 않음, 기계식 스위치 채터링 방지)
-//   3) 후보가 이미 확정값(wireStableCnt)과 같다면 할 일 없음
-//   4) 후보가 WIRE_DEBOUNCE_MS(100ms) 이상 안정적으로 유지됐다면 그제서야 확정 처리:
-//      변화량(delta)을 계산해 my["battery_pack"]을 갱신하고, 서버에 증감치를 보내고,
-//      게이지 LED(BatteryPackSend)를 갱신한다.
-//   5) 확정된 개수가 최대치(max_battery_pack)에 도달하면 BatteryFinish()로 다음 단계 진행.
+void WireObserveServerSnapshot() {
+    const char *game = my["game_state"];
+    const char *state = my["device_state"];
+    const char *name = my["device_name"];
+    const bool enabled = WireTextEquals(game,"activate") && WireMonitoredState(state);
+    const bool enteringCharge = enabled && WireTextEquals(state,"activate") &&
+        !WireTextEquals(wireObservedDevice,"activate");
+    const bool newIdentity = name && !WireTextEquals(name,wireObservedName);
+    const bool changedServerState = !WireTextEquals(game,wireObservedGame) ||
+        !WireTextEquals(state,wireObservedDevice);
+    if (newIdentity) wireContext = GeneratorWireSnapshot();
+    if ((!enabled && wireEnabled) || (enabled && !wireEnabled) || enteringCharge || newIdentity) WireResetTracking();
+    wireEnabled = enabled;
+    // State writes also consume CAS revisions. Refresh that context without
+    // replaying completion audio or resetting a tagger/starter session.
+    if (changedServerState) wireContextValid = false;
+    if (wireContextValid && wireState.acknowledged() &&
+        ((int)my["battery_pack"] != wireState.acknowledgedCount() ||
+         (int)my["max_battery_pack"] != wireContext.maximum)) {
+        wireState.invalidateAck(); wireContextValid = false;
+    }
+    snprintf(wireObservedGame,sizeof(wireObservedGame),"%s",game ? game : "");
+    snprintf(wireObservedDevice,sizeof(wireObservedDevice),"%s",state ? state : "");
+    snprintf(wireObservedName,sizeof(wireObservedName),"%s",name ? name : "");
+}
+
+void WireSampleInputs(bool force) {
+    if (!wireEnabled) return;
+    const uint32_t now = millis();
+    if (!force && !wireState.due(now)) return;
+    const int previous = wireState.stable();
+    if (wireState.sample(now, WireCountPlugged())) {
+        Serial.printf("[Wire] stable=%d previous=%d maximum=%d\n", wireState.stable(), previous, (int)my["max_battery_pack"]);
+        if (ptrCurrentMode == WirePollMain) {
+            BatteryPackSend();
+            if (previous >= 0 && wireState.stable() > previous) Mp3PlayLargeFolder(1,7);
+        }
+    }
+}
+
+bool WireCanProgress() {
+    return wireEnabled && wireContextValid && WireTextEquals(my["game_state"],"activate") &&
+        wireContext.maximum == (int)my["max_battery_pack"] &&
+        wireState.ready(millis(), (int)my["max_battery_pack"]);
+}
+bool WireReadyForCompletion() {
+    WireSampleInputs(true); // Recheck GPIO after synchronous audio/HTTP/RFID work.
+    return WireCanProgress();
+}
+
+static bool WireAdoptContext(const GeneratorWireSnapshot &snapshot) {
+    const bool changedEpoch = wireContext.epoch[0] && strcmp(wireContext.epoch,snapshot.epoch) != 0;
+    const bool stateMismatch = !WireTextEquals(snapshot.gameState,my["game_state"]) ||
+        !WireTextEquals(snapshot.deviceState,my["device_state"]) ||
+        snapshot.maximum != (int)my["max_battery_pack"];
+    if (!changedEpoch && wireContext.epoch[0] && snapshot.revision < wireContext.revision) {
+        wireState.invalidateAck(); wireContextValid = false;
+        Serial.println("[WireSync] stale revision rejected");
+        return false;
+    }
+    wireContext = snapshot;
+    if (changedEpoch || stateMismatch) {
+        const bool resetCycle = changedEpoch || !WireTextEquals(snapshot.gameState,my["game_state"]) ||
+            (WireTextEquals(snapshot.deviceState,"activate") && !WireTextEquals(my["device_state"],"activate"));
+        if (resetCycle) WireResetTracking();
+        else { wireState.invalidateAck(); wireContextValid = false; }
+        // The CAS reply is a partial object, never replace the full device JSON.
+        // A failed legacy refresh leaves the acknowledgement invalid; the next
+        // bounded retry fetches and checks the CAS context again.
+        has2wifi.ReceiveMine();
+        if (resetCycle) receiveMineOn = false;
+        DataChanged();
+        if (changedEpoch && WireTextEquals(my["game_state"],snapshot.gameState) &&
+            WireTextEquals(my["device_state"],snapshot.deviceState) &&
+            WireTextEquals(snapshot.gameState,"activate") &&
+            (WireTextEquals(snapshot.deviceState,"activate") ||
+             WireTextEquals(snapshot.deviceState,"battery_max") ||
+             WireTextEquals(snapshot.deviceState,"starter_finish"))) ActivateFunc();
+        Serial.println("[WireSync] server context changed; full state refresh requested");
+        return false;
+    }
+    wireContextValid = true;
+    return true;
+}
+
+void WireServiceLoop() {
+    WireObserveServerSnapshot();
+    WireSampleInputs(false);
+    if (!wireEnabled || !wireState.qualified(millis()) ||
+        (wireContextValid && wireState.synced() && !wireFenceNeeded)) return;
+    if (wireAttempted && uint32_t(millis()-wireLastAttempt) < 2000) return;
+    wireAttempted = true;
+    char name[32];
+    snprintf(name,sizeof(name),"%s",wireObservedName);
+    GeneratorWireSnapshot response;
+    if (!wireContextValid) {
+        const GeneratorWireResult result = WireHttpRequest(false,name,0,"",0,response);
+        wireLastAttempt = millis();
+        WireSampleInputs(true);
+        if (result != GeneratorWireResult::Ok || !WireAdoptContext(response)) {
+            wireState.invalidateAck(); wireContextValid = false; return;
+        }
+        if (response.count == wireState.stable() && !wireFenceNeeded) {
+            wireState.acknowledge(response.count,wireState.generation());
+            my["battery_pack"] = response.count; SyncBatteryPackCur();
+            Serial.printf("[WireSync] confirmed=%d revision=%lu (read)\n",response.count,(unsigned long)response.revision);
+            return;
+        }
+    }
+    if (!wireState.qualified(millis())) return;
+    const int sending = wireState.stable();
+    const uint32_t generation = wireState.generation();
+    const uint32_t expectedRevision = wireContext.revision;
+    char expectedEpoch[37]; memcpy(expectedEpoch,wireContext.epoch,sizeof(expectedEpoch));
+    // A timeout may mean that a request is still pending at the server. Even a
+    // matching later GET must be fenced by a no-op CAS write before trusting it.
+    wireFenceNeeded = true;
+    const GeneratorWireResult result = WireHttpRequest(true,name,sending,expectedEpoch,expectedRevision,response);
+    wireLastAttempt = millis();
+    WireSampleInputs(true);
+    if (result != GeneratorWireResult::Ok || strcmp(response.epoch,expectedEpoch) != 0 ||
+        response.count != sending || response.revision <= expectedRevision || !WireAdoptContext(response)) {
+        wireState.invalidateAck(); wireContextValid = false;
+        Serial.println("[WireSync] unconfirmed; retry current stable count after resync");
+        return;
+    }
+    if (wireState.acknowledge(response.count,generation)) {
+        wireFenceNeeded = false;
+        my["battery_pack"] = response.count; SyncBatteryPackCur();
+        Serial.printf("[WireSync] confirmed=%d revision=%lu (CAS)\n",response.count,(unsigned long)response.revision);
+    }
+}
+
 void WirePollMain() {
-    BREADCRUMB("WirePollMain");
-    if (millis() - wireLastSampleTime < 20) return;
-    wireLastSampleTime = millis();
-
-    int wireCnt = WireCountPlugged();
-    if (wireCnt != wireCandidateCnt) {
-        wireCandidateCnt = wireCnt;
-        wireCandidateSince = millis();
-        return;
-    }
-    if (wireCandidateCnt == wireStableCnt) return;
-    if (millis() - wireCandidateSince < WIRE_DEBOUNCE_MS) return;
-
-    // wireStableCnt가 아직 미확정(-1, WireResetTracking 직후)이면 서버가 현재 알고 있는 값
-    // (my["battery_pack"], 즉 마지막 폴링에서 받아온 값)을 기준으로 delta를 계산한다.
-    // 예전에는 이 경우 delta=0("+0")으로 고정했는데, 그러면 "서버 값과 실제 배선 수가 이미
-    // 어긋난 상태"(예: battery_max에서 임의로 device_state="activate"로 되돌아온 경우 —
-    // 서버는 3을 들고 있지만 실제 배선은 2개)에서 서버 값이 전혀 보정되지 않고, 다음 폴링에
-    // 그 잘못된 3이 다시 내려와 로컬 값을 덮어써 버리는 문제가 있었다.
-    int prevKnown = (wireStableCnt < 0 ? (int)my["battery_pack"] : wireStableCnt);
-    int delta = wireCandidateCnt - prevKnown;
-    wireStableCnt = wireCandidateCnt;
-    my["battery_pack"] = wireStableCnt;
-    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
-    BREADCRUMB("WirePollMain:send");
-    has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
-    BatteryPackSend();
-    if (delta > 0) Mp3PlayLargeFolder(1, 7);  // 배선이 꽂혀 게이지가 늘어날 때만 재생 (빠질 때는 재생 안 함)
-
-    if (wireStableCnt >= (int)my["max_battery_pack"]) {
-        BREADCRUMB("WirePollMain:BatteryFinish");
-        BatteryFinish();
-    }
+    if (WireCanProgress()) BatteryFinish();
 }
-
-// =================================================================================
-// battery_max/starter_finish/repaired 단계 배선 감시
-// ---------------------------------------------------------------------------------
-// 이 세 device_state에서는 ptrCurrentMode가 WirePollMain이 아니어서(BatteryFinish/
-// StarterActivate/WaitFunc 등) 배선 폴링이 끊긴다. 그 틈에 이미 확정된 battery_pack의
-// 배선을 뽑아가도 감지가 안 되던 문제 - HAS1_generator.ino의 loop()에서 ptrCurrentMode와
-// 무관하게 매 프레임 호출해 이 세 상태에서만 감시를 이어간다.
-//
-// activate 충전 단계(WirePollMain)는 실시간성이 중요해 20ms 주기를 그대로 유지하지만,
-// 여기서는 "이미 확정된 battery_pack을 몰래 빼가는지"만 확인하면 되므로 1초 주기로 충분
-// 하다 — WirePollMain과는 별도의 게이트(theftLastSampleTime)를 써서 서로 영향을 주지
-// 않는다. 1초 간격이면 커넥터 접점의 기계식 채터링(수십 ms)은 이미 가라앉아 있으므로
-// WirePollMain 같은 별도 디바운스 단계 없이 바로 비교해도 된다.
-// device_state 비교도 String 대신 const char*+strcmp로 처리해 감시 대상이 아닌 상태에서는
-// 힙 할당이 없다. 서버 전송(has2wifi.Send)도 배선 개수가 실제로 바뀌었을 때만 호출되므로,
-// 아무도 배선을 안 건드리면 1초에 한 번 GPIO 4개 읽는 것 외에는 아무 통신도 일으키지 않는다.
-// =================================================================================
-static unsigned long theftLastSampleTime = 0;
-static int           theftStableCnt      = -1; // -1이면 감시 구간 재진입 시 my["battery_pack"] 기준으로 재동기화 필요
-
-void WireTheftMonitorLoop() {
-    BREADCRUMB("WireTheftMonitorLoop");
-    const char* deviceState = (const char*)my["device_state"];
-    bool watch = deviceState && (
-        strcmp(deviceState, "battery_max") == 0 ||
-        strcmp(deviceState, "starter_finish") == 0 ||
-        strcmp(deviceState, "repaired") == 0);
-    if (!watch) {
-        theftStableCnt = -1; // 다음에 감시 구간에 들어올 때 그 시점의 my["battery_pack"]로 새로 기준을 잡는다
-        return;
-    }
-
-    if (millis() - theftLastSampleTime < 1000) return;
-    theftLastSampleTime = millis();
-
-    int wireCnt = WireCountPlugged();
-    if (theftStableCnt < 0) theftStableCnt = (int)my["battery_pack"]; // 감시 구간 진입 후 첫 확인 - 서버가 알고 있는 값을 기준으로 삼는다
-    if (wireCnt == theftStableCnt) return;
-
-    int delta = wireCnt - theftStableCnt;
-    theftStableCnt = wireCnt;
-    my["battery_pack"] = theftStableCnt;
-    SyncBatteryPackCur(); // cur도 같이 맞춰서 다음 서버 폴링이 이 변화를 또 새 변화로 착각하지 않게 함
-
-    Serial.print("[WireTheft] battery_pack changed during ");
-    Serial.print(deviceState);
-    Serial.print(": ");
-    Serial.println(delta);
-    BREADCRUMB("WireTheftMonitorLoop:send");
-    has2wifi.Send((String)(const char*)my["device_name"], "battery_pack", (delta >= 0 ? "+" : "") + String(delta));
-    // 이 단계부터 GAUGE LED는 배터리 개수가 아니라 스타터 진행률/완료 표시로 의미가
-    // 바뀌어 있으므로(BatteryFinish 참고) BatteryPackSend()로 덮어쓰지 않는다.
-}
+// Kept as a compatibility entry point. The main loop services every monitored
+// stage before starter progress, rather than doing a second raw theft poll.
+void WireTheftMonitorLoop() { WireServiceLoop(); }

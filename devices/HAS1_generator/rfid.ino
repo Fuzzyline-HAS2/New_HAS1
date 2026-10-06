@@ -255,6 +255,7 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
 void BatteryFinish()
 {
   BREADCRUMB("BatteryFinish:start");
+  if (!WireReadyForCompletion()) { EncoderDetach(); return; }
   // WirePollMain(배선 완충 감지)과 DataChanged(device_state=="battery_max" 수신)가 같은 충전
   // 완료를 각각 감지해 둘 다 이 함수를 부를 수 있어, 오디오/상태 재전송은 한 번만 실행되도록 가드한다.
   // 다음 충전 사이클은 WireResetTracking()이 이 플래그를 다시 풀어줌.
@@ -263,9 +264,13 @@ void BatteryFinish()
   // 되돌렸을 때 batteryFinishDone이 이미 true라 함수가 그냥 리턴해버려서 ptrCurrentMode가
   // StarterActivate로 복귀하지 못하고 직전 상태(예: TaggerRfidLoop)에 멈춰 있게 된다.
   if (!batteryFinishDone) {
+    if (!batteryFinishAudioPlayed) {
+      batteryFinishAudioPlayed = true;
+      BREADCRUMB("BatteryFinish:mp3Wait");
+      Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
+    }
+    if (!WireReadyForCompletion()) { EncoderDetach(); return; }
     batteryFinishDone = true;
-    BREADCRUMB("BatteryFinish:mp3Wait");
-    Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
     BREADCRUMB("BatteryFinish:send");
     has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
     // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
@@ -283,6 +288,7 @@ void BatteryFinish()
     GameTimer.deleteTimer(gameTimerId);
     gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc); // 방치 시 게이지 감소 타이머 시작
   }
+  if (!WireReadyForCompletion()) { EncoderDetach(); ptrCurrentMode = BatteryFinish; return; }
   // GAUGE는 스타터 진행률 표시로 넘어가므로 초록(완충 표시), 나머지 3개는 파랑으로 전환
   if (displayedGaugeNeoCnt < 0) displayedGaugeNeoCnt = StarterGaugeCnt();
   EncoderNeopixelOn(displayedGaugeNeoCnt);
@@ -303,6 +309,7 @@ void BatteryFinish()
 void StartFinish()
 {
   BREADCRUMB("StartFinish:start");
+  if (!WireReadyForCompletion()) { EncoderDetach(); return; }
   Serial.println("StartFinish PTRFUNC");
   GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료3
   BlinkTimer.deleteTimer(blinkTimerId);

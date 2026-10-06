@@ -11,6 +11,7 @@
 // 부정 진행을 막는다. 게이지가 가득 차면 StartFinish()를 호출해 수리 완료 처리로 넘어간다.
 // =================================================================================
 void StarterActivate(){
+    if (!WireCanProgress()) { EncoderDetach(); return; }
     // RFID 체크는 200ms마다만 수행 (블로킹으로 인한 루프 지연 방지)
     static bool tagOnReader = false;    // 이번 체크에서 리더 위에 태그가 감지됐는지
     // 직전 체크에서의 감지 상태(새로 올라온 태그인지 판단용)는 전역 starterLastTagState —
@@ -64,6 +65,8 @@ void StarterActivate(){
         return;
     }
 
+    WireSampleInputs(false);
+    if (!WireCanProgress()) { EncoderDetach(); return; }
     EncoderAttach(); // 정상 조건이면 엔코더 카운팅 재개(이미 카운팅 중이면 아무 동작 없음)
 
     // 디버그 출력은 1초에 한 번이면 충분
@@ -76,7 +79,7 @@ void StarterActivate(){
     // 게이지가 가득 찼으면(모든 칸 점등) 수리 완료 처리로 전환.
     // displayedGaugeNeoCnt(화면에 실제로 다 찬 시점) 기준으로 판정해, 애니메이션이 목표치를
     // 미처 다 따라잡기도 전에 완료 처리가 먼저 튀어나오지 않게 한다.
-    if(displayedGaugeNeoCnt >= NumPixels[GAUGE]){
+    if(displayedGaugeNeoCnt >= NumPixels[GAUGE] && WireReadyForCompletion()){
         EncoderDetach();
         // 마지막 구간을 채운 사람의 기여도를 먼저 확정한다 — StartFinish()가 ptrCurrentMode를
         // WaitFunc으로 바꾸므로 여기서 안 남기면 ContribLoop()이 다음 프레임에 남기게 되는데,
@@ -85,11 +88,7 @@ void StarterActivate(){
         ContribEnd(NumPixels[GAUGE]);
         // SendCmd("page pgFixed");  // (Nextion 시절 잔재 — 현재 미사용)
         StartFinish();                              // 서버에 repaired 알림 및 다음 상태 전환
-        BlinkTimer.deleteTimer(blinkTimerId);
-        NeoLightColor(STARTER, color[BLUE]);
-        GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료
-        BlinkTimer.deleteTimer(blinkTimerId);
-        NeoLightColor(CIRCUIT, color[BLUE]);
+
     }
 }
 

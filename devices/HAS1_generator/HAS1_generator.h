@@ -13,6 +13,8 @@
 #define _DONE_ITEMBOX_CODE_
 
 #include "library_and_pin.h"
+#include "generator_wire_state.h"
+#include "generator_wire_protocol.h"
 
 // Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
 // 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로
@@ -40,7 +42,8 @@ const int rfid_num = 1; // 설치된 pn532의 개수
 //****************************************WIFI****************************************************************
 // has2wifi: 서버(172.30.1.43, badland 테마)와 주기적으로 통신하며 my/tag 등 JSON 상태를 동기화하는 객체.
 //           TimerRun() -> WifiIntervalFunc() -> has2wifi.Loop(DataChanged) 로 매 tick 폴링된다.
-HAS2_Wifi has2wifi("http://172.30.1.43");
+static const char GENERATOR_SERVER_URL[] = "http://172.30.1.43";
+HAS2_Wifi has2wifi(GENERATOR_SERVER_URL);
 
 // ota: GitHub Releases(HAS1_generator 태그)에 올라간 update.bin을 내려받아 검증/적용하는 OTA 객체.
 //      HMAC_SECRET으로 서명을 검증하고, FIRMWARE_VER보다 서버 버전이 높을 때만 업데이트를 진행한다.
@@ -55,10 +58,10 @@ void DataChanged();     // 서버 데이터(my)가 바뀔 때마다 호출되어
 void SettingFunc(void); // game_state == "setting" 진입 시 처리 (wifi.ino)
 void ActivateFunc(void);// game_state == "activate" 진입 시 처리 (wifi.ino)
 void ReadyFunc(void);   // game_state == "ready" 진입 시 처리 (wifi.ino)
-void SyncBatteryPackCur(); // WirePollMain()이 my["battery_pack"]을 로컬 갱신한 직후 호출 — DataChanged()의
-                            // 비교 기준값(cur)도 맞춰서 같은 변화가 다음 폴링에서 중복 처리되지 않게 함 (wifi.ino)
+void SyncBatteryPackCur(); // Confirmed absolute ACK updates both cached server snapshots.
 
 bool receiveMineOn = false; // true인 동안은 DataChanged()가 서버 폴링 결과로 상태를 다시 덮어쓰지 않도록 막는 플래그
+bool batteryFinishAudioPlayed = false;
 bool batteryFinishDone = false; // BatteryFinish()가 이번 충전 사이클에 이미 실행됐는지 — 중복 호출(오디오/상태 재전송) 방지용. WireResetTracking()이 다음 사이클에서 재무장
 //****************************************Game System****************************************************************
 void (*ptrCurrentMode)();   //현재모드 저장용 포인터 함수 — loop()에서 매 프레임 호출됨 (예: WaitFunc, RfidLoopMain, WirePollMain, StarterActivate)
@@ -200,9 +203,17 @@ void CheckingPlayers(uint8_t user, uint8_t user_num, uint8_t rfid_num); // (프�
 // 배선 4개 감지로 배터리팩 충전 — 기존 RFID 태그 방식(BatteryPackCharge) 대체
 void WireInit();          // 배선 감지 핀 4개를 INPUT_PULLUP으로 설정 (wire.ino)
 int  WireCountPlugged();  // 현재 꽂혀 있는(LOW인) 배선 개수를 반환 (wire.ino)
-void WireResetTracking(); // 충전 단계 (재)진입 시 호출 — 실물 배선 개수로 즉시 재동기화. 이미 최대치면 ptrCurrentMode=BatteryFinish로 다음 loop에서 처리되게 함 (wire.ino)
-void WirePollMain();      // loop()에서 매 프레임 호출되어 배선 개수 변화를 디바운스 후 반영 (wire.ino)
-void WireTheftMonitorLoop(); // battery_max/starter_finish/repaired 단계에서도 배선이 빠지면 감지해 서버에 반영 (ptrCurrentMode와 무관하게 loop()에서 매 프레임 호출) (wire.ino)
+void WireResetTracking(); // Re-enter through the shared 1 s filter; no immediate raw publish.
+void WireObserveServerSnapshot();
+void WireSampleInputs(bool force);
+void WireServiceLoop();
+int WireDisplayCount();
+bool WireCanProgress();
+bool WireReadyForCompletion();
+GeneratorWireResult WireHttpRequest(bool set, const char *device, int count, const char *epoch,
+                                    uint32_t revision, GeneratorWireSnapshot &snapshot);
+void WirePollMain();
+void WireTheftMonitorLoop();
 
 //****************************************ENCODER SETUP****************************************************************
 // 인터럽트(ISR) 대신 ESP32 하드웨어 펄스 카운터(PCNT) 사용
