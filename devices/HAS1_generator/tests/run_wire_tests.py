@@ -28,8 +28,39 @@ PREFIX = r'''
 #include "generator_wire_state.h"
 #include "generator_wire_protocol.h"
 static uint32_t now = 0;
+static int criticalDepth = 0;
+static bool pauseSampler = false, failSamplerCreation = false;
+static uint32_t nextSamplerWake = 0;
+static void (*fakeTaskEntry)(void*) = nullptr;
+struct StaticTask_t {};
+using StackType_t = uint8_t;
+using TaskHandle_t = void*;
+using portMUX_TYPE = int;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define portENTER_CRITICAL(x) do { (void)(x); assert(++criticalDepth==1); } while(0)
+#define portEXIT_CRITICAL(x) do { (void)(x); assert(--criticalDepth==0); } while(0)
+#define pdMS_TO_TICKS(x) (x)
+#define tskNO_AFFINITY -1
+struct TaskYield {};
+void vTaskDelay(uint32_t ticks) { assert(criticalDepth==0 && ticks==100); nextSamplerWake=now+ticks; throw TaskYield(); }
+TaskHandle_t xTaskCreateStaticPinnedToCore(void (*entry)(void*),const char*,size_t,void*,int,StackType_t*,StaticTask_t*,int) {
+ assert(criticalDepth==0);
+ if(failSamplerCreation) return nullptr;
+ fakeTaskEntry=entry; nextSamplerWake=now; return reinterpret_cast<void*>(1);
+}
+void advanceTime(uint32_t elapsed) {
+ const uint32_t target=now+elapsed;
+ if(fakeTaskEntry && !pauseSampler) {
+   if(nextSamplerWake<now) nextSamplerWake=now; // Actual observation now; no back-filled ticks.
+   while(nextSamplerWake<=target) {
+     now=nextSamplerWake;
+     try { fakeTaskEntry(nullptr); assert(false); } catch(const TaskYield&) {}
+   }
+ }
+ now=target;
+}
 unsigned long millis() { return now; }
-void delay(unsigned long value) { now += value; }
+void delay(unsigned long value) { advanceTime(value); }
 static int physical = 0;
 #define WIRE_PIN_1 0
 #define WIRE_PIN_2 1
@@ -38,24 +69,40 @@ static int physical = 0;
 #define LOW 0
 #define INPUT_PULLUP 2
 void pinMode(int,int) {}
-int digitalRead(int pin) { return pin < physical ? LOW : 1; }
+static void (*gpioReadHook)() = nullptr;
+int digitalRead(int pin) {
+ assert(criticalDepth==0);
+ if(gpioReadHook) { auto hook=gpioReadHook; gpioReadHook=nullptr; hook(); }
+ return pin < physical ? LOW : 1;
+}
 JsonDocument my;
 bool batteryFinishDone=false, batteryFinishAudioPlayed=false, receiveMineOn=false;
 int completions=0, refreshes=0, activations=0, renders=0, audio=0;
+int WireCountPlugged();
 void WirePollMain();
 void WireObserveServerSnapshot();
 void WireResetTracking();
 void WaitFunc() {}
 void BatteryFinish() { ++completions; }
 void (*ptrCurrentMode)() = WirePollMain;
-void BatteryPackSend() { ++renders; }
-void Mp3PlayLargeFolder(int,int) { ++audio; }
+void BatteryPackSend() { assert(criticalDepth==0); ++renders; }
+void Mp3PlayLargeFolder(int,int) { assert(criticalDepth==0); ++audio; }
+#define MP3_WAIT_TIMEOUT_MS 2000
+static bool dfPlayerReady=true, floodAudioEvents=false;
+static const int DFPlayerPlayFinished=5;
+static std::vector<int> dfEvents;
+static size_t dfRead=0;
+static int dfAvailableCalls=0;
+struct FakePlayer {
+ bool available() { assert(criticalDepth==0); ++dfAvailableCalls; return floodAudioEvents || dfRead<dfEvents.size(); }
+ int readType() { assert(criticalDepth==0); return floodAudioEvents ? 1 : dfEvents.at(dfRead++); }
+} myDFPlayer;
 void SyncBatteryPackCur() {}
 void DataChanged() { WireObserveServerSnapshot(); }
 void ActivateFunc() { ++activations; ptrCurrentMode=WirePollMain; }
 struct Logger {
- void println(const char*) {}
- void printf(const char*,...) {}
+ void println(const char*) { assert(criticalDepth==0); }
+ void printf(const char*,...) { assert(criticalDepth==0); }
 } Serial;
 static GeneratorWireSnapshot serverState;
 static const char EPOCH1[]="11111111-1111-1111-1111-111111111111";
@@ -76,8 +123,13 @@ static std::vector<Write> writes;
 enum SendMode { Normal, FailNoApply, FailAfterApply, WrongEpoch, WrongRevision, WrongCount, Conflict };
 static SendMode nextSend=Normal;
 static uint32_t httpDelay=0;
+static bool removeDuringHttp=false, resetDuringHttp=false;
 GeneratorWireResult WireHttpRequest(bool set,const char *name,int count,const char *epoch,uint32_t revision,GeneratorWireSnapshot &reply) {
- now+=httpDelay;
+ assert(criticalDepth==0);
+ advanceTime(httpDelay/2);
+ if(set && removeDuringHttp) { physical=2; removeDuringHttp=false; }
+ if(set && resetDuringHttp) { WireResetTracking(); resetDuringHttp=false; }
+ advanceTime(httpDelay-httpDelay/2);
  assert(strcmp(name,serverState.device)==0);
  if(!set) { ++readRequests; reply=serverState; return GeneratorWireResult::Ok; }
  writes.push_back({count,revision,epoch});
@@ -138,20 +190,23 @@ struct HTTPClient {
 TESTS = r'''
 static void reset(int count=0,int maximum=3) {
  now=0; physical=count; my.clear();
+ fakeTaskEntry=nullptr; pauseSampler=failSamplerCreation=false; criticalDepth=0; nextSamplerWake=0;
  serverState=GeneratorWireSnapshot();
  strcpy(serverState.device,"LG"); strcpy(serverState.epoch,EPOCH1);
  strcpy(serverState.gameState,"activate"); strcpy(serverState.deviceState,"activate");
  serverState.count=count; serverState.maximum=maximum; serverState.revision=7;
  has2wifi.ReceiveMine(); refreshes=0;
  wireState=GeneratorWireState(); wireEnabled=false; wireContextValid=false;
- wireAttempted=false; wireFenceNeeded=true; wireLastAttempt=0; wireContext=GeneratorWireSnapshot();
+ wireRetryPending=false; wireFenceNeeded=true; wireLastAttempt=0; wireContext=GeneratorWireSnapshot();
  memset(wireObservedGame,0,sizeof(wireObservedGame));
  memset(wireObservedDevice,0,sizeof(wireObservedDevice)); memset(wireObservedName,0,sizeof(wireObservedName));
  writes.clear(); readRequests=activations=renders=audio=completions=0;
- nextSend=Normal; httpDelay=0; batteryFinishDone=batteryFinishAudioPlayed=receiveMineOn=false;
- ptrCurrentMode=WirePollMain;
+ nextSend=Normal; httpDelay=0; removeDuringHttp=resetDuringHttp=false; batteryFinishDone=batteryFinishAudioPlayed=receiveMineOn=false;
+ ptrCurrentMode=WirePollMain; wireSamplerTask=nullptr; wireSamplingEnabled=false; wireLastPresented=-1;
+ gpioReadHook=nullptr; dfPlayerReady=true; floodAudioEvents=false; dfEvents.clear(); dfRead=0; dfAvailableCalls=0;
+ WireInit(); WireObserveServerSnapshot();
 }
-static void tick(uint32_t elapsed=100) { now+=elapsed; WireServiceLoop(); }
+static void tick(uint32_t elapsed=100) { advanceTime(elapsed); WireServiceLoop(); }
 static void run(unsigned milliseconds) {
  for(unsigned i=0;i<milliseconds;i+=100) { tick(); }
 }
@@ -210,14 +265,69 @@ int main() {
  }
  puts("PASS wrong identity context/count/revision and conflict cannot acknowledge completion");
 
- reset(3); WireServiceLoop(); run(900); assert(!wireState.qualified(now));
- tick(500); assert(!wireState.qualified(now)); run(900); assert(!wireState.qualified(now));
- run(100); assert(wireState.qualified(now));
- tick(300); assert(!WireReadyForCompletion()); run(1000); assert(WireReadyForCompletion());
- // Frequent blocking work is deliberately not mistaken for one second of observations.
- for(int i=0;i<10;++i) { tick(300); }
- assert(!WireReadyForCompletion());
- puts("PASS sample gaps restart stability; frequent long gaps remain unqualified");
+ reset(3); run(1200); assert(WireReadyForCompletion());
+ pauseSampler=true; tick(300); assert(!WireReadyForCompletion());
+ const GeneratorWireState stopped=WireSnapshot();
+ for(int i=0;i<5;++i) { assert(!WireReadyForCompletion()); }
+ assert(stopped.generation()==WireSnapshot().generation());
+ pauseSampler=false; tick(); run(800); assert(!WireCanProgress()); tick(); assert(WireReadyForCompletion());
+ puts("PASS stopped sampler fails closed; main checks do not refresh heartbeat or interpolate gaps");
+
+ reset(3); run(1200); assert(WireReadyForCompletion());
+ physical=2; assert(!WireReadyForCompletion()); physical=3;
+ assert(!WireReadyForCompletion()); run(900); assert(!WireCanProgress()); run(200); assert(WireReadyForCompletion());
+ puts("PASS sub-sample removal observed by main requires a new real one-second window");
+
+ reset(3); wireSamplerTask=nullptr; fakeTaskEntry=nullptr; failSamplerCreation=true;
+ WireInit(); run(3000); assert(!WireCanProgress() && writes.empty());
+ puts("PASS sampler creation failure cannot complete or publish raw inputs");
+
+ reset(3); gpioReadHook=WireResetTracking;
+ advanceTime(0); assert(WireSnapshot().raw()==-1 && !WireCanProgress());
+ tick(); assert(WireSnapshot().raw()==3 && !WireCanProgress());
+ run(900); assert(!WireCanProgress()); tick(); assert(WireReadyForCompletion());
+ puts("PASS GPIO read overlapping reset discards the previous generation observation");
+
+ reset(); run(1200); writes.clear();
+ physical=2; advanceTime(1100); physical=4; advanceTime(1100);
+ WireServiceLoop(); assert(writes.size()==1 && writes[0].count==4 && WireReadyForCompletion());
+ puts("PASS main stall consumes only latest stable count without replaying intermediate updates");
+
+ reset(3); run(1200); dfEvents={DFPlayerPlayFinished,1};
+ Mp3BatteryStart(); const int playedBefore=audio;
+ assert(!Mp3BatteryFinished() && audio==playedBefore+1 && dfRead==2);
+ physical=2; advanceTime(1100); assert(WireSnapshot().stable()==2 && !WireReadyForCompletion());
+ assert(!Mp3BatteryFinished()); dfEvents.push_back(1); assert(!Mp3BatteryFinished());
+ dfEvents.push_back(DFPlayerPlayFinished); assert(Mp3BatteryFinished());
+ assert(audio==playedBefore+1);
+ puts("PASS actual audio phase drains queued finish and sampler keeps observing while audio is pending");
+
+ Mp3BatteryStart(); assert(!Mp3BatteryFinished());
+ advanceTime(1999); assert(!Mp3BatteryFinished()); advanceTime(1); assert(Mp3BatteryFinished());
+ Mp3BatteryStart(); assert(!Mp3BatteryFinished()); WireResetTracking();
+ assert(batteryAudioPhase==BatteryAudioPhase::Idle && Mp3BatteryFinished());
+ dfPlayerReady=false; Mp3BatteryStart(); assert(Mp3BatteryFinished());
+ dfPlayerReady=true; floodAudioEvents=true; Mp3BatteryStart(); dfAvailableCalls=0;
+ assert(!Mp3BatteryFinished() && dfAvailableCalls==8);
+ advanceTime(2000); assert(Mp3BatteryFinished()); floodAudioEvents=false;
+ puts("PASS actual audio timeout, round cancellation, unavailable player and bounded event flood");
+
+ reset(3); httpDelay=500;
+ while(!WireCanProgress() && now<4000) { tick(); }
+ assert(now==2000 && WireReadyForCompletion());
+ const uint32_t acknowledgedAt=wireLastAttempt;
+ physical=4; while(serverState.count!=4 && now<5000) { tick(); }
+ assert(wireLastAttempt-acknowledgedAt==1600 && WireReadyForCompletion());
+ puts("PASS latency: stable at 1000 ms, GET/SET 500 ms each -> ready at 2000 ms; next stable send has no 2-second gate");
+ physical=3; removeDuringHttp=true;
+ while(writes.back().count!=3 && now<8000) { tick(); }
+ assert(!WireReadyForCompletion()); run(2500); assert(serverState.count==2 && !WireReadyForCompletion());
+ puts("PASS sampler observes removal during synchronous HTTP and latest count replaces old ACK");
+
+ reset(3); httpDelay=500; resetDuringHttp=true;
+ while(writes.empty() && now<4000) { tick(); }
+ assert(!wireState.acknowledged() && wireRetryPending);
+ puts("PASS reset during HTTP rejects an old generation ACK");
 
  reset(3); run(1200); assert(WireReadyForCompletion());
  strcpy(serverState.gameState,"setting"); has2wifi.ReceiveMine(); DataChanged();
@@ -287,7 +397,8 @@ int main() {
 with tempfile.TemporaryDirectory(prefix="generator-wire-test-") as directory:
     temp = Path(directory)
     (temp/"HTTPClient.h").write_text("// Fake HTTPClient is defined by the harness.\n")
-    source = PREFIX + '\n' + (ROOT/"wire.ino").read_text() + '\n' + HTTP
+    audio_source = (ROOT/"dfplayer.ino").read_text().split('enum class BatteryAudioPhase',1)[1]
+    source = PREFIX + '\nenum class BatteryAudioPhase' + audio_source + '\n' + (ROOT/"wire.ino").read_text() + '\n' + HTTP
     source += '\n#define WireHttpRequest ActualWireHttpRequest\n' + (ROOT/"wire_http.ino").read_text()
     source += '\n#undef WireHttpRequest\n' + TESTS
     (temp/"test.cpp").write_text(source)
@@ -306,7 +417,7 @@ struct String:std::string { using std::string::string; };
 struct Value { std::string text; Value& operator=(const char* value) {text=value;return *this;} operator const char*() const {return text.c_str();} };
 struct Document { std::map<std::string,Value> values; Value& operator[](const char* key){return values[key];} } my;
 struct Logger { void println(const char*) {} } Serial;
-static bool ready=true, removeDuringAudio=false, removeDuringSend=false;
+static bool ready=true, removeDuringAudio=false, removeDuringSend=false, audioFinished=true;
 bool WireReadyForCompletion() { return ready; }
 bool batteryFinishDone=false,batteryFinishAudioPlayed=false,receiveMineOn=false,starterRfidNeedsValidation=false;
 static int played=0,sent=0,received=0,detached=0,started=0;
@@ -333,6 +444,8 @@ void AllNeoOn(int) {}
 void LeftGenerator() {}
 void Mp3PlayLargeFolder(int,int) {}
 void Mp3PlayLargeFolderAndWait(int,int) {++played;if(removeDuringAudio)ready=false;}
+void Mp3BatteryStart() {++played;if(removeDuringAudio)ready=false;}
+bool Mp3BatteryFinished() {return audioFinished;}
 struct Wifi {
  void Send(String,const char*,const char*) {++sent;if(removeDuringSend)ready=false;}
  void ReceiveMine() {++received;}
@@ -342,7 +455,10 @@ COMPLETION_TESTS = r'''
 int main() {
  my["device_name"]="LG";my["device_state"]="activate";
  ready=false;BatteryFinish();assert(sent==0&&played==0&&!batteryFinishDone);
- ready=true;removeDuringAudio=true;BatteryFinish();
+ ready=true;audioFinished=false;BatteryFinish();
+ assert(played==1&&sent==0&&!batteryFinishDone);
+ BatteryFinish();assert(played==1&&sent==0);
+ audioFinished=true;ready=false;BatteryFinish();
  assert(played==1&&sent==0&&batteryFinishAudioPlayed&&!batteryFinishDone);
  BatteryFinish();assert(played==1&&sent==0);
  ready=true;removeDuringAudio=false;removeDuringSend=true;BatteryFinish();

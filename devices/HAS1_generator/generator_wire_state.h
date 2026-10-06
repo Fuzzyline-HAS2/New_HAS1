@@ -11,6 +11,7 @@ class GeneratorWireState {
   GeneratorWireState() { reset(); }
   void reset() {
     sampled_ = qualified_ = acknowledged_ = false;
+    freshWindowRequired_ = false;
     raw_ = stable_ = acknowledgedCount_ = -1;
     lastSample_ = candidateSince_ = 0;
     ++generation_;
@@ -19,9 +20,10 @@ class GeneratorWireState {
   bool sample(uint32_t now, int raw) {
     if (raw < 0 || raw > 4) { reset(); return false; }
     const bool gap = sampled_ && uint32_t(now-lastSample_) > MaxSampleGapMs;
-    if (!sampled_ || gap || raw != raw_) {
+    if (!sampled_ || gap || raw != raw_ || freshWindowRequired_) {
       candidateSince_ = now;
       qualified_ = false;
+      freshWindowRequired_ = false;
     }
     sampled_ = true; lastSample_ = now; raw_ = raw;
     if (uint32_t(now-candidateSince_) < StableMs) return false;
@@ -38,6 +40,8 @@ class GeneratorWireState {
     acknowledged_ = true; acknowledgedCount_ = count; return true;
   }
   void invalidateAck() { acknowledged_ = false; }
+  // Main observed a transient mismatch; do not fabricate a sampler timestamp.
+  void invalidateObservation() { qualified_ = false; freshWindowRequired_ = true; }
   bool acknowledged() const { return acknowledged_; }
   bool synced() const { return acknowledged_ && acknowledgedCount_ == stable_; }
   bool ready(uint32_t now, int minimum) const {
@@ -48,7 +52,7 @@ class GeneratorWireState {
   int acknowledgedCount() const { return acknowledgedCount_; }
   uint32_t generation() const { return generation_; }
  private:
-  bool sampled_, qualified_, acknowledged_;
+  bool sampled_, qualified_, acknowledged_, freshWindowRequired_;
   int raw_, stable_, acknowledgedCount_;
   uint32_t lastSample_, candidateSince_;
   uint32_t generation_ = 0;

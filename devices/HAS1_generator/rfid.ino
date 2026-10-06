@@ -266,9 +266,10 @@ void BatteryFinish()
   if (!batteryFinishDone) {
     if (!batteryFinishAudioPlayed) {
       batteryFinishAudioPlayed = true;
-      BREADCRUMB("BatteryFinish:mp3Wait");
-      Mp3PlayLargeFolderAndWait(1, 3);  // device_state == "battery_max" 안내 음원 — 다 재생된 뒤에 상태를 넘긴다
+      BREADCRUMB("BatteryFinish:mp3Start");
+      Mp3BatteryStart();
     }
+    if (!Mp3BatteryFinished()) return;
     if (!WireReadyForCompletion()) { EncoderDetach(); return; }
     batteryFinishDone = true;
     BREADCRUMB("BatteryFinish:send");

@@ -87,3 +87,43 @@ bool Mp3TaggerFinished() {
     return !dfPlayerReady || millis() - taggerAudioStarted >= MP3_WAIT_TIMEOUT_MS ||
         (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished);
 }
+
+// Battery completion progresses across loop iterations. DFPlayer finish events
+// carry no command identity; drain queued events before issuing the new play.
+enum class BatteryAudioPhase { Idle, Preparing, Playing };
+static BatteryAudioPhase batteryAudioPhase = BatteryAudioPhase::Idle;
+static uint32_t batteryAudioStarted = 0;
+void Mp3BatteryCancel() { batteryAudioPhase = BatteryAudioPhase::Idle; }
+void Mp3BatteryStart() {
+    batteryAudioPhase = dfPlayerReady ? BatteryAudioPhase::Preparing : BatteryAudioPhase::Idle;
+    batteryAudioStarted = millis();
+}
+bool Mp3BatteryFinished() {
+    if (!dfPlayerReady || batteryAudioPhase == BatteryAudioPhase::Idle) return true;
+    if (batteryAudioPhase == BatteryAudioPhase::Preparing) {
+        unsigned drained = 0;
+        while (drained < 8 && myDFPlayer.available()) { myDFPlayer.readType(); ++drained; }
+        if (drained == 8) {
+            // Flooded/stuck audio must not prevent the game forever.
+            if (uint32_t(millis()-batteryAudioStarted) < MP3_WAIT_TIMEOUT_MS) return false;
+            batteryAudioPhase = BatteryAudioPhase::Idle;
+            Serial.println("[MP3] battery pre-play event drain timed out; skipping audio");
+            return true;
+        }
+        Mp3PlayLargeFolder(1,3);
+        batteryAudioStarted = millis();
+        batteryAudioPhase = BatteryAudioPhase::Playing;
+        return false;
+    }
+    for (unsigned i = 0; i < 8 && myDFPlayer.available(); ++i) {
+        if (myDFPlayer.readType() == DFPlayerPlayFinished) {
+            batteryAudioPhase = BatteryAudioPhase::Idle;
+            return true;
+        }
+    }
+    if (uint32_t(millis()-batteryAudioStarted) >= MP3_WAIT_TIMEOUT_MS) {
+        batteryAudioPhase = BatteryAudioPhase::Idle;
+        return true;
+    }
+    return false;
+}
