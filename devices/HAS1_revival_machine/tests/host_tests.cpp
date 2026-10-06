@@ -325,6 +325,7 @@ int main(int argc, char** argv) {
   assert(argc == 2);
   const std::string scenario = argv[1];
   static_assert(SOLENOID_REVIVAL_PULSE_MS == 5000, "Gameplay pulse must stay five seconds");
+  static_assert(SOLENOID_ADMIN_PULSE_MS == 4000, "Admin card pulse must be four seconds");
   if (scenario == "approved") {
     prepare();
     const unsigned long started = millis();
@@ -369,7 +370,7 @@ int main(int argc, char** argv) {
     if (scenario == "admin_ready") { reader_tag = "MMMM"; AdminCardPollReady(); }
     else card(scenario.find("admin_") == 0 ? "MMMM" : scenario == "invalid_tag" ? "BAD!" : "G1P1");
     assert_no_game_request();
-    if (scenario.find("admin_") == 0) assert(assert_pulse() == 1000);
+    if (scenario.find("admin_") == 0) assert(assert_pulse(SOLENOID_ADMIN_PULSE_MS) == 1000);
     else if (scenario == "setting") {
       assert(assert_pulse(SOLENOID_PULSE_MS) == 1000);
       gpio_events.clear();
@@ -434,7 +435,7 @@ int main(int argc, char** argv) {
     assert(admin_reader_calls == 1 && normal_reader_calls == 0);
     assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
     assert(revival_approval_pending && last_open_tag_user == user);
-    if (scenario == "pending_admin") assert_pulse();
+    if (scenario == "pending_admin") assert_pulse(SOLENOID_ADMIN_PULSE_MS);
     else {
       RfidLoop(); delay(REVIVAL_ADMIN_POLL_MS - 1); RfidLoop();
       assert(admin_reader_calls == 1 && on_count() == 0);
@@ -545,6 +546,7 @@ int main(int argc, char** argv) {
     assert(has2wifi.mine_calls == polls + 1 && normal_reader_calls == 0 && admin_reader_calls == 0);
     reader_transport_available = true; loop();
     assert(admin_reader_calls == 1 && on_count() == 1);
+    assert_pulse(SOLENOID_ADMIN_PULSE_MS);
     assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 1);
   } else if (scenario == "mode_ready_to_activate_device_static") {
     // 서버가 game_state만 ready -> activate 로 바꾸고 device_state는 내내 "activate"인 경우.
@@ -662,7 +664,7 @@ int main(int argc, char** argv) {
     // Here check that the caller resumes its appropriate mode on that signal.
     card_upload.exit_gate = false;
     reader_tag = "MMMM"; RfidTagTimerFunc(); loop();
-    assert_pulse();
+    assert_pulse(SOLENOID_ADMIN_PULSE_MS);
     assert(normal_reader_calls == 1 && admin_reader_calls == 0);
     assert_no_game_request();
     assert(activate_bool == (game != "ready"));
@@ -677,7 +679,7 @@ int main(int argc, char** argv) {
     assert(normal_reader_calls == 0 && admin_reader_calls == 0 && on_count() == 0);
     loop();
     assert(normal_reader_calls == 1 && admin_reader_calls == 0);
-    assert_pulse();
+    assert_pulse(SOLENOID_ADMIN_PULSE_MS);
     assert_no_game_request();
   } else if (scenario == "card_upload_exit_new_open" || scenario == "card_upload_exit_new_github") {
     prepare(); enter_card_upload();

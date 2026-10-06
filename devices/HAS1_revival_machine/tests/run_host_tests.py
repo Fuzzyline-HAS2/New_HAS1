@@ -71,7 +71,7 @@ def main() -> None:
                  "RfidLoop", "AdminCardPollReady", "AdminCardPollPending"}
         (build / "sensor_under_test.inc").write_text(extract_functions(DEVICE / "sensor.ino", names))
         (build / "loop_under_test.inc").write_text(extract_functions(DEVICE / "HAS1_revival_machine.ino", {"loop"}))
-        constants = {"SOLENOID_PIN", "SOLENOID_PULSE_MS", "SOLENOID_REVIVAL_PULSE_MS",
+        constants = {"SOLENOID_PIN", "SOLENOID_PULSE_MS", "SOLENOID_REVIVAL_PULSE_MS", "SOLENOID_ADMIN_PULSE_MS",
                      "WIFI_POLL_INTERVAL_DEFAULT_MS", "WIFI_POLL_INTERVAL_ACTIVATE_MS", "RFID_DEBOUNCE_MS",
                      "GHOST_OPEN_TIMEOUT_MS", "REVIVAL_APPROVAL_TIMEOUT_MS", "REVIVAL_APPROVAL_POLL_MS",
                      "REVIVAL_ADMIN_POLL_MS", "RFID_REARM_ABSENT_MS"}
