@@ -152,7 +152,9 @@ static void reset(int count=0,int maximum=3) {
  ptrCurrentMode=WirePollMain;
 }
 static void tick(uint32_t elapsed=100) { now+=elapsed; WireServiceLoop(); }
-static void run(unsigned milliseconds) { for(unsigned i=0;i<milliseconds;i+=100) tick(); }
+static void run(unsigned milliseconds) {
+ for(unsigned i=0;i<milliseconds;i+=100) { tick(); }
+}
 static void settle(int count) { physical=count; run(3200); }
 static std::string snapshotJson() {
  JsonDocument json; json["success"]=true; json["device_name"]="LG";
@@ -189,7 +191,9 @@ int main() {
 
  reset(); run(1200); writes.clear(); physical=3; nextSend=FailAfterApply;
  run(2100); assert(writes.size()==1 && !wireState.acknowledged());
- const uint32_t failedAt=wireLastAttempt; while(now-failedAt<1900) tick(); assert(writes.size()==1);
+ const uint32_t failedAt=wireLastAttempt;
+ while(now-failedAt<1900) { tick(); }
+ assert(writes.size()==1);
  run(1500); assert(writes.size()==2 && writes.back().count==3 && wireState.synced());
  assert(wireLastAttempt-failedAt>=2000 && writes[1].revision>writes[0].revision);
  puts("PASS lost ACK retries unchanged physical count; matching GET still receives CAS fence");
@@ -211,7 +215,8 @@ int main() {
  run(100); assert(wireState.qualified(now));
  tick(300); assert(!WireReadyForCompletion()); run(1000); assert(WireReadyForCompletion());
  // Frequent blocking work is deliberately not mistaken for one second of observations.
- for(int i=0;i<10;++i) tick(300); assert(!WireReadyForCompletion());
+ for(int i=0;i<10;++i) { tick(300); }
+ assert(!WireReadyForCompletion());
  puts("PASS sample gaps restart stability; frequent long gaps remain unqualified");
 
  reset(3); run(1200); assert(WireReadyForCompletion());
