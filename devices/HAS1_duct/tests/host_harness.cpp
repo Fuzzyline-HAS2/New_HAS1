@@ -12,11 +12,11 @@ using uint8_t = unsigned char;
 using uint16_t = unsigned short;
 #include "audio_queue.h"
 #include "mp3_durations.h"
-constexpr int HIGH = 1, LOW = 0, RELAY_PIN = 1, EMCHECK_PIN = 2, SW_PIN = 15;
+constexpr int HIGH = 1, LOW = 0, RELAY_PIN = 1, EMCHECK_PIN = 2, SW_PIN = 15, EMNERGENCY_CHK_PIN = 14;
 constexpr int NUMPIXELS_LINE = 30, DEFAULT_COLOR_BRIGHTNESS = 50, DEFAULT_LINE_BRIGHTNESS = 50;
 enum GameState { setting, ready, activate };
 unsigned long now = 0;
-int relay = LOW, doorSensor = HIGH, switchInput = HIGH;
+int relay = LOW, doorSensor = HIGH, switchInput = HIGH, emergencyInput = HIGH;
 std::vector<String> audioEvents;
 void digitalWrite(int, int value) { relay = value; }
 // Returning the driven value for RELAY_PIN is faithful, not a shortcut. arduino-esp32 3.3.11
@@ -24,7 +24,10 @@ void digitalWrite(int, int value) { relay = value; }
 // as GPIO_MODE_INPUT_OUTPUT; gpio_config() branches on mode bit 0 and enables the pad input
 // buffer, so digitalRead() on an output pin tracks the level it drives. A pin-readback gate that
 // passes here therefore also holds on hardware.
-int digitalRead(int pin) { return pin == RELAY_PIN ? relay : pin == SW_PIN ? switchInput : doorSensor; }
+int digitalRead(int pin) {
+    return pin == RELAY_PIN ? relay : pin == SW_PIN ? switchInput :
+           pin == EMNERGENCY_CHK_PIN ? emergencyInput : doorSensor;
+}
 // Record blocking audio delays without advancing the timer scheduler.
 void delay(unsigned long ms) { audioEvents.push_back("delay:" + std::to_string(ms)); }
 unsigned long millis() { return now; }
@@ -161,7 +164,64 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     String test = argv[1]; game_state = activate; cooltime_set = 5; cooltime_add = 0;
     my["device_name"] = "duct";
-    if (test == "normal") {
+    if (test.find("emergency_") == 0) {
+        String expected = "activate";
+        if (test == "emergency_cooldown" || test == "emergency_cooldown_finishes") {
+            openNormal(); advance(6000); expected = "lock";
+        } else if (test == "emergency_blockade") {
+            EnterTaggerMode(); expected = "tagger";
+        } else if (test == "emergency_setting") {
+            SettingFunc(); expected = "setting";
+        } else if (test == "emergency_ready") {
+            ReadyFunc(); expected = "ready";
+        }
+        my["device_state"] = expected.c_str();
+        has2wifi.states.clear();
+        EmegencyPush();
+        check(has2wifi.states.empty(), "idle released input does not overwrite server state");
+        if (test != "emergency_stale_boot") {
+            emergencyInput = LOW; EmegencyPush();
+            check(has2wifi.states == std::vector<String>{"emergency"}, "pressed input reports emergency");
+        }
+        if (test != "emergency_quick_release" && test != "emergency_delayed_echo") {
+            my["device_state"] = "emergency";
+            if (test != "emergency_stale_boot") {
+                EmegencyPush();
+                check(has2wifi.states == std::vector<String>{"emergency"}, "acknowledged held input sends no duplicate");
+            }
+        }
+        if (test == "emergency_cooldown_finishes") {
+            finished(); expected = "activate";
+        }
+        const int elapsed = current_time, uses = use_duct_num, relayBefore = relay;
+        const bool available = duct_available, blocked = tagger_mode;
+        const bool timerActive = cooltime_timer.isEnabled(cooltime_timer_id);
+        const auto colorBefore = pixels_line.color;
+        has2wifi.states.clear();
+        emergencyInput = HIGH; EmegencyPush();
+        check(has2wifi.states == std::vector<String>{expected}, "released input restores current operational state");
+        check(current_time == elapsed && use_duct_num == uses && relay == relayBefore &&
+              duct_available == available && tagger_mode == blocked &&
+              cooltime_timer.isEnabled(cooltime_timer_id) == timerActive && pixels_line.color == colorBefore,
+              "reporting release preserves door, cooldown, blockade and lighting");
+        if (test == "emergency_retry") {
+            EmegencyPush();
+            check(has2wifi.states == std::vector<String>{expected, expected},
+                  "unacknowledged release retries while server still reports emergency");
+        }
+        my["device_state"] = expected.c_str(); has2wifi.states.clear();
+        EmegencyPush(); EmegencyPush();
+        check(has2wifi.states.empty(), "acknowledged release stops reporting");
+        if (test == "emergency_delayed_echo") {
+            my["device_state"] = "emergency"; EmegencyPush();
+            check(has2wifi.states == std::vector<String>{expected},
+                  "delayed emergency snapshot after quick release triggers another restoration");
+            my["device_state"] = expected.c_str(); has2wifi.states.clear();
+        }
+        emergencyInput = LOW; EmegencyPush(); my["device_state"] = "emergency";
+        emergencyInput = HIGH; EmegencyPush();
+        check(has2wifi.states == std::vector<String>{"emergency", expected}, "second emergency cycle restores correctly");
+    } else if (test == "normal") {
         openNormal(); advance(3999); check(current_time == 0 && relay == HIGH, "no countdown before close");
         advance(1); check(relay == LOW, "normal closes at four seconds"); finished();
     } else if (test == "block_close_exit" || test == "block_exit_close") {
