@@ -107,6 +107,7 @@ void setup() {
 // ---------------------------------------------------------------------------------
 void loop() {
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
+    WireServiceLoop(); // Sample/synchronize before any starter progress or completion.
     EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영
     // 스타터를 벗어난 채 열려 있는 기여도 세션을 정리한다.
     // [중요] ptrCurrentMode() "앞"이어야 한다 — 이 위치가 두 가지를 동시에 보장한다:
@@ -120,10 +121,6 @@ void loop() {
     //     덤으로 폴링 GET 바로 뒤에 전송 GET이 같은 프레임에 연달아 붙는다.
     ContribLoop();
     ptrCurrentMode();  // 현재 모드 함수 실행 (예: WaitFunc / RfidLoopMain / WirePollMain / StarterActivate)
-    // battery_max/starter_finish/repaired 단계는 ptrCurrentMode가 WirePollMain이 아니라서(BatteryFinish/
-    // StarterActivate/WaitFunc 등) 배선 폴링이 끊긴다 - 그 사이 배선을 뽑아 배터리팩을 재사용하는 부정행위를
-    // 잡기 위해 ptrCurrentMode와 무관하게 매 프레임 별도로 감시한다.
-    WireTheftMonitorLoop();
     TimerRun();         // WifiTimer / GameTimer / BlinkTimer 갱신 — 인터벌이 도래하면 콜백 실행
     // 엔코더/배선/서버 처리가 끝난 뒤 BLE 설정을 대기 없이 한 단계만 진행한다.
     Has1BleBeacon::poll();

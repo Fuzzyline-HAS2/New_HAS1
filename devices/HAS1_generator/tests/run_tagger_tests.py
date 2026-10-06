@@ -99,6 +99,7 @@ void Mp3PlayLargeFolderAndWait(int,int) {}
 void BatteryFinish() {}
 void WirePollMain() {}
 void WireResetTracking() {}
+void WireObserveServerSnapshot() {}
 void NeoLightColor(int,int*) {}
 '''
 tests = r'''

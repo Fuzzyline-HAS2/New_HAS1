@@ -32,3 +32,21 @@ message truncation, and preservation of the original reset report. It does not
 simulate FreeRTOS concurrency or a physical Wi-Fi link. See
 [Telnet logging](../TELNET_LOGGING.md) for capture scope and limits. Both generator
 harnesses run in the `Generator tests` pull-request workflow.
+
+## Absolute wire synchronization regression checks
+
+Use ArduinoJson **v7.4.3** headers, matching the firmware build:
+
+```sh
+ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/tests/run_wire_tests.py
+```
+
+The ASan/UBSan harness compiles production `wire.ino`, the state header, and
+`wire_http.ino` against a fake GPIO/server/HTTP stream and the actual ArduinoJson
+parser. It covers short bounce, the 1-second window, long sample gaps, 0–4 counts,
+LG's 3-pack threshold, lost ACKs and current-value retries, CAS fencing, new
+rounds/identity/epoch, preserved repaired state, strict response validation,
+response size/deadline limits, and the actual completion functions after audio
+and HTTP delays. It does not model a real network, FreeRTOS scheduling, or electrical
+noise. See [the wire protocol and deployment sequence](../WIRE_SYNC.md). The
+Generator tests workflow fetches the pinned JSON headers and runs this harness.
