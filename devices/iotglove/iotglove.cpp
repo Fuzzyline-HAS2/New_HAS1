@@ -8,6 +8,7 @@
 #include "battery.h"
 #include "sensor.h"
 #include "feedback.h"
+#include "pixel_refresh.h"
 #include "network_policy.h"
 #include "state_policy.h"
 #include "library_and_pin.h"
@@ -24,6 +25,7 @@ using namespace iotglove;
 constexpr bool kTraining = IOTGLOVE_TRAINING != 0;
 GameModel game(kTraining ? Profile::Training : Profile::Origin);
 FeedbackEngine feedbackEngine;
+PixelRefresh pixelRefresh;
 BatterySampler battery(IOTGLOVE_BATTERY_DIVIDER_RATIO, IOTGLOVE_BATTERY_CALIBRATION,
                        IOTGLOVE_BATTERY_MIN_MV, IOTGLOVE_BATTERY_MAX_MV);
 HardwareSerial beetleSerial(1);
@@ -462,8 +464,10 @@ void render(uint32_t now) {
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   // Already raw 0..255 — the network task converted it when the snapshot was parsed.
   const uint8_t brightness = kTraining ? 255 : game.server().brightness;
-  if (!haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
-      out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness) {
+  const bool visualChanged = !haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
+      out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness;
+  // Rebuild from current output even on recovery resends, preserving intentional darkness.
+  if (pixelRefresh.update(out.motor, visualChanged, now)) {
     pixels.setBrightness(brightness);
     for (uint8_t n = 0; n < IOTGLOVE_LED_COUNT; ++n)
       pixels.setPixelColor(n, n < out.lit ? pixels.Color(out.red, out.green, out.blue) : 0);

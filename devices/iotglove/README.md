@@ -78,6 +78,8 @@ TTGO와 Beetle OTA는 `badland_shoot`에 직접 연결한다. `first_store`의 �
 
 진동은 [feedback_config.h](feedback_config.h)에서 상태별로 지정한다. 짧게 1회·길게 1회·짧게 2회 및 끄기를 선택할 수 있고 기본 길이는 각각 150ms, 300ms, 150ms ON → 100ms OFF → 150ms ON이다. 서버 필드를 추가하지 않으며 설정 변경은 펌웨어 릴리즈와 OTA로 반영한다.
 
+진동 중 LED 소등이 남는 현상을 완화하기 위해 모터 ON 중에는 500ms마다, OFF 전환 50ms 뒤에는 한 번 현재 LED 상태를 재전송한다. 색·밝기·칸 수 변경은 즉시 전송하며 정상 소등도 그대로 보존한다. 두 번 진동의 중간 OFF 구간에도 같은 규칙을 적용하고, 50ms 전에 다시 ON이 되면 이전 OFF 재전송을 취소한다. 간격은 [pixel_refresh.h](pixel_refresh.h)의 상수로 조절하며 진동 길이와 통신 루프를 지연시키지 않는다.
+
 `feedback_config::Settings`의 해당 초기값을 `Pattern::Short1`, `Long1`, `Short2`, `Off` 중 하나로 바꾼다. 길이는 `shortMs`, `longMs`, `doubleGapMs`에서 조절한다.
 
 | 설정 | 기본 패턴 |
