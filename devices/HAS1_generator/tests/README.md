@@ -45,12 +45,19 @@ The ASan/UBSan harness compiles production `wire.ino`, the state header, and
 `wire_http.ino` against fake GPIO/server/HTTP streams, a deterministic task clock,
 and the actual ArduinoJson parser. It drives the production static sampler task
 with fake FreeRTOS primitives, including samples while synchronous HTTP advances
-the clock. Checks cover the 100 ms sampling interval, 1-second stable window,
-250 ms freshness limit, stopped/failed samplers, and a new stable window after
-main observes a mismatch without refreshing the sampler heartbeat. Critical-section
-checks keep fake logging, rendering, audio, and HTTP outside the state lock.
+the clock. Checks cover the 100 ms sampling interval, a real ten-sample per-pin window,
+and the initial one-second wait. Exact 8/10 and 9/10 votes qualify, while 7/10
+remains ambiguous; disconnection uses the symmetric rule. Alternating equal-count
+masks must remain ambiguous, while staggered per-pin noise can qualify all pins.
+Sliding rise/fall checks retain the last display count but block publication and
+completion during ambiguous windows. Completion reads no raw GPIO and tolerates a
+last sample that disagrees with a valid vote. Long gaps cannot replace ten real
+samples; already-qualified state has no age expiry if sampling stops. Failed task
+creation, millis rollover, and resets clearing the window are also covered.
+Critical-section checks keep fake logging, rendering, audio, and HTTP outside the
+state lock.
 
-Other cases cover short bounce, 0–4 counts, LG's 3-pack threshold, lost ACKs,
+Other cases cover sub-threshold transients, 0–4 counts, LG's 3-pack threshold, lost ACKs,
 latest-value retries, the 2-second failure backoff, and successful updates without
 a blanket 2-second gate. CAS fencing, new rounds/identity/epoch, preserved repaired
 state, strict response validation, and response size/deadline limits remain covered.
