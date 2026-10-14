@@ -1,5 +1,5 @@
-// All four connectors share one observed-count filter in every active stage.
-// 100 ms samples, 1 s stability; gaps over 250 ms restart qualification.
+// Each connector uses the same 8-of-10 sliding vote in every active stage.
+// Real 100 ms task samples; startup waits 1 s and gaps do not expire the verdict.
 static const uint8_t WIRE_PINS[4] = { WIRE_PIN_1, WIRE_PIN_2, WIRE_PIN_3, WIRE_PIN_4 };
 static GeneratorWireState wireState;
 static portMUX_TYPE wireStateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -42,6 +42,11 @@ static bool WireAcknowledge(int count, uint32_t generation) {
     portEXIT_CRITICAL(&wireStateMux);
     return accepted;
 }
+static uint8_t WireReadMask() {
+    uint8_t mask = 0;
+    for (int i = 0; i < 4; ++i) if (digitalRead(WIRE_PINS[i]) == LOW) mask |= (1u << i);
+    return mask;
+}
 // Called only by the input task. No JSON, logging, audio or network work here.
 static void WireSamplerTick() {
     portENTER_CRITICAL(&wireStateMux);
@@ -49,10 +54,10 @@ static void WireSamplerTick() {
     const uint32_t generation = wireState.generation();
     portEXIT_CRITICAL(&wireStateMux);
     if (!enabled) return;
-    const int count = WireCountPlugged();
+    const uint8_t mask = WireReadMask();
     const uint32_t observedAt = millis();
     portENTER_CRITICAL(&wireStateMux);
-    if (wireSamplingEnabled && wireState.generation() == generation) wireState.sample(observedAt,count);
+    if (wireSamplingEnabled && wireState.generation() == generation) wireState.sampleMask(observedAt,mask);
     portEXIT_CRITICAL(&wireStateMux);
 }
 static void WireSamplerTaskMain(void *) {
@@ -89,7 +94,7 @@ void WireResetTracking() {
     batteryFinishDone = false;
     batteryFinishAudioPlayed = false;
     // Never publish raw input or finish while (re)entering a charge cycle.
-    Serial.println("[Wire] reset: waiting for 1 s stable inputs and server acknowledgement");
+    Serial.println("[Wire] reset: waiting for 1 s startup, 8/10 input votes and server acknowledgement");
 }
 
 void WireObserveServerSnapshot() {
@@ -141,16 +146,9 @@ static bool WireSnapshotCanProgress(const GeneratorWireState &snapshot) {
 }
 bool WireCanProgress() { return WireSnapshotCanProgress(WireSnapshot()); }
 bool WireReadyForCompletion() {
-    // Do not sample or refresh the input task's heartbeat from main. A stopped
-    // sampler must remain unqualified even if main can still read the pins.
-    const GeneratorWireState before = WireSnapshot();
-    const int raw = WireCountPlugged();
-    portENTER_CRITICAL(&wireStateMux);
-    if (wireState.generation() == before.generation() && raw != wireState.raw()) wireState.invalidateObservation();
-    const GeneratorWireState after = wireState;
-    portEXIT_CRITICAL(&wireStateMux);
-    return before.generation() == after.generation() && raw == after.raw() &&
-        raw == after.stable() && WireSnapshotCanProgress(after);
+    // Connection, disconnection and completion share the same filtered verdict.
+    // A single raw read must not override the 8-of-10 window or add a sample.
+    return WireSnapshotCanProgress(WireSnapshot());
 }
 
 static bool WireAdoptContext(const GeneratorWireSnapshot &snapshot) {

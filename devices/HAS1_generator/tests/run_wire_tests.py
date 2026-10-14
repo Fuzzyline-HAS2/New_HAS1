@@ -61,7 +61,7 @@ void advanceTime(uint32_t elapsed) {
 }
 unsigned long millis() { return now; }
 void delay(unsigned long value) { advanceTime(value); }
-static int physical = 0;
+static int physical = 0, physicalMask = -1, gpioReads = 0;
 #define WIRE_PIN_1 0
 #define WIRE_PIN_2 1
 #define WIRE_PIN_3 2
@@ -73,7 +73,8 @@ static void (*gpioReadHook)() = nullptr;
 int digitalRead(int pin) {
  assert(criticalDepth==0);
  if(gpioReadHook) { auto hook=gpioReadHook; gpioReadHook=nullptr; hook(); }
- return pin < physical ? LOW : 1;
+ ++gpioReads;
+ return (physicalMask >= 0 ? (physicalMask & (1 << pin)) != 0 : pin < physical) ? LOW : 1;
 }
 JsonDocument my;
 bool batteryFinishDone=false, batteryFinishAudioPlayed=false, receiveMineOn=false;
@@ -189,7 +190,7 @@ struct HTTPClient {
 
 TESTS = r'''
 static void reset(int count=0,int maximum=3) {
- now=0; physical=count; my.clear();
+ now=0; physical=count; physicalMask=-1; gpioReads=0; my.clear();
  fakeTaskEntry=nullptr; pauseSampler=failSamplerCreation=false; criticalDepth=0; nextSamplerWake=0;
  serverState=GeneratorWireSnapshot();
  strcpy(serverState.device,"LG"); strcpy(serverState.epoch,EPOCH1);
@@ -222,15 +223,15 @@ int main() {
  reset(); run(1200); assert(wireState.synced() && writes.size()==1 && readRequests==1);
  assert(writes[0].count==0 && serverState.revision==8); // startup fences an earlier boot
  writes.clear(); readRequests=0;
- for(unsigned duration=100;duration<=900;duration+=100) {
+ for(unsigned duration=100;duration<=700;duration+=100) {
    physical=2; run(duration); physical=0; run(1200);
  }
  assert(writes.empty() && readRequests==0);
- puts("PASS 100..900 ms round trips produce no writes; initial boot is fenced");
+ puts("PASS 100..700 ms round trips produce no writes; initial boot is fenced");
 
  for(int value=0;value<=4;++value) {
    reset(); run(1200); writes.clear(); readRequests=0;
-   physical=value; run(900); assert(writes.empty()); run(2400);
+   physical=value; run(700); assert(writes.empty()); run(2400);
    assert(wireState.stable()==value && wireState.synced());
    assert(writes.size()==(value?1u:0u));
    size_t confirmed=writes.size(); run(6000); assert(writes.size()==confirmed && readRequests==0);
@@ -239,7 +240,7 @@ int main() {
 
  reset(4,3); run(1200); assert(WireReadyForCompletion());
  writes.clear(); settle(3); assert(WireReadyForCompletion() && serverState.count==3);
- physical=2; tick(); assert(!WireReadyForCompletion());
+ physical=2; tick(); assert(WireReadyForCompletion()); run(200); assert(!WireReadyForCompletion());
  run(3200); assert(serverState.count==2 && !WireReadyForCompletion());
  assert(writes.size()==2 && writes[0].count==3 && writes[1].count==2);
  puts("PASS LG physical 4->3->2 is not clamped to maximum 3 and removal blocks completion");
@@ -266,25 +267,92 @@ int main() {
  puts("PASS wrong identity context/count/revision and conflict cannot acknowledge completion");
 
  reset(3); run(1200); assert(WireReadyForCompletion());
- pauseSampler=true; tick(300); assert(!WireReadyForCompletion());
- const GeneratorWireState stopped=WireSnapshot();
- for(int i=0;i<5;++i) { assert(!WireReadyForCompletion()); }
- assert(stopped.generation()==WireSnapshot().generation());
- pauseSampler=false; tick(); run(800); assert(!WireCanProgress()); tick(); assert(WireReadyForCompletion());
- puts("PASS stopped sampler fails closed; main checks do not refresh heartbeat or interpolate gaps");
+ pauseSampler=true; tick(10000); physical=0;
+ const int readsBefore=gpioReads;
+ for(int i=0;i<5;++i) { assert(WireReadyForCompletion()); }
+ assert(gpioReads==readsBefore); // Completion cannot add a raw veto or an extra vote.
+ pauseSampler=false; run(1200); assert(!WireReadyForCompletion() && serverState.count==0);
+ puts("PASS paused qualified sampler retains verdict; completion reads no GPIO and observed removal uses votes");
 
- reset(3); run(1200); assert(WireReadyForCompletion());
- physical=2; assert(!WireReadyForCompletion()); physical=3;
- assert(!WireReadyForCompletion()); run(900); assert(!WireCanProgress()); run(200); assert(WireReadyForCompletion());
- puts("PASS sub-sample removal observed by main requires a new real one-second window");
+ reset(3); advanceTime(0); pauseSampler=true;
+ tick(10000); assert(!WireCanProgress() && writes.empty() && WireSnapshot().stable()==-1);
+ pauseSampler=false; advanceTime(0); WireServiceLoop();
+ assert(!WireCanProgress() && writes.empty());
+ run(800); assert(WireReadyForCompletion() && writes.size()==1);
+ puts("PASS long gap cannot replace ten real samples; no age expiry or synthetic catch-up votes");
+
+ reset(3); pauseSampler=true; WireSamplerTick();
+ for(int sample=1;sample<=9;++sample) {
+   advanceTime(300); WireSamplerTick(); WireServiceLoop();
+   assert(WireReadyForCompletion()==(sample==9));
+ }
+ assert(writes.size()==1 && wireState.synced());
+ puts("PASS repeated 300 ms actual sampling gaps qualify after ten actual observations");
+
+ for(int connectedVotes : {7,8,9}) {
+   GeneratorWireState vote;
+   vote.sampleMask(0,0); // startup sample rolls out; last ten determine verdict
+   for(int sample=1;sample<=10;++sample)
+     vote.sampleMask(sample*100, sample<=connectedVotes ? 0x0f : 0);
+   assert(vote.qualified(1000)==(connectedVotes>=8));
+   if(connectedVotes>=8) {
+     assert(vote.stable()==4 && vote.rawMask()==0);
+     assert(vote.acknowledge(4,vote.generation()) && vote.ready(1000,4));
+   }
+ }
+ puts("PASS exact 8/10 and 9/10 accept all pins despite final raw mismatch; 7/10 remains ambiguous");
+
+ for(int disconnectedVotes : {7,8,9}) {
+   GeneratorWireState vote;
+   vote.sampleMask(0,0x0f);
+   for(int sample=1;sample<=10;++sample)
+     vote.sampleMask(sample*100, sample<=disconnectedVotes ? 0 : 0x0f);
+   assert(vote.qualified(1000)==(disconnectedVotes>=8));
+   if(disconnectedVotes>=8) assert(vote.stable()==0 && vote.rawMask()==0x0f);
+ }
+ puts("PASS disconnection uses the same symmetric 8/10 threshold");
+
+ {
+   GeneratorWireState vote;
+   for(int sample=0;sample<=10;++sample) vote.sampleMask(sample*100, sample%2 ? 0x01 : 0x02);
+   assert(!vote.qualified(1000) && vote.stable()==-1);
+   vote.reset(); vote.sampleMask(0,0x0f);
+   for(int sample=1;sample<=10;++sample) {
+     const uint8_t mask=sample<=8 ? uint8_t(0x0f ^ (1u << ((sample-1)/2))) : 0x0f;
+     vote.sampleMask(sample*100,mask);
+   }
+   assert(vote.qualified(1000) && vote.stable()==4);
+ }
+ puts("PASS equal raw totals can be ambiguous per pin; staggered per-pin noise still qualifies four");
+
+ reset(0); run(1200); writes.clear(); physical=3;
+ run(700); assert(!WireCanProgress() && wireState.stable()==0 && writes.empty());
+ tick(); assert(WireReadyForCompletion() && writes.size()==1 && wireState.stable()==3);
+ physical=0; run(200); assert(WireReadyForCompletion());
+ tick(); assert(!WireCanProgress() && wireState.stable()==3 && writes.size()==1);
+ run(400); assert(!WireCanProgress() && writes.size()==1);
+ tick(); assert(wireState.qualified(now) && wireState.stable()==0 && writes.size()==2 && !WireReadyForCompletion());
+ puts("PASS sliding rise/fall needs eight new votes; ambiguous windows retain UI count without publication or completion");
+
+ {
+   GeneratorWireState rollover;
+   const uint32_t start=UINT32_MAX-500;
+   for(uint32_t sample=0;sample<10;++sample) rollover.sampleMask(start+sample*100u,0x07);
+   assert(!rollover.qualified(start+900u));
+   rollover.sampleMask(start+1000u,0x07); assert(rollover.qualified(start+1000u));
+   assert(rollover.acknowledge(3,rollover.generation()) && rollover.ready(start+10000u,3));
+   const uint32_t generation=rollover.generation(); rollover.reset();
+   assert(!rollover.acknowledge(3,generation) && !rollover.qualified(start+10000u));
+ }
+ puts("PASS millis rollover, initial one-second wait, no age expiry and reset clearing vote history");
 
  reset(3); wireSamplerTask=nullptr; fakeTaskEntry=nullptr; failSamplerCreation=true;
  WireInit(); run(3000); assert(!WireCanProgress() && writes.empty());
  puts("PASS sampler creation failure cannot complete or publish raw inputs");
 
  reset(3); gpioReadHook=WireResetTracking;
- advanceTime(0); assert(WireSnapshot().raw()==-1 && !WireCanProgress());
- tick(); assert(WireSnapshot().raw()==3 && !WireCanProgress());
+ advanceTime(0); assert(WireSnapshot().stable()==-1 && !WireCanProgress());
+ tick(); assert(WireSnapshot().rawMask()==0x07 && !WireCanProgress());
  run(900); assert(!WireCanProgress()); tick(); assert(WireReadyForCompletion());
  puts("PASS GPIO read overlapping reset discards the previous generation observation");
 
@@ -317,7 +385,7 @@ int main() {
  assert(now==2000 && WireReadyForCompletion());
  const uint32_t acknowledgedAt=wireLastAttempt;
  physical=4; while(serverState.count!=4 && now<5000) { tick(); }
- assert(wireLastAttempt-acknowledgedAt==1600 && WireReadyForCompletion());
+ assert(wireLastAttempt-acknowledgedAt==1300 && WireReadyForCompletion());
  puts("PASS latency: stable at 1000 ms, GET/SET 500 ms each -> ready at 2000 ms; next stable send has no 2-second gate");
  physical=3; removeDuringHttp=true;
  while(writes.back().count!=3 && now<8000) { tick(); }
