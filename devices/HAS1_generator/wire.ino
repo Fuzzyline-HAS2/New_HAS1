@@ -12,6 +12,9 @@ static bool wireEnabled = false;
 static bool wireContextValid = false;
 static bool wireRetryPending = false;
 static bool wireFenceNeeded = true; // Fence requests left pending by a previous ESP boot.
+// The server declared battery_max for a cycle this device never completed itself
+// (dashboard override). Physical wires no longer gate that cycle; reset clears it.
+static bool wireServerCompleted = false;
 static uint32_t wireLastAttempt = 0;
 static GeneratorWireSnapshot wireContext;
 static char wireObservedGame[32] = {};
@@ -91,6 +94,7 @@ void WireResetTracking() {
     Mp3BatteryCancel();
     wireContextValid = false;
     wireFenceNeeded = true; // Re-entry/identity changes must fence any earlier in-flight write.
+    wireServerCompleted = false;
     batteryFinishDone = false;
     batteryFinishAudioPlayed = false;
     // Never publish raw input or finish while (re)entering a charge cycle.
@@ -140,11 +144,21 @@ void WireSampleInputs(bool) {
 }
 
 static bool WireSnapshotCanProgress(const GeneratorWireState &snapshot) {
+    // Server override still requires a live, monitored activate stage.
+    if (wireServerCompleted) return wireEnabled && WireTextEquals(my["game_state"],"activate");
     return wireSamplerTask && wireEnabled && wireContextValid && WireTextEquals(my["game_state"],"activate") &&
         wireContext.maximum == (int)my["max_battery_pack"] &&
         snapshot.ready(millis(), (int)my["max_battery_pack"]);
 }
 bool WireCanProgress() { return WireSnapshotCanProgress(WireSnapshot()); }
+// Accept a server-side battery_max this device did not reach physically, so the
+// starter and repair can proceed. Physical counts are still reported to the server.
+void WireAcceptServerCompletion() {
+    if (wireServerCompleted) return;
+    wireServerCompleted = true;
+    Serial.println("[Wire] server declared battery_max; physical wire gate bypassed for this cycle");
+}
+bool WireServerCompleted() { return wireServerCompleted; }
 bool WireReadyForCompletion() {
     // Connection, disconnection and completion share the same filtered verdict.
     // A single raw read must not override the 8-of-10 window or add a sample.
