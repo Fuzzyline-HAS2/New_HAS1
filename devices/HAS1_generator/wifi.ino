@@ -227,6 +227,9 @@ void ActivateFunc(void){
     BREADCRUMB("ActivateFunc:SAMConfig");
     nfc[MAINPN532].SAMConfig(); // RFID 리더 재설정 (직전 상태에서 통신이 꼬였을 경우 대비)
     if((String)(const char*)my["device_state"] == "starter_finish"){
+        // 펌웨어는 starter_finish를 직접 보내지 않으므로 이 상태는 서버(대시보드)가 정한 것이다.
+        // 아래 battery_max와 같은 이유로 물리 배선 확인 없이 수리 완료(StartFinish)까지 진행한다.
+        if (!batteryFinishDone) WireAcceptServerCompletion();
         AllNeoOn(GREEN);
         ptrRfidMode = StartFinish;
         ptrCurrentMode = RfidLoopMain;
@@ -235,6 +238,11 @@ void ActivateFunc(void){
         BlinkTimerStart(CIRCUIT, YELLOW); // 진행 중임을 알리기 위해 CIRCUIT 스트립을 노란색으로 점멸
     }
     else if((String)(const char*)my["device_state"] == "battery_max"){
+        // 이 기기가 직접 완충을 확인하지 않았는데 서버가 battery_max라면 관리자가 대시보드에서
+        // 배선 완료로 강제 진행한 것이다(그 뒤 재부팅·서버 재시작으로 다시 받은 경우 포함).
+        // 서버 판단을 따라 이번 충전 사이클 동안은 물리 배선 확인 없이 스타터로 넘어간다.
+        // 직접 완충한 뒤 되돌아온 battery_max(batteryFinishDone)는 기존대로 배선 확인을 유지한다.
+        if (!batteryFinishDone) WireAcceptServerCompletion();
         // ActivateFunc()은 has2wifi.Loop()의 콜백(DataChanged()) 안에서 호출되므로, 블로킹 오디오
         // 재생+Send를 포함한 BatteryFinish()를 여기서 직접 부르지 않고 다음 loop 반복으로 미룬다.
         ptrCurrentMode = BatteryFinish;

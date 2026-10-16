@@ -198,7 +198,7 @@ static void reset(int count=0,int maximum=3) {
  serverState.count=count; serverState.maximum=maximum; serverState.revision=7;
  has2wifi.ReceiveMine(); refreshes=0;
  wireState=GeneratorWireState(); wireEnabled=false; wireContextValid=false;
- wireRetryPending=false; wireFenceNeeded=true; wireLastAttempt=0; wireContext=GeneratorWireSnapshot();
+ wireRetryPending=false; wireFenceNeeded=true; wireServerCompleted=false; wireLastAttempt=0; wireContext=GeneratorWireSnapshot();
  memset(wireObservedGame,0,sizeof(wireObservedGame));
  memset(wireObservedDevice,0,sizeof(wireObservedDevice)); memset(wireObservedName,0,sizeof(wireObservedName));
  writes.clear(); readRequests=activations=renders=audio=completions=0;
@@ -428,6 +428,19 @@ int main() {
  assert(wireState.synced() && strcmp(wireContext.device,"BG")==0 && serverState.count==3);
  puts("PASS new device identity does not inherit the previous device revision");
 
+ reset(1); run(1200); assert(!WireCanProgress());
+ strcpy(serverState.deviceState,"battery_max"); ++serverState.revision;
+ has2wifi.ReceiveMine(); DataChanged(); run(1500); assert(!WireCanProgress());
+ WireAcceptServerCompletion(); assert(WireServerCompleted() && WireCanProgress() && WireReadyForCompletion());
+ run(3000); assert(WireReadyForCompletion() && serverState.count==1); // physical count still reported
+ strcpy(serverState.deviceState,"tagger"); has2wifi.ReceiveMine(); DataChanged(); assert(WireCanProgress());
+ strcpy(serverState.deviceState,"activate"); has2wifi.ReceiveMine(); DataChanged();
+ assert(!WireServerCompleted() && !WireCanProgress());
+ reset(1); run(1200); strcpy(serverState.deviceState,"battery_max"); has2wifi.ReceiveMine(); DataChanged();
+ WireAcceptServerCompletion(); strcpy(serverState.gameState,"setting"); has2wifi.ReceiveMine(); DataChanged();
+ assert(!WireServerCompleted() && !WireCanProgress());
+ puts("PASS server-declared battery_max bypasses the wire gate only until the next charge cycle");
+
 
  // Actual JSON parser and bounded HTTP body reader, against a fake TCP stream.
  reset(); GeneratorWireSnapshot parsed; JsonDocument json;
@@ -487,6 +500,20 @@ struct Document { std::map<std::string,Value> values; Value& operator[](const ch
 struct Logger { void println(const char*) {} } Serial;
 static bool ready=true, removeDuringAudio=false, removeDuringSend=false, audioFinished=true;
 bool WireReadyForCompletion() { return ready; }
+static bool serverCompleted=false;
+bool WireServerCompleted() { return serverCompleted; }
+static int accepted=0;
+void WireAcceptServerCompletion() { ++accepted; serverCompleted=true; }
+void TaggerReset() {}
+void TaggerEnter() {}
+void BatteryPackSend() {}
+void BlinkTimerStart(int,int) {}
+void RfidLoopMain() {}
+void WirePollMain() {}
+void WireResetTracking() {}
+void StartFinish();
+enum {MAINPN532};
+struct Reader { void SAMConfig() {} } nfc[1];
 bool batteryFinishDone=false,batteryFinishAudioPlayed=false,receiveMineOn=false,starterRfidNeedsValidation=false;
 static int played=0,sent=0,received=0,detached=0,started=0;
 long encoderValue=1000;
@@ -505,8 +532,8 @@ void (*ptrRfidMode)()=WaitFunc;
 void EncoderDetach() {++detached;}
 int StarterGaugeCnt() {return 1;}
 void EncoderNeopixelOn(int) {}
-enum {GAUGE,STARTER,DEVICESTATE,CIRCUIT,BLUE};
-int color[5][3];
+enum {GAUGE,STARTER,DEVICESTATE,CIRCUIT,BLUE,YELLOW,GREEN};
+int color[7][3];
 void NeoLightColor(int,int*) {}
 void AllNeoOn(int) {}
 void LeftGenerator() {}
@@ -538,6 +565,18 @@ int main() {
  ready=true;removeDuringSend=true;StartFinish();
  assert(sent==1&&received==1&&ptrCurrentMode==WaitFunc);
  std::cout<<"PASS actual StartFinish blocks unconfirmed inputs and does not undo an already-sent repair\n";
+ batteryFinishDone=batteryFinishAudioPlayed=receiveMineOn=false;played=sent=0;
+ ready=true;audioFinished=true;serverCompleted=true;ptrCurrentMode=BatteryFinish;BatteryFinish();
+ assert(played==1&&sent==0&&!receiveMineOn&&batteryFinishDone&&ptrCurrentMode==StarterActivate);
+ std::cout<<"PASS server-declared battery_max announces locally without sending battery_max again\n";
+ for(const char *state : {"battery_max","starter_finish"}) {
+   my["device_state"]=state;
+   accepted=0;serverCompleted=false;batteryFinishDone=true;ActivateFunc();assert(accepted==0);
+   batteryFinishDone=false;ActivateFunc();assert(accepted==1);
+ }
+ my["device_state"]="activate";accepted=0;batteryFinishDone=false;ActivateFunc();
+ assert(accepted==0&&ptrCurrentMode==WirePollMain);
+ std::cout<<"PASS actual ActivateFunc trusts server battery_max/starter_finish only for cycles not completed locally\n";
 }
 '''
 
@@ -553,7 +592,7 @@ def production_function(file, name):
 
 with tempfile.TemporaryDirectory(prefix="generator-wire-completion-") as directory:
     temp=Path(directory)
-    source=COMPLETION_PREFIX+'\n'+production_function('rfid.ino','BatteryFinish')+'\n'+production_function('rfid.ino','StartFinish')+'\n'+COMPLETION_TESTS
+    source=COMPLETION_PREFIX+'\n'+production_function('rfid.ino','BatteryFinish')+'\n'+production_function('rfid.ino','StartFinish')+'\n'+production_function('wifi.ino','ActivateFunc')+'\n'+COMPLETION_TESTS
     (temp/'test.cpp').write_text(source)
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++11','-Wall','-Wextra','-Werror',
                     '-fsanitize=address,undefined','-fno-omit-frame-pointer',str(temp/'test.cpp'),'-o',str(temp/'test')],check=True)

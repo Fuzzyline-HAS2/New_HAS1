@@ -273,12 +273,16 @@ void BatteryFinish()
     if (!WireReadyForCompletion()) { EncoderDetach(); return; }
     batteryFinishDone = true;
     BREADCRUMB("BatteryFinish:send");
-    has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
-    // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
-    // 이걸 "새로 바뀐 값"으로 착각해 ActivateFunc()->BatteryFinish()를 또 호출하는 걸 막는다.
-    // (has2wifi.Loop() 콜백 안에서 이 함수가 불린 경우 — 예: activate 재진입으로 바로 완충 판정된 경우 —
-    // 이 중복 호출은 콜백 안에서 has2wifi.Send()를 재진입 호출하게 되어 와이파이 연결이 불안정해졌었다.)
-    receiveMineOn = true;
+    // 서버가 먼저 battery_max로 정한 경우(대시보드 강제 진행)는 이미 서버 상태이므로 다시 보내지 않는다 —
+    // 같은 값을 또 보내면 서버가 배선 완료 이벤트/효과음을 한 번 더 낼 수 있다.
+    if (!WireServerCompleted()) {
+      has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
+      // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
+      // 이걸 "새로 바뀐 값"으로 착각해 ActivateFunc()->BatteryFinish()를 또 호출하는 걸 막는다.
+      // (has2wifi.Loop() 콜백 안에서 이 함수가 불린 경우 — 예: activate 재진입으로 바로 완충 판정된 경우 —
+      // 이 중복 호출은 콜백 안에서 has2wifi.Send()를 재진입 호출하게 되어 와이파이 연결이 불안정해졌었다.)
+      receiveMineOn = true;
+    }
     Serial.println("Battery Finish Func!");
     // encoderValue/GameTimer 리셋도 최초 1회만 — tagger로 갔다가 battery_max로 되돌아와 이 함수가
     // 다시 불릴 때는 리셋하면 안 된다. tagger 중에도 GameTimer(wifi.ino)를 멈추지 않았으므로

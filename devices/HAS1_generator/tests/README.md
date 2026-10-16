@@ -64,6 +64,10 @@ state, strict response validation, and response size/deadline limits remain cove
 The actual completion functions are also compiled with fake audio and HTTP to
 check that battery completion yields while audio is pending, rechecks readiness
 after audio and the state send, and does not repeat its announcement or send.
+A server-declared `battery_max`/`starter_finish` (dashboard override) for a cycle
+this device did not complete itself bypasses the physical wire gate until the next
+charge cycle; it still reports physical counts and does not re-send `battery_max`.
+The real `ActivateFunc` is compiled to check that a self-completed cycle keeps the gate.
 
 These deterministic checks do not establish real FreeRTOS concurrency, task
 latency, a real network, DFPlayer UART timing, or electrical noise behavior. Field

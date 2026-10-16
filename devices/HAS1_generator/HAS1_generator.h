@@ -213,6 +213,8 @@ void WireServiceLoop();
 int WireDisplayCount();
 bool WireCanProgress();
 bool WireReadyForCompletion();
+void WireAcceptServerCompletion(); // 서버(대시보드)가 정한 battery_max를 이번 충전 사이클 동안 따른다
+bool WireServerCompleted();
 GeneratorWireResult WireHttpRequest(bool set, const char *device, int count, const char *epoch,
                                     uint32_t revision, GeneratorWireSnapshot &snapshot);
 void WirePollMain();
