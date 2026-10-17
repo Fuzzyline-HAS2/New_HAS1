@@ -61,6 +61,7 @@ private:
     unsigned long lastWifiScanMs;
     bool wifiCandidatesInitialized;
     bool legacy1MbpsEnabled = false;
+    bool boundedResponseBodyEnabled = false;
     // Setup may have consumed the notification; validate the first fresh poll too.
     bool freshReceivePending = true;
 
@@ -89,6 +90,9 @@ public:
     void SetDebugPrint(Print *debugPrint);
     // Call before Setup/Connect. Applied on every connection attempt; default is off.
     void EnableLegacy1Mbps();
+    // Opt-in: 1500ms body deadline, 16KiB cap, complete framing before parsing.
+    // DNS/connect/HTTP headers retain HTTPClient timeouts; not a request deadline.
+    void EnableBoundedResponseBody();
 
     void Setup();
     void Setup(char *new_ssid, char *new_password);

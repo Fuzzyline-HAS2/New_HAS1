@@ -37,7 +37,9 @@ void Mp3_Init() {
 // dfPlayerReady가 false면(초기화 실패) 아무 것도 하지 않고 조용히 무시한다.
 void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
+    BREADCRUMB("Mp3PlayLargeFolder:send");
     myDFPlayer.playLargeFolder(folder_number, file_number);
+    BREADCRUMB("Mp3PlayLargeFolder:sent");
 }
 
 // 트랙 재생이 끝날 때까지(최대 MP3_WAIT_TIMEOUT_MS) 대기한 뒤 리턴한다.
@@ -101,11 +103,14 @@ void Mp3BatteryStart() {
 bool Mp3BatteryFinished() {
     if (!dfPlayerReady || batteryAudioPhase == BatteryAudioPhase::Idle) return true;
     if (batteryAudioPhase == BatteryAudioPhase::Preparing) {
-        unsigned drained = 0;
-        while (drained < 8 && myDFPlayer.available()) { myDFPlayer.readType(); ++drained; }
-        if (drained == 8) {
+        for (unsigned i = 0; i < 8; ++i) {
+            if (myDFPlayer.available()) myDFPlayer.readType();
+            if (!myDFPlayer.hasPendingInput()) break;
+        }
+        if (myDFPlayer.hasPendingInput()) {
             // Flooded/stuck audio must not prevent the game forever.
             if (uint32_t(millis()-batteryAudioStarted) < MP3_WAIT_TIMEOUT_MS) return false;
+            myDFPlayer.resetReceiveState();
             batteryAudioPhase = BatteryAudioPhase::Idle;
             Serial.println("[MP3] battery pre-play event drain timed out; skipping audio");
             return true;

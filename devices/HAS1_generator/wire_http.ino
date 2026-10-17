@@ -1,5 +1,6 @@
 // Generator-only CAS endpoint. Never uses HAS2_Wifi's shared HTTPClient.
 #include <HTTPClient.h>
+#include <has2_http_body.h>
 
 static String WireUrlEncode(const char *value) {
   static const char hex[] = "0123456789ABCDEF";
@@ -62,15 +63,19 @@ GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
   const int status = request.GET();
   if (status != 200 && status != 409) {
     Serial.printf("[WireSync] %s HTTP=%d\n", set ? "set" : "get", status);
-    request.end(); return GeneratorWireResult::Failed;
+    Has2HttpBody::closeResponse(request); return GeneratorWireResult::Failed;
   }
   const int length = request.getSize();
   char body[1025];
   if (length <= 0 || length >= static_cast<int>(sizeof(body))) {
     Serial.println("[WireSync] invalid/missing response length");
-    request.end(); return GeneratorWireResult::Failed;
+    Has2HttpBody::closeResponse(request); return GeneratorWireResult::Failed;
   }
   auto *stream = request.getStreamPtr();
+  if (!stream) {
+    Has2HttpBody::closeResponse(request);
+    return GeneratorWireResult::Failed;
+  }
   size_t received = 0;
   const uint32_t started = millis();
   while (received < static_cast<size_t>(length) && uint32_t(millis() - started) < 1000) {
@@ -84,7 +89,7 @@ GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
     } else if (!request.connected()) break;
     else delay(1);
   }
-  request.end();
+  Has2HttpBody::closeResponse(request);
   if (received != static_cast<size_t>(length)) return GeneratorWireResult::Failed;
   JsonDocument json;
   if (deserializeJson(json, body, received) || !json["success"].is<bool>() ||

@@ -23,17 +23,27 @@ lib = (root.parents[1] / 'libraries/HAS2_Wifi/HAS2_Wifi.cpp').read_text()
 functions = '\n'.join(suite['function'](lib, 'HAS2_Wifi::' + name) for name in
                       ['LoopFresh', 'HttpRequest', 'JsonParsingFresh'])
 # Host std::string provides the equivalent Arduino String operations.
-functions = functions.replace(' + String(httpcode)', ' + std::to_string(httpcode)').replace('HOST_NAME.substring(7)', 'HOST_NAME.substr(7)')
+functions = functions.replace(' + String(httpcode)', ' + std::to_string(httpcode)').replace('HOST_NAME.substring(7)', 'HOST_NAME.substr(7)').replace('string_request.startsWith("http://")', '(string_request.find("http://") == 0)')
 source = source.replace('// POLLING_DECLARATIONS', r'''
 struct Response { int status; String body; };
 struct Transport {
     std::vector<Response> replies;
     size_t consumed = 0;
     void setReuse(bool) {} void begin(String) {} void end() {}
+    void collectHeaders(const char**, size_t) { std::abort(); } // Duct must remain legacy opt-out.
     int GET() { if (consumed >= replies.size()) std::abort(); return replies[consumed++].status; }
     String getString() { return replies[consumed - 1].body; }
     String errorToString(int) { return "transport failure"; }
 } http;
+// The bounded path is covered by generator/run_http_body_tests.py. In this
+// opt-out regression suite entering it is an error, not a successful mock.
+struct HAS2BodyClock { explicit HAS2BodyClock(bool) {} };
+namespace Has2HttpBody {
+    enum class Result { Ok };
+    template<class H> void closeResponse(H&) { std::abort(); }
+    template<class H,class B,class C> Result readResponse(H&, B&, C&) { std::abort(); }
+}
+void HAS2DebugPrintf(const char*, ...) {}
 constexpr int HTTP_CODE_OK = 200;
 Logger* _has2DebugPrint = &Serial;
 int firmwareUpdates = 0;
@@ -41,6 +51,7 @@ struct Esp { int restarts = 0; void restart() { ++restarts; } } ESP;
 class HAS2_Wifi : public Wifi {
     String server = "http://test/has2.php", my_mac = "test", HOST_NAME = "http://test";
     // FRESH_PENDING_DECLARATION
+    // BOUNDED_BODY_DECLARATION
     bool HttpRequest(String, String, bool = false);
     bool JsonParsingFresh(String, String);
     void JsonParsing(String, String) { std::abort(); } // Fresh path must not use legacy parser.
@@ -54,6 +65,8 @@ public:
 header = (root.parents[1] / 'libraries/HAS2_Wifi/HAS2_Wifi.h').read_text()
 source = source.replace('// FRESH_PENDING_DECLARATION',
                         re.search(r'bool freshReceivePending = (?:true|false);', header).group())
+source = source.replace('// BOUNDED_BODY_DECLARATION',
+                        re.search(r'bool boundedResponseBodyEnabled = (?:true|false);', header).group())
 source += functions + r'''
 int callbacks = 0;
 void changed() { ++callbacks; DataChange(); }
