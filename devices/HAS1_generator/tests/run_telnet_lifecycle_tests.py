@@ -79,7 +79,12 @@ static int send(int fd,const void *data,size_t len,int flags){
 }
 static std::vector<std::string> prior={"[GD prior] header\r\n","[GD prior] 0\r\n","[GD prior] 1\r\n"};
 static size_t DiagnosticPriorLine(unsigned i,char *buf,size_t cap){
- if(i>=prior.size())return 0;assert(prior[i].size()<cap);memcpy(buf,prior[i].data(),prior[i].size());return prior[i].size();
+ if (i >= prior.size()) {
+  return 0;
+ }
+ assert(prior[i].size() < cap);
+ memcpy(buf, prior[i].data(), prior[i].size());
+ return prior[i].size();
 }
 static size_t TelnetFormatDiagnostics(char *buf,size_t cap){
  return snprintf(buf,cap,"[diagnostics] host mock\r\n");
