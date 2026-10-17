@@ -68,6 +68,11 @@ void HAS2_Wifi::EnableBoundedResponseBody()
   boundedResponseBodyEnabled = true;
 }
 
+void HAS2_Wifi::SetHttpDiagnosticHook(void (*hook)(const char *, const char *, int32_t, uint32_t, uint32_t))
+{
+  httpDiagnosticHook = hook;
+}
+
 struct HAS2BodyClock
 {
   explicit HAS2BodyClock(bool plainTcp = false) : plainTcp_(plainTcp) {}
@@ -886,6 +891,15 @@ bool HAS2_Wifi::JsonParsingFresh(String request, String json)
  */
 bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireFresh)
 {
+  const auto diagnosticHook = httpDiagnosticHook;
+  const uint32_t requestStarted = diagnosticHook ? static_cast<uint32_t>(millis()) : 0;
+  uint32_t bodyBytes = 0;
+  const auto diagnostic = [&](const char *phase, int32_t result, uint32_t detail) {
+    if (diagnosticHook)
+      diagnosticHook(request.c_str(), phase, result,
+                     static_cast<uint32_t>(millis()) - requestStarted, detail);
+  };
+  diagnostic("request.begin", 0, 0);
   // Receive() callers inspect tag without a success return. A new card lookup
   // must never inherit the previous card's role after any request failure.
   // Keep ReceiveMine snapshots and legacy opt-out behavior unchanged.
@@ -910,18 +924,28 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
   }
 
   int httpcode = http.GET();
+  diagnostic("get.end", httpcode, 0);
   bool ok = false;
+  const auto finish = [&](bool success) {
+    diagnostic("close.begin", httpcode, bodyBytes);
+    if (boundedResponseBodyEnabled) Has2HttpBody::closeResponse(http);
+    else http.end();
+    diagnostic("close.end", httpcode, bodyBytes);
+    diagnostic("request.end", success ? 1 : 0, bodyBytes);
+    return success;
+  };
 
   String boundedPayload;
   if (boundedResponseBodyEnabled && httpcode > 0)
   {
     HAS2BodyClock clock(string_request.startsWith("http://"));
     const Has2HttpBody::Result result = Has2HttpBody::readResponse(http, boundedPayload, clock);
+    bodyBytes = static_cast<uint32_t>(boundedPayload.length());
+    diagnostic("body.end", static_cast<int32_t>(result), bodyBytes);
     if (result != Has2HttpBody::Result::Ok)
     {
       HAS2DebugPrintf("HTTP body rejected (%d), code: %d\n", static_cast<int>(result), httpcode);
-      Has2HttpBody::closeResponse(http);
-      return false;
+      return finish(false);
     }
   }
 
@@ -930,6 +954,11 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
     if (httpcode == HTTP_CODE_OK)
     {
       String payload = boundedResponseBodyEnabled ? boundedPayload : http.getString();
+      if (!boundedResponseBodyEnabled)
+      {
+        bodyBytes = static_cast<uint32_t>(payload.length());
+        diagnostic("body.end", 0, bodyBytes);
+      }
       if (request != "Loop")
       {
         // 응답 바디가 빈 문자열이면 println(payload)가 그냥 개행만 찍어서, 텔넷
@@ -961,6 +990,11 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
       // 함께 찍는다. printf는 내부 버퍼가 짧아 긴 URL이 잘릴 수 있어 println+
       // 문자열 결합으로 출력한다.
       String error_payload = boundedResponseBodyEnabled ? boundedPayload : http.getString();
+      if (!boundedResponseBodyEnabled)
+      {
+        bodyBytes = static_cast<uint32_t>(error_payload.length());
+        diagnostic("body.end", 0, bodyBytes);
+      }
       _has2DebugPrint->println("HTTP GET... code: " + String(httpcode) + ", request: " + string_request);
       if (error_payload.length())
       {
@@ -970,6 +1004,7 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
   }
   else
   {
+    diagnostic("body.end", -1, 0);
     _has2DebugPrint->println("HTTP GET... failed, error: " + http.errorToString(httpcode) + ", request: " + string_request);
     // if(httpRequestCnt < 2){
     //   _has2DebugPrint->printf("HTTP GET... failed, error: %s\n", http.errorToString(httpcode).c_str());
@@ -982,9 +1017,7 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
     //   _has2DebugPrint->printf("Maximum request exceed!");
     // }
   }
-  if (boundedResponseBodyEnabled) Has2HttpBody::closeResponse(http);
-  else http.end();
-  return ok;
+  return finish(ok);
 }
 
 /**

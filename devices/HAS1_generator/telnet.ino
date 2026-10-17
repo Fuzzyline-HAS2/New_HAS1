@@ -24,6 +24,13 @@ static bool telnetReplayEnded = false;
 static char telnetControl[1024];
 static size_t telnetControlLength = 0;
 static size_t telnetControlSent = 0;
+static unsigned telnetPriorLine = 0;
+static bool telnetPriorDone = true;
+// Only a failed send with real output starts this watchdog. Main-loop delays
+// after successful writes and genuinely idle clients are not send stalls.
+static constexpr uint32_t kTelnetSendStallMs = 5000;
+static bool telnetSendPending = false;
+static uint32_t telnetLastSendProgress = 0;
 
 static void TelnetRemember(const uint8_t *buffer, size_t size) {
   while (size) {
@@ -34,6 +41,17 @@ static void TelnetRemember(const uint8_t *buffer, size_t size) {
     buffer += chunk;
     size -= chunk;
   }
+}
+
+void TelnetDiagnosticWrite(const char *text, size_t length) {
+  if (!text || !length) return;
+  // DiagnosticPrintf uses a 320-byte buffer including its terminating NUL.
+  // Bound even an accidental larger call, and keep each diagnostic record
+  // contiguous while concurrent legacy producers append their chunks.
+  const size_t kept = length < 320 ? length : 319;
+  portENTER_CRITICAL(&telnetLogMux);
+  telnetHistory.append(reinterpret_cast<const uint8_t *>(text), kept);
+  portEXIT_CRITICAL(&telnetLogMux);
 }
 
 static int TelnetVprintf(const char *format, va_list arguments) {
@@ -135,6 +153,8 @@ static void TelnetStartSession() {
   telnetReplayEnd = telnetHistory.end();
   portEXIT_CRITICAL(&telnetLogMux);
   telnetReplayEnded = false;
+  telnetPriorLine = 0;
+  telnetPriorDone = false;
   telnetControlSent = 0;
   telnetControlLength = TelnetFormatDiagnostics(telnetControl, sizeof(telnetControl));
   const int extra = snprintf(telnetControl + telnetControlLength,
@@ -149,8 +169,58 @@ static void TelnetStartSession() {
     const size_t room = sizeof(telnetControl) - telnetControlLength - 1;
     telnetControlLength += static_cast<size_t>(extra) < room ? static_cast<size_t>(extra) : room;
   }
+  telnetSendPending = false;
+  telnetLastSendProgress = 0;
   telnetSessionActive = true;
   DebugSerial.println("Telnet client connected");
+}
+
+static void TelnetCloseSession() {
+  telnetClient.stop();
+  telnetSessionActive = false;
+  telnetSendPending = false;
+}
+
+static bool TelnetHasPendingOutput() {
+  // Materialize at most one immutable prior record. The terminating empty
+  // record must not turn an otherwise idle connection into a timed-out one.
+  if (telnetControlSent >= telnetControlLength && !telnetPriorDone) {
+    telnetControlLength = DiagnosticPriorLine(telnetPriorLine++, telnetControl, sizeof(telnetControl));
+    telnetControlSent = 0;
+    if (!telnetControlLength) telnetPriorDone = true;
+  }
+  if (telnetControlSent < telnetControlLength || !telnetReplayEnded) return true;
+  portENTER_CRITICAL(&telnetLogMux);
+  const bool historyPending = telnetPosition < telnetHistory.end();
+  portEXIT_CRITICAL(&telnetLogMux);
+  return historyPending;
+}
+
+static void TelnetDrain();
+
+// Return whether the one permitted drain budget was used by a recovery probe.
+static bool TelnetExpireStalledSession() {
+  if (!telnetSessionActive) return false;
+  if (telnetClient.fd() < 0) {
+    TelnetCloseSession();
+    return false;
+  }
+  if (!TelnetHasPendingOutput()) {
+    telnetSendPending = false;
+    return false;
+  }
+  if (!telnetSendPending ||
+      static_cast<uint32_t>(millis() - telnetLastSendProgress) < kTelnetSendStallMs) return false;
+  // A long main-loop delay may have elapsed while the peer recovered. Probe
+  // with the normal bounded sender before disconnecting a now-healthy peer.
+  TelnetDrain();
+  if (telnetSessionActive && telnetSendPending &&
+      static_cast<uint32_t>(millis() - telnetLastSendProgress) >= kTelnetSendStallMs) {
+    // Do not flush or wait for the peer: release the stalled collector so
+    // a replacement can be accepted in this same loop iteration.
+    TelnetCloseSession();
+  }
+  return true;
 }
 
 // Each invocation makes at most four nonblocking send attempts of 256 bytes.
@@ -158,10 +228,18 @@ static void TelnetStartSession() {
 static void TelnetDrain() {
   if (!telnetSessionActive) return;
   const int socketFd = telnetClient.fd();
-  if (socketFd < 0) return;
+  if (socketFd < 0) {
+    TelnetCloseSession();
+    return;
+  }
   for (unsigned attempt = 0; attempt < 4; ++attempt) {
     uint8_t chunk[256];
     size_t size = 0;
+    if (telnetControlSent >= telnetControlLength && !telnetPriorDone) {
+      telnetControlLength = DiagnosticPriorLine(telnetPriorLine++, telnetControl, sizeof(telnetControl));
+      telnetControlSent = 0;
+      if (!telnetControlLength) telnetPriorDone = true;
+    }
     bool control = telnetControlSent < telnetControlLength;
     if (control) {
       size = telnetControlLength - telnetControlSent;
@@ -198,14 +276,22 @@ static void TelnetDrain() {
         continue;
       }
     }
-    if (!size) return;
+    if (!size) {
+      telnetSendPending = false;
+      return;
+    }
     const int sent = send(socketFd, chunk, size, MSG_DONTWAIT);
     if (sent > 0) {
+      telnetLastSendProgress = millis();
+      telnetSendPending = false;
       if (control) telnetControlSent += static_cast<size_t>(sent);
       else telnetPosition += static_cast<size_t>(sent);
     } else {
       if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        telnetClient.stop();
+        TelnetCloseSession();
+      } else if (!telnetSendPending) {
+        telnetLastSendProgress = millis();
+        telnetSendPending = true;
       }
       return;
     }
@@ -213,6 +299,11 @@ static void TelnetDrain() {
 }
 
 void TelnetRun() {
+  if (telnetSessionActive && !telnetClient.connected()) {
+    TelnetCloseSession();
+    DebugSerial.println("Telnet client disconnected");
+  }
+  const bool drainedForStall = TelnetExpireStalledSession();
   if (telnetServer.hasClient()) {
     WiFiClient newClient = telnetServer.available();
     if (telnetSessionActive && telnetClient.connected()) {
@@ -228,8 +319,7 @@ void TelnetRun() {
     }
   }
   if (telnetSessionActive && !telnetClient.connected()) {
-    telnetClient.stop();
-    telnetSessionActive = false;
+    TelnetCloseSession();
     DebugSerial.println("Telnet client disconnected");
   }
   if (!telnetSessionActive) return;
@@ -238,5 +328,5 @@ void TelnetRun() {
   for (unsigned i = 0; i < 64 && telnetClient.available(); ++i) {
     (void)telnetClient.read();
   }
-  TelnetDrain();
+  if (!drainedForStall) TelnetDrain();
 }

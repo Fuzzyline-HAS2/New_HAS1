@@ -43,6 +43,9 @@ static bool WireAcknowledge(int count, uint32_t generation) {
     portENTER_CRITICAL(&wireStateMux);
     const bool accepted = wireState.acknowledge(count, generation);
     portEXIT_CRITICAL(&wireStateMux);
+    DiagnosticPoint(GeneratorDiagnostic::Wire,accepted?1:-1,generation);
+    DiagnosticPrintf("[GD] t=%lu wire_ack accepted=%u count=%d generation=%lu\r\n",
+        (unsigned long)millis(),accepted,count,(unsigned long)generation);
     return accepted;
 }
 static uint8_t WireReadMask() {
@@ -134,6 +137,12 @@ void WireSampleInputs(bool) {
     if (!wireEnabled) return;
     const GeneratorWireState snapshot = WireSnapshot();
     if (!snapshot.qualified(millis()) || snapshot.stable() == wireLastPresented) return;
+    // Persist the exact presentation input before LED/audio can block. Text
+    // snapshots are separately rate-limited; this compact transition is not.
+    DiagnosticPoint(GeneratorDiagnostic::Wire,snapshot.stable(),
+        uint32_t(snapshot.rawMask()) | (uint32_t(snapshot.connectedVotes(0))<<4) |
+        (uint32_t(snapshot.connectedVotes(1))<<8) | (uint32_t(snapshot.connectedVotes(2))<<12) |
+        (uint32_t(snapshot.connectedVotes(3))<<16));
     const int previous = wireLastPresented;
     wireLastPresented = snapshot.stable();
     Serial.printf("[Wire] stable=%d previous=%d maximum=%d\n", snapshot.stable(), previous, (int)my["max_battery_pack"]);
@@ -200,10 +209,45 @@ static bool WireAdoptContext(const GeneratorWireSnapshot &snapshot) {
     return true;
 }
 
+static void WireDiagnosticSnapshot(const GeneratorWireState &s) {
+    static bool first=true;
+    static uint8_t previousRaw=0;
+    static int previousStable=-2,previousAck=-2;
+    static uint32_t previousGeneration=0,last=0,changes=0;
+    static bool previousQualified=false;
+    const uint32_t now=millis();
+    const bool qualified=s.qualified(now);
+    const int ack=s.acknowledged()?s.acknowledgedCount():-1;
+    const bool changed=first || previousRaw!=s.rawMask() || previousStable!=s.stable() ||
+        previousAck!=ack || previousGeneration!=s.generation() || previousQualified!=qualified;
+    if (changed) ++changes;
+    previousRaw=s.rawMask(); previousStable=s.stable(); previousAck=ack;
+    previousGeneration=s.generation(); previousQualified=qualified;
+    if (!first && uint32_t(now-last)<500) return; // At most 2 detailed wire records/sec.
+    if (!first && !changes && uint32_t(now-last)<10000) return;
+    first=false; last=now;
+    const uint8_t a=s.connectedVotes(0),b=s.connectedVotes(1),c=s.connectedVotes(2),d=s.connectedVotes(3);
+    uint8_t ambiguous=0;
+    if (s.sampleCount()==10) {
+      const uint8_t votes[4]={a,b,c,d};
+      for (unsigned i=0;i<4;++i) if (votes[i]>2 && votes[i]<8) ambiguous|=1u<<i;
+    }
+    const uint32_t detail=uint32_t(s.rawMask()) | (uint32_t(a)<<4) | (uint32_t(b)<<8) |
+        (uint32_t(c)<<12) | (uint32_t(d)<<16) | (uint32_t(ambiguous)<<20);
+    DiagnosticPoint(GeneratorDiagnostic::Wire,s.stable(),detail);
+    DiagnosticPrintf("[GD] t=%lu wire raw=%X votes=%u,%u,%u,%u samples=%u ambiguous=%X stable=%d qualified=%u ack=%d gen=%lu age=%lu enabled=%u context=%u retry=%u fence=%u override=%u changes=%lu\r\n",
+        (unsigned long)now,s.rawMask(),a,b,c,d,s.sampleCount(),ambiguous,s.stable(),qualified,ack,
+        (unsigned long)s.generation(),(unsigned long)s.sampleAge(now),wireEnabled,wireContextValid,
+        wireRetryPending,wireFenceNeeded,wireServerCompleted,(unsigned long)changes);
+    changes=0;
+}
+
 void WireServiceLoop() {
     WireObserveServerSnapshot();
-    WireSampleInputs(false);
     GeneratorWireState observed = WireSnapshot();
+    WireDiagnosticSnapshot(observed);
+    WireSampleInputs(false);
+    observed = WireSnapshot();
     if (!wireSamplerTask || !wireEnabled || !observed.qualified(millis()) ||
         (wireContextValid && observed.synced() && !wireFenceNeeded)) return;
     // Fresh stable values are sent immediately. Only failures are backed off.

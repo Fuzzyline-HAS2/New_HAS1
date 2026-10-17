@@ -62,6 +62,15 @@ class GeneratorWireState {
   uint8_t rawMask() const { return lastMask_; }
   int acknowledgedCount() const { return acknowledgedCount_; }
   uint32_t generation() const { return generation_; }
+  // Diagnostics operate on a copied snapshot, never from inside the sampler.
+  uint8_t sampleCount() const { return sampleCount_; }
+  uint32_t sampleAge(uint32_t now) const { return sampled_ ? uint32_t(now-lastSample_) : UINT32_MAX; }
+  uint8_t connectedVotes(uint8_t pin) const {
+    if (pin >= 4) return 0;
+    uint8_t votes=0;
+    for (uint8_t i=0;i<sampleCount_;++i) if (masks_[i] & (1u<<pin)) ++votes;
+    return votes;
+  }
  private:
   bool sampled_, qualified_, acknowledged_, startupComplete_;
   int stable_, acknowledgedCount_;

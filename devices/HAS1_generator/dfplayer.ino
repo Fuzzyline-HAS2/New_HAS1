@@ -37,6 +37,7 @@ void Mp3_Init() {
 // dfPlayerReady가 false면(초기화 실패) 아무 것도 하지 않고 조용히 무시한다.
 void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
+    DiagnosticScope trace(GeneratorDiagnostic::AudioSend,(uint32_t(folder_number)<<16)|file_number);
     BREADCRUMB("Mp3PlayLargeFolder:send");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     BREADCRUMB("Mp3PlayLargeFolder:sent");
@@ -51,12 +52,15 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
 #define MP3_WAIT_TIMEOUT_MS 2000
 void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
+    DiagnosticScope trace(GeneratorDiagnostic::AudioWait,(uint32_t(folder_number)<<16)|file_number);
     BREADCRUMB("Mp3PlayLargeFolderAndWait");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     unsigned long start = millis();
+    bool finished=false;
     while (millis() - start < MP3_WAIT_TIMEOUT_MS) {
-        if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) break;
+        if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) { finished=true; break; }
     }
+    trace.result(finished?1:-1,(uint32_t(folder_number)<<16)|file_number);
     BREADCRUMB("Mp3PlayLargeFolderAndWait:done");
 }
 
@@ -103,6 +107,7 @@ void Mp3BatteryStart() {
 bool Mp3BatteryFinished() {
     if (!dfPlayerReady || batteryAudioPhase == BatteryAudioPhase::Idle) return true;
     if (batteryAudioPhase == BatteryAudioPhase::Preparing) {
+        DiagnosticScope trace(GeneratorDiagnostic::AudioDrain);
         for (unsigned i = 0; i < 8; ++i) {
             if (myDFPlayer.available()) myDFPlayer.readType();
             if (!myDFPlayer.hasPendingInput()) break;
@@ -110,6 +115,7 @@ bool Mp3BatteryFinished() {
         if (myDFPlayer.hasPendingInput()) {
             // Flooded/stuck audio must not prevent the game forever.
             if (uint32_t(millis()-batteryAudioStarted) < MP3_WAIT_TIMEOUT_MS) return false;
+            trace.result(-1,uint32_t(millis()-batteryAudioStarted));
             myDFPlayer.resetReceiveState();
             batteryAudioPhase = BatteryAudioPhase::Idle;
             Serial.println("[MP3] battery pre-play event drain timed out; skipping audio");
@@ -123,10 +129,14 @@ bool Mp3BatteryFinished() {
     for (unsigned i = 0; i < 8 && myDFPlayer.available(); ++i) {
         if (myDFPlayer.readType() == DFPlayerPlayFinished) {
             batteryAudioPhase = BatteryAudioPhase::Idle;
+            DiagnosticPoint(GeneratorDiagnostic::AudioWait,1,uint32_t(millis()-batteryAudioStarted));
+            DiagnosticPrintf("[GD] t=%lu audio_battery finish_event elapsed=%lu\r\n",(unsigned long)millis(),(unsigned long)uint32_t(millis()-batteryAudioStarted));
             return true;
         }
     }
     if (uint32_t(millis()-batteryAudioStarted) >= MP3_WAIT_TIMEOUT_MS) {
+        DiagnosticPoint(GeneratorDiagnostic::AudioWait,-1,uint32_t(millis()-batteryAudioStarted));
+        DiagnosticPrintf("[GD] t=%lu audio_battery timeout elapsed=%lu\r\n",(unsigned long)millis(),(unsigned long)uint32_t(millis()-batteryAudioStarted));
         batteryAudioPhase = BatteryAudioPhase::Idle;
         return true;
     }

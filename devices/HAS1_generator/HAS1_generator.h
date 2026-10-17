@@ -15,6 +15,7 @@
 #include "library_and_pin.h"
 #include "generator_wire_state.h"
 #include "generator_wire_protocol.h"
+#include "generator_diagnostics.h"
 
 // Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
 // 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로

@@ -138,6 +138,8 @@ static const char *CRASH_SHEET_URL =
 // 게임 진행에 필수인 has2wifi.Send(crash_log)가 이미 별도로 나가므로 여기서 막힐 이유가 없다.
 // 타임아웃을 짧게(5초) 잡아 이 호출 자체가 새로운 행 원인이 되지 않도록 한다.
 static void SendCrashLogToSheet(const char *device_name, const char *msg) {
+    DiagnosticScope trace(GeneratorDiagnostic::CrashUpload); // Includes TLS/redirects/cleanup; no overall deadline added.
+    trace.result(-1);
     WiFiClientSecure client;
     client.setInsecure();   // 구글 루트 인증서를 임베드하지 않고 스킵 — 디버그 로그 전송이라 허용
     client.setTimeout(5000);
@@ -151,6 +153,7 @@ static void SendCrashLogToSheet(const char *device_name, const char *msg) {
     sheetHttp.addHeader("Content-Type", "application/x-www-form-urlencoded");
     String body = "device_name=" + String(device_name) + "&msg=" + String(msg);
     int code = sheetHttp.POST(body);
+    trace.result(code>0 && code<400 ? code : (code>0 ? -code : code));
     Serial.println("[CrashSheet] POST code=" + String(code));
     sheetHttp.end();
 }

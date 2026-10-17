@@ -271,7 +271,7 @@ def application_harness():
     functions += '\nstatic unsigned long taggerAudioStarted=0;\n'
     functions += '\n'.join(function(name) for name in ('Mp3TaggerStart', 'Mp3TaggerFinished'))
     functions += '\n' + source[source.index('enum class BatteryAudioPhase'):]
-    return APP_INTEGRATION.replace('APP_FUNCTIONS', functions)
+    return '#include "tests/diagnostic_test_stubs.h"\n' + APP_INTEGRATION.replace('APP_FUNCTIONS', functions)
 
 def main():
     with tempfile.TemporaryDirectory(prefix='generator-dfplayer-test-') as temporary:
@@ -285,7 +285,7 @@ def main():
         extra_flags = ['-Wno-unused-private-field'] if 'clang' in compiler_version else []
         subprocess.run([compiler, '-std=c++11', '-Wall', '-Wextra', '-Werror', *extra_flags,
                         '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                        '-I', str(directory), '-I', str(LIBRARY), str(directory / 'test.cpp'),
+                        '-I', str(directory), '-I', str(APP.parent), '-I', str(LIBRARY), str(directory / 'test.cpp'),
                         str(LIBRARY / 'DFRobotDFPlayerMini.cpp'), '-o', str(executable)], check=True, timeout=60)
         subprocess.run([str(executable)], check=True, timeout=10)
 

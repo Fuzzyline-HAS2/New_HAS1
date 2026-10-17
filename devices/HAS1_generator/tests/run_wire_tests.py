@@ -493,10 +493,13 @@ int main() {
  // with a malicious continuously replenished unread tail.
  streamStalled=false; continuousTail=true; declaredLength=static_cast<int>(valid.size());
  auto checkClosed = [&](GeneratorWireResult expected) {
+  const unsigned traceBegins=diagnosticTestBegins,traceEnds=diagnosticTestEnds;
    cleanupStops=cleanupEnds=cleanupDrainReads=0;
    const uint32_t before=now;
    assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==expected);
    assert(cleanupStops==1 && cleanupEnds==1 && cleanupDrainReads==0);
+  assert(diagnosticTestBegins==traceBegins+1 && diagnosticTestEnds==traceEnds+1);
+  assert(expected==GeneratorWireResult::Failed ? diagnosticTestLastCode<0 : diagnosticTestLastCode>0);
    assert(uint32_t(now-before)<=1000);
  };
  httpBody=valid; httpStatus=200;
@@ -527,7 +530,7 @@ with tempfile.TemporaryDirectory(prefix="generator-wire-test-") as directory:
     temp = Path(directory)
     (temp/"HTTPClient.h").write_text("// Fake HTTPClient is defined by the harness.\n")
     audio_source = (ROOT/"dfplayer.ino").read_text().split('enum class BatteryAudioPhase',1)[1]
-    source = PREFIX + '\nenum class BatteryAudioPhase' + audio_source + '\n' + (ROOT/"wire.ino").read_text() + '\n' + HTTP
+    source = PREFIX + '\n#define DIAGNOSTIC_TEST_CHECK assert(criticalDepth==0)\n#include "tests/diagnostic_test_stubs.h"\n' + '\nenum class BatteryAudioPhase'  + audio_source + '\n' + (ROOT/"wire.ino").read_text() + '\n' + HTTP
     source += '\n#define WireHttpRequest ActualWireHttpRequest\n' + (ROOT/"wire_http.ino").read_text()
     source += '\n#undef WireHttpRequest\n' + TESTS
     (temp/"test.cpp").write_text(source)

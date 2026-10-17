@@ -25,8 +25,12 @@ jobs:
         run: python devices/HAS1_generator/tests/run_neopixel_tests.py
       - name: Starter and tagger regression
         run: python devices/HAS1_generator/tests/run_tagger_tests.py
+      - name: Bounded diagnostic logger and RTC journal with sanitizers
+        run: python devices/HAS1_generator/tests/run_diagnostic_tests.py
       - name: Telnet history and nonblocking sender with sanitizers
         run: python devices/HAS1_generator/tests/run_telnet_tests.py
+      - name: Telnet collector lifecycle and stall recovery with sanitizers
+        run: python devices/HAS1_generator/tests/run_telnet_lifecycle_tests.py
       - uses: actions/checkout@v4
         with:
           repository: bblanchon/ArduinoJson
