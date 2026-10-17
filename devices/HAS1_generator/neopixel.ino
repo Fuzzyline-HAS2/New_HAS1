@@ -1,3 +1,21 @@
+#include "generator_neopixel_tx.h"
+
+// Only the main loop/setup may render. All instances and submitted payloads
+// remain alive for the whole boot, including after a transmission timeout.
+static GeneratorNeo::Sender neoSenders[NeopixelNum];
+static bool neoFaultReported[NeopixelNum] = {};
+
+void NeoShow(int neoIdx) {
+  if (neoIdx < 0 || neoIdx >= NeopixelNum) return;
+  if (neoSenders[neoIdx].show(pixels[neoIdx].getPixels(), NumPixels[neoIdx] * 3)) return;
+  if (!neoFaultReported[neoIdx]) {
+    neoFaultReported[neoIdx] = true;
+    BREADCRUMB("neo_tx_failed");
+    Serial.printf("[NEO] strip=%d disabled until reboot, error=%d\n",
+                  neoIdx, static_cast<int>(neoSenders[neoIdx].error()));
+  }
+}
+
 // =================================================================================
 // neopixel.ino
 // ---------------------------------------------------------------------------------
@@ -9,7 +27,7 @@
 // 지정한 스트립(neoIdx) 전체를 rgb 배열의 단색으로 채우고 즉시 출력한다.
 void NeoLightColor(int neoIdx, int* rgb) {
   pixels[neoIdx].fill(pixels[neoIdx].Color(rgb[0], rgb[1], rgb[2]));
-  pixels[neoIdx].show();
+  NeoShow(neoIdx);
 }
 
 // setup()에서 1회 호출: 4개 스트립 모두 초기화하고 밝기를 적용한 뒤 흰색으로 점등한다.
@@ -22,6 +40,8 @@ void NeopixelInit()
   }
   for (int i = 0; i < NeopixelNum; ++i)
   {
+    // begin() above must precede direct IDF ownership of the output pin.
+    neoSenders[i].begin(pixels[i].getPin());
     NeoLightColor(i, color[WHITE]);
   }
 }
@@ -42,7 +62,7 @@ void UpdateBrightness()
   }
   for (int i = 0; i < NeopixelNum; ++i) {
     pixels[i].setBrightness(ledBrightness);
-    pixels[i].show();
+    NeoShow(i);
   }
 }
 
@@ -54,7 +74,7 @@ void BatteryGaugeShow(int cnt, int maxCnt){
     pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[GREEN][0], color[GREEN][1], color[GREEN][2]));
   for(int i = litPixels; i < NumPixels[GAUGE]; i++)
     pixels[GAUGE].setPixelColor(i, pixels[GAUGE].Color(color[YELLOW][0], color[YELLOW][1], color[YELLOW][2]));
-  pixels[GAUGE].show();
+  NeoShow(GAUGE);
 }
 
 // 스타터(엔코더) 진행 단계에서 GAUGE 스트립을 갱신한다.
@@ -66,7 +86,7 @@ void EncoderNeopixelOn(int neoNum){
     pixels[GAUGE].setPixelColor(i,pixels[GAUGE].Color(color[BLUE][0], color[BLUE][1], color[BLUE][2]));
   for(int i = neoNum; i < NumPixels[GAUGE]; i++)
     pixels[GAUGE].setPixelColor(i,pixels[GAUGE].Color(color[background][0],color[background][1],color[background][2]));
-  pixels[GAUGE].show();
+  NeoShow(GAUGE);
 }
 
 // 지정한 스트립(neo)을 neoColor 색상으로 cnt번 점멸시킨다 (blocking: delay 사용, 그동안 loop가 멈춤).

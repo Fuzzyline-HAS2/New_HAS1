@@ -28,6 +28,7 @@
 // ---------------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
+    has2wifi.EnableBoundedResponseBody(); // Reject stalled/oversized HTTP bodies before they block the loop watchdog.
     has2wifi.SetDebugPrint(&DebugSerial); // 라이브러리/비동기 통신 로그도 같은 UART + RAM/Telnet 경로로 전달
     CrashReportInit();  // 직전 재부팅이 워치독/패닉이었다면 마지막 위치를 로그로 남김 (crash.ino)
     TelnetPreserveCrashReport(); // URL용 가공/최근 로그 덮어쓰기 전에 직전 리셋 요약 원문 보관

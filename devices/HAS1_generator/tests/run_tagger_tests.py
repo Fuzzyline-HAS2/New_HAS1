@@ -33,6 +33,7 @@ struct Pixel {
     void setPixelColor(int i,uint32_t c) { assert(i>=0 && i<28); values[i]=c; }
     void show() {}
 } pixels[4];
+void NeoShow(int index) { pixels[index].show(); }
 bool starterTaggerActive=false, starterRfidNeedsValidation=false;
 bool taggerPurpleVisible=true, taggerLastTagState=true;
 bool attached=true, audioDone=false;

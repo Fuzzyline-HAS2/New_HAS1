@@ -59,7 +59,12 @@ state lock.
 
 Other cases cover sub-threshold transients, 0–4 counts, LG's 3-pack threshold, lost ACKs,
 latest-value retries, the 2-second failure backoff, and successful updates without
-a blanket 2-second gate. CAS fencing, new rounds/identity/epoch, preserved repaired
+a blanket 2-second gate. Transport cleanup is checked with a continuously
+replenished unread response tail: success, conflict, status errors, invalid lengths,
+incomplete bodies, and invalid JSON all stop the socket before HTTP cleanup.
+A disconnect between headers and body is rejected without dereferencing a null stream.
+These checks model the core's drain behavior; they do not bound header reception.
+CAS fencing, new rounds/identity/epoch, preserved repaired
 state, strict response validation, and response size/deadline limits remain covered.
 The actual completion functions are also compiled with fake audio and HTTP to
 check that battery completion yields while audio is pending, rechecks readiness
@@ -75,3 +80,41 @@ hardware validation has not been performed for this change, and the harness does
 not guarantee a fixed connection-to-completion time. See
 [the wire protocol and deployment sequence](../WIRE_SYNC.md). The Generator tests
 workflow fetches the pinned JSON headers and runs this harness.
+
+## Audio and HTTP stall regressions
+
+```sh
+python3 devices/HAS1_generator/tests/run_dfplayer_tests.py
+ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/tests/run_http_body_tests.py
+```
+
+The audio suite compiles the actual vendored DFPlayer driver with a controlled
+UART stream. It tests missing ACKs together with retained finish/error/timeout
+events, bounded noise parsing, rollover, and recovery. This complements the
+higher-level wire harness, whose audio calls are doubles.
+
+The HTTP suite exercises the production bounded reader and actual HAS2_Wifi
+request/poll functions with controlled streams and ArduinoJson 7.4.3. It checks
+truncated/oversized/slow bodies, chunked framing, close-delimited responses,
+cleanup, and suppression of stale callbacks after rejected responses. These are
+host fault-injection checks; actual ESP32 UART/Wi-Fi timing and field reset
+causation still require hardware logs. See [reset guards](../RESET_GUARDS.md).
+
+## Bounded LED transmission
+
+```sh
+python3 devices/HAS1_generator/tests/run_neopixel_tests.py
+```
+
+This compiles the actual `generator_neopixel_tx.h` sender with controlled IDF
+functions under AddressSanitizer/UndefinedBehaviorSanitizer. Eight groups cover
+WS2812 MSB-first byte/timing preservation and 300 us low reset/latch intervals,
+lost and late completion, a full transmit queue, other completion errors,
+independent strips, clock rollover, invalid input, and partial initialization
+failure. The mock deliberately provides no disable/delete API: timeout handling
+must retain the potentially active payload and never enter unbounded cleanup.
+
+A failed strip is disabled until the next boot; the other strips and main loop
+continue. This is not an automatic retry mechanism. Tests verify the wrapper's
+response to controlled IDF results, not physical RMT interrupts or LED waveforms.
+The pinned ESP32 core build and a board smoke test are separate validation steps.

@@ -95,6 +95,8 @@ static std::vector<int> dfEvents;
 static size_t dfRead=0;
 static int dfAvailableCalls=0;
 struct FakePlayer {
+ bool hasPendingInput() { return floodAudioEvents || dfRead<dfEvents.size(); }
+ void resetReceiveState() {}
  bool available() { assert(criticalDepth==0); ++dfAvailableCalls; return floodAudioEvents || dfRead<dfEvents.size(); }
  int readType() { assert(criticalDepth==0); return floodAudioEvents ? 1 : dfEvents.at(dfRead++); }
 } myDFPlayer;
@@ -164,10 +166,17 @@ struct Radio {
 static const char GENERATOR_SERVER_URL[]="http://127.0.0.1";
 static std::string httpBody;
 static int httpStatus=200,declaredLength=-1,connectTimeout=0,readTimeout=0;
-static bool streamStalled=false;
+static bool streamStalled=false, continuousTail=false, streamGone=false;
+static int cleanupStops=0,cleanupEnds=0,cleanupDrainReads=0;
 struct FakeStream {
  size_t position=0;
- int available() { return streamStalled ? 0 : static_cast<int>(httpBody.size()-position); }
+ bool stopped=false;
+ void stop() { ++cleanupStops; stopped=true; }
+ int available() {
+   if(stopped || streamGone || streamStalled) return 0;
+   if(position<httpBody.size()) return static_cast<int>(httpBody.size()-position);
+   return continuousTail ? 1 : 0;
+ }
  int read(uint8_t *buffer,size_t size) {
    size=std::min(size,httpBody.size()-position);
    memcpy(buffer,httpBody.data()+position,size); position+=size; return static_cast<int>(size);
@@ -180,10 +189,19 @@ struct HTTPClient {
  void setReuse(bool) {}
  bool begin(const String&) { return true; }
  int GET() { return httpStatus; }
- void end() {}
+ void end() {
+   ++cleanupEnds;
+   // Model HTTPClient::disconnect -> NetworkClient::clear: a peer can keep
+   // replenishing the unread tail forever unless the socket is stopped first.
+   while(stream.available()>0) {
+     ++cleanupDrainReads;
+     if(stream.position<httpBody.size()) ++stream.position;
+     if(cleanupDrainReads>35000) throw "unbounded cleanup drain";
+   }
+ }
  int getSize() { return declaredLength<0 ? static_cast<int>(httpBody.size()) : declaredLength; }
- bool connected() { return true; }
- FakeStream *getStreamPtr() { return &stream; }
+ bool connected() { return !stream.stopped && !streamGone; }
+ FakeStream *getStreamPtr() { return connected() ? &stream : nullptr; }
 };
 
 '''
@@ -471,6 +489,36 @@ int main() {
  assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
  assert(now-start==1000);
  puts("PASS actual strict JSON/ACK parser, conflicts, body cap and body-read deadline");
+ // Every post-GET exit must close before end(), including a successful body
+ // with a malicious continuously replenished unread tail.
+ streamStalled=false; continuousTail=true; declaredLength=static_cast<int>(valid.size());
+ auto checkClosed = [&](GeneratorWireResult expected) {
+   cleanupStops=cleanupEnds=cleanupDrainReads=0;
+   const uint32_t before=now;
+   assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==expected);
+   assert(cleanupStops==1 && cleanupEnds==1 && cleanupDrainReads==0);
+   assert(uint32_t(now-before)<=1000);
+ };
+ httpBody=valid; httpStatus=200;
+ checkClosed(GeneratorWireResult::Ok);
+ deserializeJson(json,valid); json["success"]=false; json["error"]="CONFLICT";
+ httpBody.clear(); serializeJson(json,httpBody);
+ declaredLength=static_cast<int>(httpBody.size()); httpStatus=409;
+ checkClosed(GeneratorWireResult::Conflict);
+ httpStatus=503; checkClosed(GeneratorWireResult::Failed);
+ httpStatus=-1; checkClosed(GeneratorWireResult::Failed);
+ httpStatus=200;
+ for(int length:{0,1025}) { declaredLength=length; checkClosed(GeneratorWireResult::Failed); }
+ httpBody.clear(); declaredLength=-1; checkClosed(GeneratorWireResult::Failed);
+ httpBody=valid; declaredLength=static_cast<int>(valid.size()); streamStalled=true;
+ uint32_t cleanupStarted=now; checkClosed(GeneratorWireResult::Failed); assert(now-cleanupStarted==1000);
+ streamStalled=false; httpBody="invalid JSON"; declaredLength=static_cast<int>(httpBody.size());
+ checkClosed(GeneratorWireResult::Failed);
+ // A peer disconnected between the headers and body has no stream pointer.
+ streamGone=true; cleanupStops=cleanupEnds=cleanupDrainReads=0;
+ assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
+ assert(cleanupStops==0 && cleanupEnds==1 && cleanupDrainReads==0);
+ puts("PASS stop-before-end on success/conflict/error/invalid length/stalled body/invalid JSON; disconnected stream");
  return 0;
 }
 
@@ -485,7 +533,7 @@ with tempfile.TemporaryDirectory(prefix="generator-wire-test-") as directory:
     (temp/"test.cpp").write_text(source)
     subprocess.run([os.environ.get("CXX","c++"),"-std=c++11","-Wall","-Wextra","-Werror",
                     "-fsanitize=address,undefined","-fno-omit-frame-pointer",
-                    "-I",str(ROOT),"-I",include,"-I",str(temp),str(temp/"test.cpp"),"-o",str(temp/"test")],check=True)
+                    "-I",str(ROOT),"-I",str(ROOT.parents[1]/"libraries/HAS2_Wifi"),"-I",include,"-I",str(temp),str(temp/"test.cpp"),"-o",str(temp/"test")],check=True)
     subprocess.run([str(temp/"test")],check=True)
 
 COMPLETION_PREFIX = r'''

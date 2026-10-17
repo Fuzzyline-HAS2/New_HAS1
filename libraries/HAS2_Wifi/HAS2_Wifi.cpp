@@ -10,6 +10,9 @@
  */
 
 #include "HAS2_Wifi.h"
+#include "has2_http_body.h"
+#include <sys/socket.h>
+#include <errno.h>
 #include <esp_wifi.h>
 #include <esp_private/wifi.h>
 
@@ -59,6 +62,36 @@ void HAS2_Wifi::SetDebugPrint(Print *debugPrint)
 {
   _has2DebugPrint = debugPrint;
 }
+
+void HAS2_Wifi::EnableBoundedResponseBody()
+{
+  boundedResponseBodyEnabled = true;
+}
+
+struct HAS2BodyClock
+{
+  explicit HAS2BodyClock(bool plainTcp = false) : plainTcp_(plainTcp) {}
+  uint32_t now() const { return millis(); }
+  void idle() const { delay(1); }
+  // Arduino-ESP32 3.3.11 connected() can remain true after TCP FIN. Peek only
+  // plain HTTP sockets, after buffered data is exhausted; never consume a byte.
+  template<class Stream> int peerState(Stream *stream) const
+  {
+    if (stream->available() > 0) return 0;
+    if (plainTcp_ && stream->fd() >= 0)
+    {
+      char value;
+      const int result = recv(stream->fd(), &value, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (result == 0) return 1;
+      if (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        return -1;
+      return 0;
+    }
+    return stream->connected() ? 0 : 1;
+  }
+ private:
+  bool plainTcp_;
+};
 
 /**
  * @brief HAS2_Wifi 기본생성자
@@ -720,6 +753,24 @@ void HAS2_Wifi::ReceiveMine()
  */
 void HAS2_Wifi::Loop()
 {
+  if (boundedResponseBodyEnabled)
+  {
+    MaintainWifi();
+    String url = server + "?request=Loop&table=device&mac=" + my_mac;
+    if (!HttpRequest("Loop", url, true)) return;
+    if ((int)shift_machine["shift_machine"] >= 1) freshReceivePending = true;
+    if (freshReceivePending)
+    {
+      url = server + "?request=ReceiveMine&table=device&mac=" + my_mac;
+      if (HttpRequest("ReceiveMine", url, true)) freshReceivePending = false;
+    }
+    if ((int)shift_machine["watchdog"] >= 1)
+    {
+      Send((String)(const char *)my["device_name"], "watchdog", "0");
+      ESP.restart();
+    }
+    return;
+  }
   MaintainWifi();
 
   String string_request = server + "?request=" + "Loop" + "&table=" + "device" + "&mac=" + my_mac;
@@ -742,6 +793,11 @@ void HAS2_Wifi::Loop()
  */
 void HAS2_Wifi::Loop(void (*Func)(void))
 {
+  if (boundedResponseBodyEnabled)
+  {
+    LoopFresh(Func);
+    return;
+  }
   MaintainWifi();
 
   String string_request = server + "?request=" + "Loop" + "&table=" + "device" + "&mac=" + my_mac;
@@ -818,6 +874,7 @@ bool HAS2_Wifi::JsonParsingFresh(String request, String json)
         !snapshot["game_state"].is<const char *>()) return false;
     return my.set(snapshot);
   }
+  if (request == "Receive") return tag.set(snapshot);
   return false;
 }
 
@@ -829,6 +886,11 @@ bool HAS2_Wifi::JsonParsingFresh(String request, String json)
  */
 bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireFresh)
 {
+  // Receive() callers inspect tag without a success return. A new card lookup
+  // must never inherit the previous card's role after any request failure.
+  // Keep ReceiveMine snapshots and legacy opt-out behavior unchanged.
+  if (boundedResponseBodyEnabled && request == "Receive") tag.clear();
+
   //   int httpRequestCnt = 0;
   // ReRequsetHttp:
 
@@ -837,17 +899,37 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
   // 가는 다음 요청이 핸드셰이크 없이 바로 나가게 한다 - 태그 처리 중 Receive()->Situation()
   // 처럼 연달아 나가는 요청에서 특히 효과를 기대. 서버가 매 요청 후 연결을 끊는 구성(예:
   // PHP 내장 개발서버)이면 자동으로 새 연결로 폴백하므로 안전하다.
-  http.setReuse(true);
+  // The bounded mode closes each request, including malformed/error bodies.
+  // This prevents an unread body contaminating the next response.
+  http.setReuse(!boundedResponseBodyEnabled);
   http.begin(string_request); // 요청을 PHP로 전송
+  if (boundedResponseBodyEnabled)
+  {
+    const char *headers[] = {"Transfer-Encoding", "Content-Length"};
+    http.collectHeaders(headers, 2);
+  }
 
   int httpcode = http.GET();
   bool ok = false;
+
+  String boundedPayload;
+  if (boundedResponseBodyEnabled && httpcode > 0)
+  {
+    HAS2BodyClock clock(string_request.startsWith("http://"));
+    const Has2HttpBody::Result result = Has2HttpBody::readResponse(http, boundedPayload, clock);
+    if (result != Has2HttpBody::Result::Ok)
+    {
+      HAS2DebugPrintf("HTTP body rejected (%d), code: %d\n", static_cast<int>(result), httpcode);
+      Has2HttpBody::closeResponse(http);
+      return false;
+    }
+  }
 
   if (httpcode > 0)
   {
     if (httpcode == HTTP_CODE_OK)
     {
-      String payload = http.getString();
+      String payload = boundedResponseBodyEnabled ? boundedPayload : http.getString();
       if (request != "Loop")
       {
         // 응답 바디가 빈 문자열이면 println(payload)가 그냥 개행만 찍어서, 텔넷
@@ -862,7 +944,7 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
           _has2DebugPrint->println("HTTP GET... code: 200, empty body, request: " + string_request);
         }
       }
-      if (requireFresh)
+      if (requireFresh || (boundedResponseBodyEnabled && request != "Send"))
       {
         ok = JsonParsingFresh(request, payload);
       }
@@ -878,7 +960,7 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
       // 원인 파악이 안 됐다 - 요청 URL과 서버 응답 바디(PHP 에러 메시지 포함)를
       // 함께 찍는다. printf는 내부 버퍼가 짧아 긴 URL이 잘릴 수 있어 println+
       // 문자열 결합으로 출력한다.
-      String error_payload = http.getString();
+      String error_payload = boundedResponseBodyEnabled ? boundedPayload : http.getString();
       _has2DebugPrint->println("HTTP GET... code: " + String(httpcode) + ", request: " + string_request);
       if (error_payload.length())
       {
@@ -900,7 +982,8 @@ bool HAS2_Wifi::HttpRequest(String request, String string_request, bool requireF
     //   _has2DebugPrint->printf("Maximum request exceed!");
     // }
   }
-  http.end();
+  if (boundedResponseBodyEnabled) Has2HttpBody::closeResponse(http);
+  else http.end();
   return ok;
 }
 
