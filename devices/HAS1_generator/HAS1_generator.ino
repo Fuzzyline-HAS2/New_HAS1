@@ -27,7 +27,9 @@
 // WiFi 연결과 OTA 콜백을 등록하고, 마지막으로 게임 상태 머신을 대기 상태로 세팅한다.
 // ---------------------------------------------------------------------------------
 void setup() {
+    DiagnosticInit(); // Capture previous RTC evidence before any initialization can block.
     Serial.begin(115200);
+    has2wifi.SetHttpDiagnosticHook(DiagnosticHttpHook);
     has2wifi.EnableBoundedResponseBody(); // Reject stalled/oversized HTTP bodies before they block the loop watchdog.
     has2wifi.SetDebugPrint(&DebugSerial); // 라이브러리/비동기 통신 로그도 같은 UART + RAM/Telnet 경로로 전달
     CrashReportInit();  // 직전 재부팅이 워치독/패닉이었다면 마지막 위치를 로그로 남김 (crash.ino)
@@ -107,6 +109,7 @@ void setup() {
 // 블로킹(delay 등)을 최소화해 WiFi 통신·네오픽셀 갱신·엔코더 반영이 최대한 끊기지 않게 한다.
 // ---------------------------------------------------------------------------------
 void loop() {
+    DiagnosticLoop();
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
     WireServiceLoop(); // Sample/synchronize before any starter progress or completion.
     EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영

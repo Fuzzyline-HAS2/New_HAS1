@@ -7,7 +7,16 @@ static bool neoFaultReported[NeopixelNum] = {};
 
 void NeoShow(int neoIdx) {
   if (neoIdx < 0 || neoIdx >= NeopixelNum) return;
-  if (neoSenders[neoIdx].show(pixels[neoIdx].getPixels(), NumPixels[neoIdx] * 3)) return;
+  bool sent;
+  {
+    DiagnosticScope trace(GeneratorDiagnostic::Neo,static_cast<uint32_t>(neoIdx));
+    sent=neoSenders[neoIdx].show(pixels[neoIdx].getPixels(), NumPixels[neoIdx] * 3);
+    if (!sent) {
+      const int32_t error=static_cast<int32_t>(neoSenders[neoIdx].error());
+      trace.result(error>0?-error:(error?error:-1),static_cast<uint32_t>(neoIdx));
+    }
+  }
+  if (sent) return;
   if (!neoFaultReported[neoIdx]) {
     neoFaultReported[neoIdx] = true;
     BREADCRUMB("neo_tx_failed");

@@ -23,6 +23,7 @@ The harness does not emulate HTTP, PN532, DFPlayer UART, or the Arduino schedule
 
 ```sh
 python3 devices/HAS1_generator/tests/run_telnet_tests.py
+python3 devices/HAS1_generator/tests/run_telnet_lifecycle_tests.py
 ```
 
 The host harness exercises the production RAM history and bounded sender with
@@ -32,6 +33,15 @@ message truncation, and preservation of the original reset report. It does not
 simulate FreeRTOS concurrency or a physical Wi-Fi link. See
 [Telnet logging](../TELNET_LOGGING.md) for capture scope and limits. The generator
 harnesses run in the `Generator tests` pull-request workflow.
+
+The lifecycle harness also compiles the actual session start, drain, expiry and
+main Telnet loop with controlled sockets and a clock. It checks 200 reconnects,
+stalled-reader recovery after 5 seconds, acceptance of a queued replacement in
+the same loop, input-flood budgets, zero-byte/EINTR sends, partial-send progress,
+true idle, long main-loop gaps after progress, millis wrap, slow replay larger
+than the control buffer, fatal sends and invalid descriptors. Incoming data never
+extends a stalled-output deadline. The tests model socket API return values;
+they do not establish the wall-clock latency of all real socket operations.
 
 ## Absolute wire synchronization regression checks
 
@@ -118,3 +128,17 @@ A failed strip is disabled until the next boot; the other strips and main loop
 continue. This is not an automatic retry mechanism. Tests verify the wrapper's
 response to controlled IDF results, not physical RMT interrupts or LED waveforms.
 The pinned ESP32 core build and a board smoke test are separate validation steps.
+
+Diagnostic journal and Telnet integration (no hardware):
+
+```sh
+python3 devices/HAS1_generator/tests/run_diagnostic_tests.py
+python3 devices/HAS1_generator/tests/run_telnet_tests.py
+```
+
+These execute the production journal/logger with ASan/UBSan and fake reset/time:
+valid warm reset, power-on/brownout rejection, corrupted/torn/overwritten records,
+sequence and millis wrap, previous-boot snapshot preservation, phase/kind replay,
+fast HTTP failure visibility, bounded flood/truncation, UART bypass and incremental
+replay larger than the control buffer. Wire behavior tests also reject diagnostic
+calls made while the input lock is held. See `../DIAGNOSTICS.md` for log meanings.

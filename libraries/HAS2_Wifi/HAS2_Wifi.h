@@ -62,6 +62,7 @@ private:
     bool wifiCandidatesInitialized;
     bool legacy1MbpsEnabled = false;
     bool boundedResponseBodyEnabled = false;
+    void (*httpDiagnosticHook)(const char *, const char *, int32_t, uint32_t, uint32_t) = nullptr;
     // Setup may have consumed the notification; validate the first fresh poll too.
     bool freshReceivePending = true;
 
@@ -93,6 +94,18 @@ public:
     // Opt-in: 1500ms body deadline, 16KiB cap, complete framing before parsing.
     // DNS/connect/HTTP headers retain HTTPClient timeouts; not a request deadline.
     void EnableBoundedResponseBody();
+    // Optional synchronous-request observer; default null, no async task callbacks.
+    // Callback must be nonblocking, must not make HTTP requests, and must copy any
+    // strings it retains. request is an operation name, never a URL/card/body.
+    // elapsedMs is unsigned time since request.begin (wrap-safe).
+    // request.begin: result/detail=0; get.end: result=HTTP status/error, detail=0.
+    // GET spans begin/DNS/connect/headers together, not separate phase timings.
+    // body.end: result=Has2HttpBody::Result (0=Ok), -1 if skipped (transport error);
+    // detail=retained decoded bytes (0 on rejected body; not bytes received).
+    // close.begin/end: result=HTTP status/error; request.end: result=success 1/0.
+    // These last three phases retain the same body-byte detail, even on JSON error.
+    void SetHttpDiagnosticHook(void (*hook)(const char *request, const char *phase,
+                                          int32_t result, uint32_t elapsedMs, uint32_t detail));
 
     void Setup();
     void Setup(char *new_ssid, char *new_password);

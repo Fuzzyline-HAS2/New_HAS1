@@ -29,10 +29,15 @@ PREAMBLE = r'''
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include "telnet_log_buffer.h"
 #define MSG_DONTWAIT 64
-#define portENTER_CRITICAL(x) do { (void)(x); } while(0)
-#define portEXIT_CRITICAL(x) do { (void)(x); } while(0)
+static std::mutex historyMutex;
+static std::atomic<unsigned> criticalEntries(0);
+#define portENTER_CRITICAL(x) do { (void)(x); historyMutex.lock(); ++criticalEntries; } while(0)
+#define portEXIT_CRITICAL(x) do { (void)(x); historyMutex.unlock(); } while(0)
 static int telnetLogMux;
 static TelnetLogBuffer<8192> telnetHistory;
 static bool telnetSessionActive = true;
@@ -40,6 +45,19 @@ static uint64_t telnetPosition = 0, telnetReplayEnd = 0;
 static bool telnetReplayEnded = false;
 static char telnetControl[1024];
 static size_t telnetControlLength = 0, telnetControlSent = 0;
+static unsigned telnetPriorLine=0;
+static bool telnetPriorDone=true;
+static constexpr uint32_t kTelnetSendStallMs = 5000;
+static bool telnetSendPending = false;
+static uint32_t telnetLastSendProgress = 0;
+static uint32_t clockMs = 0;
+static uint32_t millis() { return clockMs; }
+static std::vector<std::string> priorLines;
+static size_t DiagnosticPriorLine(unsigned index,char *buffer,size_t capacity) {
+ if(index>=priorLines.size()) return 0;
+ assert(priorLines[index].size()<capacity);
+ memcpy(buffer,priorLines[index].data(),priorLines[index].size()); return priorLines[index].size();
+}
 struct Client {
   int descriptor = 7;
   bool stopped = false;
@@ -66,6 +84,8 @@ static void reset() {
   telnetControlLength = telnetControlSent = 0;
   telnetClient = Client();
   output.clear(); sendPlan.clear(); planPosition = calls = 0;
+  priorLines.clear(); telnetPriorLine=0; telnetPriorDone=true;
+  telnetSendPending=false; telnetLastSendProgress=0; clockMs=0; criticalEntries=0;
 }
 static void append(const std::string& value) {
   telnetHistory.append(reinterpret_cast<const uint8_t*>(value.data()), value.size());
@@ -85,6 +105,7 @@ static bool g_crash_telnet_pending;
 '''
 
 TESTS = r'''
+static void serviceDrain() { if (!TelnetExpireStalledSession()) TelnetDrain(); }
 static int idfPrint(const char* fmt, ...) {
   va_list arguments; va_start(arguments, fmt);
   int result = TelnetVprintf(fmt, arguments); va_end(arguments); return result;
@@ -145,17 +166,76 @@ int main() {
   strcpy(g_crash_msg,"URL_sanitized"); append(std::string(20000,'z'));
   assert(std::string(telnetRetainedCrash) == "reason=TASK_WDT fn=WirePollMain crash#2");
   puts("PASS reset report remains original after URL mutation and history wrap");
+  reset(); uart.clear(); TelnetDiagnosticWrite("detail\n",7);
+  assert(uart.empty() && historyText()=="detail\n");
+  puts("PASS diagnostic memory sink bypasses original UART sink");
+  reset(); append("recent\n"); telnetReplayEnd=telnetHistory.end();
+  std::string prior;
+  for(unsigned i=0;i<49;++i) { priorLines.push_back("[GD prior] "+std::string(100,'A')+"\n"); prior+=priorLines.back(); }
+  telnetPriorDone=false; sendPlan={3,-EAGAIN,2,1,50}; drain();
+  assert(output==prior+"recent\n"+end);
+  telnetPriorLine=0;telnetPriorDone=false;telnetControlSent=telnetControlLength;
+  output.clear();drain();assert(output==prior);
+  puts("PASS retained journal exceeds control-buffer capacity; incremental partial writes and reconnect replay");
+  reset(); telnetReplayEnded=true; append("blocked");
+  sendPlan={-EAGAIN,-EINTR,0}; serviceDrain();
+  clockMs=4999;serviceDrain();assert(!telnetClient.stopped);
+  clockMs=5000;serviceDrain();assert(telnetClient.stopped && !telnetSessionActive);
+  puts("PASS actual blocked output expires at five seconds including EINTR/zero progress");
+
+  reset(); telnetReplayEnded=true; append("remaining bytes");
+  sendPlan={-EAGAIN,1,-EAGAIN};serviceDrain();
+  clockMs=4000;serviceDrain();assert(telnetPosition==1 && !telnetClient.stopped);
+  clockMs=8999;sendPlan={-EAGAIN};planPosition=0;serviceDrain();assert(!telnetClient.stopped);
+  clockMs=9000;sendPlan={-EAGAIN};planPosition=0;serviceDrain();assert(telnetClient.stopped);
+  puts("PASS partial progress restarts the failed-send deadline");
+
+  reset();telnetReplayEnded=true;clockMs=0xfffffff0u;
+  append("wrap");sendPlan={-EAGAIN};serviceDrain();
+  clockMs=static_cast<uint32_t>(0xfffffff0u+5000u);sendPlan={-EAGAIN};planPosition=0;serviceDrain();assert(telnetClient.stopped);
+  reset();telnetReplayEnded=true;telnetSendPending=true;telnetLastSendProgress=0;
+  clockMs=100000;serviceDrain();assert(!telnetClient.stopped && !telnetSendPending);
+  append("new data");sendPlan={-EAGAIN};serviceDrain();assert(!telnetClient.stopped);
+  reset();telnetReplayEnded=true;append("good");serviceDrain();
+  clockMs=100000;append("new data");sendPlan={-EAGAIN};planPosition=0;
+  serviceDrain();assert(!telnetClient.stopped);
+  puts("PASS millisecond wrap, idle sessions and loop gaps after successful sends");
+
+  reset();telnetClient.descriptor=-1;serviceDrain();
+  assert(!telnetSessionActive && telnetClient.stopped && calls==0);
+  reset();std::string diagnostic(319,'D');
+  unsigned before=criticalEntries;TelnetDiagnosticWrite(diagnostic.data(),diagnostic.size());
+  assert(criticalEntries-before==1 && historyText()==diagnostic);
+  reset();std::string oversized(2000,'Z');
+  TelnetDiagnosticWrite(oversized.data(),oversized.size());assert(historyText()==oversized.substr(0,319));
+  puts("PASS invalid socket cleanup and bounded single-lock diagnostic writes");
+
+  for(unsigned iteration=0;iteration<100;++iteration) {
+    reset();append(std::string(7000,'X'));
+    const std::string line="[GD] "+std::string(313,'D')+"\n";
+    const std::string legacy(4096,'L');
+    std::atomic<bool> go(false);
+    std::thread diagnosticProducer([&]{while(!go.load()) {} TelnetDiagnosticWrite(line.data(),line.size());});
+    std::thread legacyProducer([&]{while(!go.load()) {} TelnetRemember(reinterpret_cast<const uint8_t*>(legacy.data()),legacy.size());});
+    go=true;diagnosticProducer.join();legacyProducer.join();
+    std::string remembered=historyText();
+    assert(remembered.size()==8192 && remembered.find(line)!=std::string::npos);
+    assert(std::count(remembered.begin(),remembered.end(),'D')==314);
+  }
+  puts("PASS concurrent diagnostic/legacy producers preserve complete diagnostic lines across history wrap");
   return 0;
 }
 '''
 
 with tempfile.TemporaryDirectory(prefix='generator-telnet-test-') as tmp:
     source = Path(tmp) / 'test.cpp'
-    source.write_text(PREAMBLE + '\n' + '\n'.join(function(name) for name in (
-        'static void TelnetRemember(', 'static int TelnetVprintf(',
-        'void TelnetPreserveCrashReport(', 'static void TelnetDrain(')) + TESTS)
+    source.write_text(PREAMBLE + '\nstatic void TelnetDrain();\n' + '\n'.join(function(name) for name in (
+        'static void TelnetRemember(', 'void TelnetDiagnosticWrite(', 'static int TelnetVprintf(',
+        'void TelnetPreserveCrashReport(', 'static void TelnetCloseSession(',
+        'static bool TelnetHasPendingOutput(', 'static bool TelnetExpireStalledSession(',
+        'static void TelnetDrain() {')) + TESTS)
     binary = Path(tmp) / 'test'
     subprocess.run([os.environ.get('CXX','c++'), '-std=c++11', '-Wall', '-Wextra',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-pthread',
                     '-I', str(ROOT), str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

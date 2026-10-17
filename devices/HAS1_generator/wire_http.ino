@@ -49,6 +49,8 @@ static bool WireParseSnapshot(const JsonDocument &json, const char *device,
 GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
                                     const char *epoch, uint32_t revision,
                                     GeneratorWireSnapshot &snapshot) {
+  DiagnosticScope trace(GeneratorDiagnostic::WireHttp,set?1:0);
+  trace.result(-101); // Invalid/offline request. Diagnostic codes documented in DIAGNOSTICS.md.
   if (WiFi.status() != WL_CONNECTED || !device || !device[0] || strlen(device) >= sizeof(snapshot.device))
     return GeneratorWireResult::Failed;
   String url = String(GENERATOR_SERVER_URL) + "/has2.php?request=" +
@@ -59,21 +61,26 @@ GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
   request.setConnectTimeout(700);
   request.setTimeout(700);
   request.setReuse(false);
-  if (!request.begin(url)) return GeneratorWireResult::Failed;
+  if (!request.begin(url)) { trace.result(-102); return GeneratorWireResult::Failed; }
+  trace.phase("get.begin",0,set?1:0); // Includes DNS/TCP/header work; HTTPClient exposes no finer boundary.
   const int status = request.GET();
+  trace.phase("get.end",status,static_cast<uint32_t>(request.getSize()));
   if (status != 200 && status != 409) {
+    trace.result(-103,static_cast<uint32_t>(status));
     Serial.printf("[WireSync] %s HTTP=%d\n", set ? "set" : "get", status);
-    Has2HttpBody::closeResponse(request); return GeneratorWireResult::Failed;
+    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status); return GeneratorWireResult::Failed;
   }
   const int length = request.getSize();
   char body[1025];
   if (length <= 0 || length >= static_cast<int>(sizeof(body))) {
+    trace.result(-104,static_cast<uint32_t>(length));
     Serial.println("[WireSync] invalid/missing response length");
-    Has2HttpBody::closeResponse(request); return GeneratorWireResult::Failed;
+    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status); return GeneratorWireResult::Failed;
   }
   auto *stream = request.getStreamPtr();
   if (!stream) {
-    Has2HttpBody::closeResponse(request);
+    trace.result(-105);
+    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status);
     return GeneratorWireResult::Failed;
   }
   size_t received = 0;
@@ -89,15 +96,17 @@ GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
     } else if (!request.connected()) break;
     else delay(1);
   }
-  Has2HttpBody::closeResponse(request);
-  if (received != static_cast<size_t>(length)) return GeneratorWireResult::Failed;
+  trace.phase("body.end",received==static_cast<size_t>(length)?0:-1,received);
+  trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status);
+  if (received != static_cast<size_t>(length)) { trace.result(-106,received); return GeneratorWireResult::Failed; }
   JsonDocument json;
   if (deserializeJson(json, body, received) || !json["success"].is<bool>() ||
-      !WireParseSnapshot(json, device, snapshot)) return GeneratorWireResult::Failed;
+      !WireParseSnapshot(json, device, snapshot)) { trace.result(-107); return GeneratorWireResult::Failed; }
   if (status == 409 && !json["success"].as<bool>() && json["error"].is<const char *>() &&
-      strcmp(json["error"].as<const char *>(), "CONFLICT") == 0) return GeneratorWireResult::Conflict;
-  if (status != 200 || !json["success"].as<bool>()) return GeneratorWireResult::Failed;
+      strcmp(json["error"].as<const char *>(), "CONFLICT") == 0) { trace.result(409,snapshot.revision); return GeneratorWireResult::Conflict; }
+  if (status != 200 || !json["success"].as<bool>()) { trace.result(-108,status); return GeneratorWireResult::Failed; }
   if (set && (strcmp(snapshot.epoch, epoch) != 0 || snapshot.count != count || snapshot.revision <= revision))
-    return GeneratorWireResult::Failed;
+    { trace.result(-109,snapshot.revision); return GeneratorWireResult::Failed; }
+  trace.result(200,snapshot.revision);
   return GeneratorWireResult::Ok;
 }

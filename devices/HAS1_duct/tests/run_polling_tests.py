@@ -52,6 +52,7 @@ class HAS2_Wifi : public Wifi {
     String server = "http://test/has2.php", my_mac = "test", HOST_NAME = "http://test";
     // FRESH_PENDING_DECLARATION
     // BOUNDED_BODY_DECLARATION
+    // HOOK_INITIALIZER
     bool HttpRequest(String, String, bool = false);
     bool JsonParsingFresh(String, String);
     void JsonParsing(String, String) { std::abort(); } // Fresh path must not use legacy parser.
@@ -67,6 +68,7 @@ source = source.replace('// FRESH_PENDING_DECLARATION',
                         re.search(r'bool freshReceivePending = (?:true|false);', header).group())
 source = source.replace('// BOUNDED_BODY_DECLARATION',
                         re.search(r'bool boundedResponseBodyEnabled = (?:true|false);', header).group())
+source = source.replace('// HOOK_INITIALIZER', re.search(r'void \(\*httpDiagnosticHook\).*? = nullptr;', header).group())
 source += functions + r'''
 int callbacks = 0;
 void changed() { ++callbacks; DataChange(); }
