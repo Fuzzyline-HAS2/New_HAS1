@@ -41,13 +41,20 @@ void WifiTaskFunc(void*) {
             xQueueSend(receiveQueue, buf, 0);
         }
 
-        // role 조회 요청 처리 (Core1 ActivateState에서 투입)
+        // role 조회 요청 처리 (Core1 ActivateState/PausedState/TaggerState에서 투입)
         char tagUserBuf[32];
         if (xQueueReceive(roleRequestQueue, tagUserBuf, 0)) {
+            tag.clear();                   // HTTP 실패 시 직전 글러브의 role이 남아 있지 않게
             has2wifi.Receive(tagUserBuf);  // HTTP GET — Core0 전용, 안전
+            const char* role = tag["role"] | "";
+            // 미등록 태그·HTTP 실패로 role이 비면 "unknown"으로 돌려준다 — ""는 Core1이
+            // "아직 응답 없음"으로 읽어 pendingTagUser가 영원히 안 풀린다.
+            if (role[0] == '\0') role = "unknown";
+            // 어느 태그에 대한 답인지 "<tagUser>:<role>"로 함께 돌려줘, 상태가 바뀐 뒤 늦게
+            // 도착한 이전 요청의 응답을 Core1이 새 태그의 결과로 오인하지 않게 한다.
             char roleBuf[32];
-            strlcpy(roleBuf, tag["role"] | "", 32);
-            xQueueSend(roleResponseQueue, roleBuf, 0);
+            snprintf(roleBuf, sizeof(roleBuf), "%s:%s", tagUserBuf, role);
+            xQueueOverwrite(roleResponseQueue, roleBuf);  // depth=1 — 최신 응답만 남긴다
         }
 
         // Core1의 송신 요청 소비 → HTTP POST
@@ -77,11 +84,19 @@ void WifiRequestPlayer(const char* tagUser) {
 }
 
 // ── Core1에서 호출 — role 조회 결과 폴링 (논블로킹) ─────────────────────────
-// Core0이 Receive() 완료 전이면 "" 반환 → 다음 루프에서 재시도
-String WifiPollPlayerRole() {
+// Core0이 Receive() 완료 전이면 "" 반환 → 다음 루프에서 재시도.
+// 응답은 "<tagUser>:<role>" — 묻고 있는 태그(tagUser)의 답만 돌려주고, 다른 태그의
+// 늦은 응답은 버린다.
+String WifiPollPlayerRole(const String& tagUser) {
     char roleBuf[32];
-    if (xQueueReceive(roleResponseQueue, roleBuf, 0)) return String(roleBuf);
-    return "";
+    if (!xQueueReceive(roleResponseQueue, roleBuf, 0)) return "";
+    String resp(roleBuf);
+    int sep = resp.indexOf(':');
+    if (sep < 0 || resp.substring(0, sep) != tagUser) {
+        Log("WIFI", "stale role response dropped: " + resp + " (waiting " + tagUser + ")");
+        return "";
+    }
+    return resp.substring(sep + 1);
 }
 
 // ── Core1에서 setup()에서만 호출 ──────────────────────────────────────────────

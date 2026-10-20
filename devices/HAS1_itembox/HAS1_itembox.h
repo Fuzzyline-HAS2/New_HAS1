@@ -17,8 +17,8 @@ extern StaticJsonDocument<1000> myDoc;   // Core1 소유 — Core0이 직렬화�
 // Service Layer 공개 인터페이스 (wifi.ino)
 void   WifiInit();
 void   GameEventSend(const char* key, const char* value);
-void   WifiRequestPlayer(const char* tagUser);  // role 조회 요청 — 논블로킹
-String WifiPollPlayerRole();                    // role 조회 결과 폴링 — 논블로킹, 없으면 ""
+void   WifiRequestPlayer(const char* tagUser);        // role 조회 요청 — 논블로킹
+String WifiPollPlayerRole(const String& tagUser);     // tagUser에 대한 role 조회 결과 폴링 — 논블로킹, 없으면 ""
 
 // GAME SYSTEM==============================================================================
 enum {VIBESTREGNTH = 0, ANSWER, RANGE};
@@ -36,7 +36,7 @@ enum GameState {
     GAME_READY,          // game_state=ready.    외부 RFID 스캔, 태그 시 경고만 (LED: RED)
     GAME_ACTIVATE,       // game_state=activate. 외부 RFID 스캔, 태그 시 퍼즐 시작 (LED: YELLOW)
     GAME_PUZZLE,         // 퍼즐 진행 중, 외부 태그 유지 필요 (LED: BLUE)
-    GAME_PAUSED,         // 태그 이탈 일시정지, 재태그 대기 (LED: YELLOW)
+    GAME_PAUSED,         // 태그 이탈 일시정지, 재태그(role=="player"만) 대기 (LED: YELLOW)
     GAME_CORRECT_ANIM,   // 정답 연출 (LED: GREEN 점멸) → 완료 후 GAME_PUZZLE or GAME_BOX_OPENING
     GAME_WRONG_ANIM,     // 오답 연출 (LED: RED 점멸) → 완료 후 GAME_PUZZLE
     GAME_BOX_OPENING,    // 모터 동작 중 (LED: GREEN) → MotorHalUpdate 완료 감지 → GAME_BOX_OPEN

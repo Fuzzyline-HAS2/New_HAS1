@@ -372,21 +372,25 @@ Core1: ActivateState() → 태그 감지 + tagUser 추출
      → return (다음 loop() 대기)
 
 Core0: xQueueReceive(roleRequestQueue)
-     → has2wifi.Receive(tagUser)            // HTTP GET — Core0 전용 http 객체, 안전
-     → xQueueSend(roleResponseQueue, role)
+     → tag.clear(); has2wifi.Receive(tagUser) // HTTP GET — Core0 전용 http 객체, 안전
+     → role 비면 "unknown"                     // ""는 "응답 없음"과 구분이 안 됨
+     → xQueueOverwrite(roleResponseQueue, "<tagUser>:<role>")
 
-Core1: ActivateState() 다음 호출 → WifiPollPlayerRole()
+Core1: ActivateState() 다음 호출 → WifiPollPlayerRole(pendingTagUser)
      → xQueueReceive(roleResponseQueue, 0) // 논블로킹
+     → 응답의 tagUser가 다르면 버림(늦게 온 이전 요청) → ""
      → role == "player"  → ChangeGameState(GAME_PUZZLE)
      → role != "" && !="player" → 무시, pendingTagUser 초기화
      → role == ""        → 아직 응답 없음, 다음 loop 재시도
+
+PausedState()도 재태그 시 같은 경로를 탄다 — 태그 존재만으로 재개하지 않는다.
 ```
 
 **Service 인터페이스 (wifi.ino)**:
 ```cpp
-void   WifiRequestPlayer(const char* tagUser);  // roleRequestQueue 투입, 논블로킹
-String WifiPollPlayerRole();                     // roleResponseQueue 폴링, 논블로킹
-                                                 // 응답 없으면 "" 반환
+void   WifiRequestPlayer(const char* tagUser);        // roleRequestQueue 투입, 논블로킹
+String WifiPollPlayerRole(const String& tagUser);     // roleResponseQueue 폴링, 논블로킹
+                                                      // tagUser의 응답이 없으면 "" 반환
 ```
 
 ### 6.4 송신 경로
@@ -593,6 +597,7 @@ enum GameState {
     // ── 퍼즐 진행 ──────────────────────────────────────────────────────────
     GAME_PUZZLE,         // 퍼즐 진행 중, 외부 태그 유지 필요 (LED: BLUE)
     GAME_PAUSED,         // 태그 이탈 일시정지, 재태그 대기 (LED: YELLOW)
+                         // 재태그 → role 조회 → "player"만 GAME_PUZZLE 재개 (유령·술래·본인 모두 조회)
                          // puzzleResetTime 초과 시 GAME_ACTIVATE 복귀
     GAME_CORRECT_ANIM,   // 정답 연출, blinkR 250ms 점멸 5회 (LED: GREEN 점멸)
                          // 완료 후 → GAME_PUZZLE(미완료) 또는 GAME_BOX_OPENING(완료)
@@ -642,7 +647,7 @@ GAME_ACTIVATE
     │      ├─ role != ""       → 무시 (pendingTagUser 초기화)
     │      └─ role == ""       → 아직 응답 없음, 다음 루프 재시도
     ▼
-GAME_PUZZLE ──── 태그 이탈 ────► GAME_PAUSED ── 재태그 ──► GAME_PUZZLE
+GAME_PUZZLE ──── 태그 이탈 ────► GAME_PAUSED ── 재태그 + role=="player" ──► GAME_PUZZLE
     │                                │ puzzleResetTime 초과
     │                                └─────────────────────────────────► GAME_ACTIVATE
     │

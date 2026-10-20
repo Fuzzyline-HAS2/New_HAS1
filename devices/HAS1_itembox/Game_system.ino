@@ -7,8 +7,12 @@
 //  - 상태 함수는 자기 로직만 — 다른 상태의 진입/정리 조건을 몰라도 된다.
 //  - ChangeGameState() 포함 모든 상태 함수에서 delay() 금지.
 
-// role 조회 대기 중인 태그 (ChangeGameState(GAME_ACTIVATE) entry에서 초기화)
+// role 조회 대기 중인 태그 (ChangeGameState(GAME_ACTIVATE/GAME_PAUSED/GAME_TAGGER) entry에서 초기화)
 static String pendingTagUser = "";
+
+// PAUSED에서 지금 얹혀 있는 태그를 이미 role 조회했는지. 같은 태그를 계속 얹어 두면
+// RfidHalUpdate(200ms)가 매 틱 재읽기하므로, 완전히 뗐다가 다시 얹을 때까지 다시 묻지 않는다.
+static bool pausedTagEvaluated = false;
 
 // MMMM 관리자 카드로 박스를 수동 토글한 뒤, DataChanged()의 activate 안전망(중복 수신마다
 // boxClose() 강제)이 그 다음 폴링에서 즉시 되돌리는 것을 막는 플래그. AdminCardToggle()이
@@ -80,6 +84,8 @@ void ChangeGameState(GameState next) {
         case GAME_PAUSED:
             NeoSetAll(YELLOW);
             pauseStartTime = millis();
+            pendingTagUser = "";          // 재태그 role 조회 대기 상태 초기화
+            pausedTagEvaluated = false;
             // "activate"로 보내면 has2wifi.Loop()의 다음 폴링에서 그대로 되돌아와
             // DataChanged()가 이를 명령으로 오인해 ChangeGameState(GAME_ACTIVATE)를 호출,
             // answerCnt를 즉시 리셋해버렸다(자기 트리거 버그). "solving"처럼 DataChanged()가
@@ -367,7 +373,7 @@ void ReadyState() {
 void ActivateState() {
     // (A) role 조회 응답 대기 중 — 결과 폴링
     if (pendingTagUser != "") {
-        String role = WifiPollPlayerRole();  // 논블로킹, Core0 미완료 시 ""
+        String role = WifiPollPlayerRole(pendingTagUser);  // 논블로킹, Core0 미완료 시 ""
         if (role == "player") {
             Log("GAME", "puzzle start by " + pendingTagUser);
             pendingTagUser = "";
@@ -406,7 +412,7 @@ void TaggerState() {
 
     // (A) role 조회 응답 대기 중 — 결과 폴링
     if (pendingTagUser != "") {
-        String role = WifiPollPlayerRole();  // 논블로킹, Core0 미완료 시 ""
+        String role = WifiPollPlayerRole(pendingTagUser);  // 논블로킹, Core0 미완료 시 ""
         if (role == "player" || role == "ghost") {
             String taggedUser = pendingTagUser;
             pendingTagUser = "";
@@ -488,7 +494,10 @@ void PuzzleState() {
 }
 
 //---------------------------------------- GAME_PAUSED ----------------------------------------
-// 태그 이탈 일시정지. 재태그 → 퍼즐 재개, puzzleResetTime 초과 → ACTIVATE 복귀.
+// 태그 이탈 일시정지. 재태그 → role 조회 → "player"만 퍼즐 재개, puzzleResetTime 초과 → ACTIVATE 복귀.
+// 예전에는 태그 존재 여부만 보고 바로 재개해서, 생존자가 풀다 손을 뗀 박스(대시보드 "시도됨")에
+// 유령·술래가 글러브를 대면 역할 검사 없이 이어 풀어 열 수 있었다(1호점 #1558 G1P5).
+// 퍼즐을 시작한 본인이 다시 대도 조회를 거친다 — 멈춰 있는 사이에 잡혀 유령이 됐을 수 있다.
 void PausedState() {
     if (millis() - pauseStartTime > puzzleResetTime) {
         Log("GAME", "pause " + String(puzzleResetTime / 1000) + "s timeout -> ACTIVATE");
@@ -496,9 +505,37 @@ void PausedState() {
         return;
     }
 
-    if (!RfidTagPresent()) return;  // 캐시 조회
+    // (A) role 조회 응답 대기 중 — 결과 폴링 (ActivateState와 같은 경로)
+    if (pendingTagUser != "") {
+        String role = WifiPollPlayerRole(pendingTagUser);  // 논블로킹, Core0 미완료 시 ""
+        if (role == "player") {
+            Log("GAME", "puzzle resume by " + pendingTagUser);
+            pendingTagUser = "";
+            ChangeGameState(GAME_PUZZLE);
+        } else if (role != "") {
+            Log("GAME", "paused: non-player ignored (" + role + ")");
+            pendingTagUser = "";
+        }
+        return;
+    }
 
-    ChangeGameState(GAME_PUZZLE);
+    // (B) 재태그 감지 → role 조회 요청 투입
+    if (!RfidTagPresent()) {  // 캐시 조회
+        pausedTagEvaluated = false;  // 태그가 완전히 떨어짐 — 다음에 얹히면 새로 조회
+        return;
+    }
+    if (pausedTagEvaluated) return;  // 같은 태그를 계속 얹어 둔 상태 — 재조회하지 않음
+
+    uint8_t data[32];
+    if (!RfidReadTag(data)) return;
+    pausedTagEvaluated = true;
+
+    String tagUser = "";
+    for (int i = 0; i < 4; i++) tagUser += (char)data[i];
+    Log("GAME", "paused re-tag: " + tagUser);
+
+    pendingTagUser = tagUser;
+    WifiRequestPlayer(tagUser.c_str());  // roleRequestQueue 투입, 즉시 리턴
 }
 
 //---------------------------------------- GAME_CORRECT_ANIM ----------------------------------------
