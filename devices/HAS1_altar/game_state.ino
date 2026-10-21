@@ -93,6 +93,7 @@ void DataChange()
             // 문제가 있어서, round/square 애니메이션과 분리해 여기서 한 번만 설정.
             lightColor(pixels_pn532, purple);
             lightColor(pixels_side, purple);
+            NeoGaming(); // 상단(round/square)도 진입 즉시 켠다 - 다음 loop까지 미루면 side보다 늦게 켜져 보인다
         }
         else if ((String)(const char *)my["device_state"] == "player_win")
         {

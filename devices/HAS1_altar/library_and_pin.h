@@ -49,11 +49,6 @@
 #define MICRO_SW_PIN 35                 // 회전 메커니즘 완료 감지 (외부 10K 풀업, 평소 HIGH, 눌리면 LOW)
 #define MICRO_SW_DEBOUNCE_MS 10
 
-// activate 상태 round/square(1,2) 게이지: taken_chip/max_chip 비율에 따라
-// 연한 보라(GAUGE_PURPLE_MIN) ~ 진한 보라(GAUGE_PURPLE_MAX)로 표시.
-// (다른 장치들과 동일하게 풀스케일 255 기준으로 맞춤 — 기존 4~40의 비율(1:10) 유지)
-#define GAUGE_PURPLE_MIN 26
-#define GAUGE_PURPLE_MAX 255
 #include "crash.h"
 #include "telnet.h"
 // Redirect Serial → TelnetSerial so all Serial.print/println also go to telnet
