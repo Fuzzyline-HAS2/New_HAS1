@@ -348,6 +348,11 @@ void RfidLoop()
     {
       // 유예시간 초과 - 태그 제거 확정, 탐색 모드로 복귀
       pn532_tag_locked = false;
+      // 제거가 확정된 이 시점에 세션 게이트를 직접 내린다. 아래 공통 리셋은 리더가 살아있을
+      // 때만 도는데, 바로 다음 게인 리셋이 실패하면 락은 이미 풀린 채 게이트만 남아 복구 뒤
+      // 첫 카드가 이전 플레이어의 조회 데이터(tag JSON)로 처리되는 구멍이 생긴다.
+      chip_return_processed = false;
+      tag_data_fetched = false;
       pn532_gain = GAIN_NEAR;
       if (!ApplyGain(pn532_gain))
       {

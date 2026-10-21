@@ -80,9 +80,14 @@ struct Read { bool ack; bool detect; bool success; std::string data; };
 std::deque<Read> reads;
 int gains_applied = 0;
 bool reader_alive = true;  // false: every ACK-required command (gain, init) fails like a dead PN532
+int gain_fail_at = 0;      // >0: only the N-th gain command (counted in gains_applied) fails
 struct Reader {
   // Only ApplyGain still goes through the raw command path; it is the liveness probe.
-  bool sendCommandCheckAck(uint8_t *, size_t, int = 0) { ++gains_applied; return reader_alive; }
+  bool sendCommandCheckAck(uint8_t *, size_t, int = 0) {
+    ++gains_applied;
+    if (gain_fail_at && gains_applied == gain_fail_at) return false;
+    return reader_alive;
+  }
   // readPassiveTargetID consumes the InListPassiveTarget response: a missing ACK or
   // no target both come back as false and end the attempt.
   bool readPassiveTargetID(int, uint8_t *, uint8_t *, int) {
@@ -125,7 +130,7 @@ void reset() {
   reads.clear(); pn532_gain = GAIN_NEAR; pn532_tag_locked = false;
   pn532_last_seen_ms = 0; tag_active = chip_return_processed = tag_data_fetched = false;
   card_checks = fetches = returns = gains_applied = 0;
-  reader_alive = true; g_crash_pending = false; g_crash_msg[0] = '\0';
+  reader_alive = true; gain_fail_at = 0; g_crash_pending = false; g_crash_msg[0] = '\0';
   my_device_state = "activate"; state_sends = 0;
   rfid_recovery = RfidRecoveryPolicy(); rfid_recovery.recordSuccess();
 }
@@ -242,6 +247,20 @@ int main() {
   reset(); poll(0, {card()}); reader_alive = false;
   poll(1000, {miss()});  // locked miss -> gain switch fails -> immediate recovery
   assert(!rfid_recovery.ready() && !tag_active);
+
+  // Removal confirmed at grace expiry, then the gain reset itself fails: the session gates
+  // must already be down, so the next player after recovery gets a fresh fetch and payout
+  // instead of the previous player's cached tag data.
+  reset(); poll(0, {card()});
+  poll(1000, {miss(), miss()});           // one miss inside the grace period
+  gains_applied = 0; gain_fail_at = 3;    // this tick: switch ok, restore ok, reset probe dies
+  poll(2500, {miss(), miss()});           // grace expired -> removal confirmed -> reset fails
+  gain_fail_at = 0;
+  assert(!pn532_tag_locked && !rfid_recovery.ready());
+  assert(!tag_active && !chip_return_processed && !tag_data_fetched);
+  now_ms = 10000; RfidMaintain(); assert(rfid_recovery.ready());
+  poll(11000, {card("G1P3")});
+  assert(checked_code == "G1P3" && fetches == 2 && returns == 2);
   std::cout << "PASS: altar production RFID presence, retries, debounce, gates, card replacement and reader recovery\n";
 }
 '''.replace('// PRODUCTION', constants + '\n' + state + '\n' +
