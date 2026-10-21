@@ -92,6 +92,10 @@ void Mp3PlayLargeFolder(int folder, int track) {
     events.push_back("sound");
 }
 void OnTagChipConfirmed() {}
+// LED blackout around the pulse: off must come before the (blocking) send and the pulse,
+// restore must come after the pulse and before the success sound.
+void NeoSceneOff() { events.push_back("leds_off"); }
+void NeoSceneRestore() { assert(solenoid == LOW); events.push_back("leds_on"); }
 void CrashReportInit() { events.push_back("crash_init"); }
 void LogMemoryStats(const char*) {}
 void TempleInit() {
@@ -138,7 +142,7 @@ int main(int argc, char** argv) {
         tag_active = scenario == "setting_stale_tag";
         detectChip();
         crank();
-        expect({"on", "delay:2000", "off"});
+        expect({"leds_off", "on", "delay:2000", "off", "leds_on"});
         assert(sends == 0 && opens == 1 && !ir_chip_pending);
     } else {
         tag_active = true;
@@ -147,11 +151,11 @@ int main(int argc, char** argv) {
         detectChip();
         crank();
         if (scenario == "blink") {
-            expect({"send", "send_returned", "on", "delay:2000", "off"});
+            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on"});
         } else if (transport_failed) {
-            expect({"send", "send_failed", "on", "delay:2000", "off", "sound"});
+            expect({"leds_off", "send", "send_failed", "on", "delay:2000", "off", "leds_on", "sound"});
         } else {
-            expect({"send", "send_returned", "on", "delay:2000", "off", "sound"});
+            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on", "sound"});
         }
         assert(sends == 1 && opens == 1 && !ir_chip_pending && !pending_success_sound);
         if (scenario == "held_switch") {
