@@ -637,9 +637,11 @@ void NeoBeforeTagger()
 void NeoTagger()
 {
   // ClearRound()는 버퍼만 지우고 show()를 안 불러서 이전 색(ready의 빨간색)이
-  // 화면에 그대로 남아있었다 - 흰색을 명시적으로 켜서 실제로 반영되게 한다.
-  lightColor(pixels_round, white);  // round + pn532
-  lightColor(pixels_square, white); // square + square2
+  // 화면에 그대로 남아있었다 - 색을 명시적으로 켜서 실제로 반영되게 한다.
+  // blink(술래 활성화) 상태는 side와 같은 연보라로 통일한다. (예전엔 상단만 흰색이었는데
+  // 흰색은 3채널을 다 켜서 같은 밝기 설정에서도 보라보다 전류를 1.5배 쓴다.)
+  lightColor(pixels_round, purple_white);  // round + pn532
+  lightColor(pixels_square, purple_white); // square + square2
 }
 
 void NeoTaggerTag()
