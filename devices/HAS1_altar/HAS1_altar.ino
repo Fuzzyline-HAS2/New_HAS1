@@ -77,6 +77,7 @@ void loop()
   NeoFunc();
   IrSensorLoop();
   MicroSwLoop();
+  RfidMaintain(); // 예약된 PN532 재초기화만 처리 (정상일 땐 즉시 반환)
   if (activate_bool)
   {
     ActivateFunc();
