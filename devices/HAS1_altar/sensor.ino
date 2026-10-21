@@ -610,9 +610,10 @@ void NeoSceneRestore()
   }
   else if (device_state == "activate")
   {
-    NeoFunc = NeoGaming; // round/square 게이지는 매 loop, pn532/side는 진입 시 한 번
+    NeoFunc = NeoGaming; // round/square는 매 loop, pn532/side는 진입 시 한 번
     lightColor(pixels_pn532, purple);
     lightColor(pixels_side, purple);
+    NeoGaming(); // 상단도 지금 바로 켠다 - 다음 loop까지 미루면 side보다 한 박자 늦게 켜져 보인다
   }
   else if (game_state == "activate")
   {
@@ -667,33 +668,18 @@ void NeoAfterTagger()
   lightColor(pixels_square, purple);
 }
 
+// activate 기본 화면: round/square(1,2)를 side/pn532와 같은 보라색으로 매 loop 유지한다.
+// (예전엔 taken_chip/max_chip 비율로 연한 보라→진한 보라로 밝아지는 게이지였는데, 바쳐질수록
+// 상단만 밝아지는 연출을 빼고 모든 스트립을 항상 같은 밝기로 두기로 했다. 칩 확인 연출
+// NeoChipBlinkActivate가 끝나면 여기로 돌아와 round/square를 다시 채운다.)
 void NeoGaming()
 {
-  // round/square(1,2)는 taken_chip/max_chip 비율에 따라 연한 보라(적게 모음)에서
-  // 진한 보라(많이 모음)로 표시. max_chip 데이터가 아직 없거나(부팅 직후 등)
-  // 0 이하면 기본 보라색(purple[3]과 동일한 밝기)으로 둔다.
-  int taken = (int)my["taken_chip"];
-  int max_chip = (int)my["max_chip"];
-  int mag;
-  if (max_chip <= 0)
-  {
-    mag = GAUGE_PURPLE_MAX;
-  }
-  else
-  {
-    float ratio = (float)taken / (float)max_chip;
-    if (ratio < 0) ratio = 0;
-    if (ratio > 1) ratio = 1;
-    mag = GAUGE_PURPLE_MIN + (int)((GAUGE_PURPLE_MAX - GAUGE_PURPLE_MIN) * ratio);
-  }
-  int gauge_purple[3] = { mag, 0, mag };
-
   // pixels_round는 lightColor()를 거치면 pn532까지 매번 덮어써버린다(pn532는
   // DataChange()에서 activate 진입 시 한 번만 고정해두는 것으로 바꿨음) — 그래서
   // 여기서는 round만 직접 갱신하고 pn532는 건드리지 않는다.
-  pixels_round.fill(pixels_round.Color(gauge_purple[0], gauge_purple[1], gauge_purple[2]));
+  pixels_round.fill(pixels_round.Color(purple[0], purple[1], purple[2]));
   pixels_round.show();
-  lightColor(pixels_square, gauge_purple); // square + square2
+  lightColor(pixels_square, purple); // square + square2
 }
 
 // blink: 생명칩 태그 시 round + square(1,2)가 비율 맞춰 함께 차오르는 게이지.
