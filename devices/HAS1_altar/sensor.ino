@@ -614,6 +614,12 @@ void NeoSceneRestore()
     lightColor(pixels_pn532, purple);
     lightColor(pixels_side, purple);
   }
+  else if (game_state == "activate")
+  {
+    // 게임은 시작됐는데 device_state가 아직 blink/activate로 안 바뀐 짧은 구간(엔진이
+    // game_state를 먼저 올리는 경우). 예전엔 ReadyFunc가 남긴 빨간색이 그대로 있었다.
+    NeoFunc = NeoBeforeTagger;
+  }
   // 그 외 상태(player_win/lose 등)는 기존에도 LED 지정이 없어 꺼진 채 둔다.
 }
 // NeoFunc()는 loop()에서 매 반복마다 무조건 호출되므로, 안에서 delay()를 쓰면
