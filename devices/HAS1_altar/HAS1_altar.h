@@ -3,6 +3,7 @@
 
 #include "library_and_pin.h"
 #include "location_protocol.h"
+#include "recovery_policy.h"
 
 //============================ Global Variable ============================
 void NeoNo();
@@ -83,8 +84,18 @@ static constexpr size_t RFID_PAGE_DATA_SIZE = 4;
 // 미스 한 번(=최대 1000ms 공백)도 흡수할 수 있게 폴링 주기의 2배 이상으로 잡는다.
 #define TAG_REMOVE_TIME_MS 2500
 
-void RfidInit(void);
+// InListPassiveTarget 재시도 횟수. PN532 기본값 0xFF는 태그가 올 때까지 무한 탐색이라
+// 호스트가 타임아웃으로 포기한 뒤에도 칩은 계속 바쁘고, 거기에 다음 명령을 얹으면
+// 프레임 위상이 어긋나 리더가 "죽은 것처럼" 멈추는 원인이 됐다. 유한 재시도여야
+// readPassiveTargetID의 타임아웃 안에 PN532가 응답을 끝내고 다음 명령을 받는다.
+// (HAS1_tagmachine_sub와 같은 값 - 그쪽에서 실측 검증됨)
+#define RFID_ACTIVATION_RETRIES 10
+#define RFID_DETECT_TIMEOUT_MS 250
+
+bool RfidInit(void);
 void RfidLoop(void);
+void RfidMaintain(void);                      // loop()마다 호출 - 예약된 PN532 재초기화를 백오프에 맞춰 수행
+void RequestRfidReinit(const char *reason);   // ACK 필수 명령이 실패하면 호출 - 리더를 못 믿는 상태로 전환
 void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]);
 void RunAltarSuccess(); // MicroSwLoop에서 태그+칩 확인 후 솔레노이드 개방 전에 집계 요청
 

@@ -22,6 +22,10 @@ static bool chip_return_processed = false;
 // 인터럽트가 아니라 매 loop 1회 폴링이라 이 타이밍에 클릭이 나면 통째로 씹혀서
 // 여러 번 돌려야 인식되는 원인이 됐다. 같은 태그 세션에서는 한 번만 조회한다.
 static bool tag_data_fetched = false;
+// PN532 재초기화 상태(SensorInit/RfidLoop/RfidMaintain 공용 - 사용부보다 앞에 둬야 한다).
+// ready()가 false인 동안 RfidLoop는 PN532를 건드리지 않고 "태그 없음"으로 처리한다
+// (리더를 못 믿는 동안 크랭크가 솔레노이드를 열지 못하게 - fail-closed).
+static RfidRecoveryPolicy rfid_recovery;
 
 // 태그+칩이 (순서 상관없이) 둘 다 확인된 순간 - 로컬 애니메이션만 즉시 트리거해서
 // "확인됐으니 크랭크를 돌리라"는 피드백을 준다. taken_chip 갱신/tagger_name
@@ -68,8 +72,18 @@ void SensorInit()
   pixels_square2.setBrightness(DEFAULT_BRIGHTNESS);
   pixels_pn532.setBrightness(DEFAULT_BRIGHTNESS);
 
-  // Rfid init
-  RfidInit();
+  // Rfid init - 실패해도 멈추지 않고 loop()의 RfidMaintain이 백오프로 계속 재시도한다.
+  // (예전엔 부팅 때 한 번 실패하면 리더 없이 영원히 돌았다)
+  if (RfidInit())
+  {
+    rfid_recovery.recordSuccess();
+  }
+  else
+  {
+    Serial.println("!!!RFID connect failed!!! - will keep retrying in loop()");
+    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
+    rfid_recovery.recordFailure(millis());
+  }
 
   // 솔레노이드는 setup()에서 초기화/부팅 배출 완료. IR / Micro Switch init
   IrSensorInit();
@@ -117,35 +131,121 @@ static bool ApplyGain(GainMode mode)
 }
 
 // 현재 Gain으로 태그 감지 + page7 읽기를 1회 시도한다.
+// readPassiveTargetID()는 InListPassiveTarget의 ACK와 결과 프레임을 모두 소비한다.
+// 예전의 0x00(정의되지 않은 명령) 핑 + startPassiveTargetIDDetection() 조합은 결과
+// 프레임을 읽지 않은 채 바로 InDataExchange를 보내 PN532 프레임 위상을 깨뜨릴 수 있었고,
+// 무한 재시도(기본 0xFF) 탓에 태그가 없으면 칩이 탐색에서 영영 못 빠져나왔다.
+// 타임아웃은 RFID_ACTIVATION_RETRIES번의 탐색이 끝나기에 충분해야 한다(그래야 응답이
+// 남지 않는다). "태그 없음"과 "ACK 없음"은 여기서 구분하지 않는다 - 리더 생존 여부는
+// ACK가 반드시 와야 하는 ApplyGain()의 결과로 RfidLoop가 판정한다.
 static bool DetectAndRead(uint8_t outData[RFID_PAGE_DATA_SIZE])
 {
-  byte buf[64] = {0};
-  BREADCRUMB("RfidLoop:sendCmd");
-  if (!nfc.sendCommandCheckAck(buf, 1)) return false;               // rfid 통신 가능한 상태인지 확인
+  // 라이브러리는 응답 프레임의 길이 바이트(uint8_t, 최대 255)만큼 uid를 검사 없이 복사한다.
+  // 어긋난 프레임이 오면 7바이트 버퍼로는 스택이 깨져 게임 중 패닉이 나므로 최대치로 잡는다.
+  uint8_t uid[256];
+  uint8_t uidLength = 0;
   BREADCRUMB("RfidLoop:detectTarget");
-  if (!nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A)) return false;
+  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, RFID_DETECT_TIMEOUT_MS)) return false;
   BREADCRUMB("RfidLoop:readPage");
-  return nfc.ntag2xx_ReadPage(7, outData);
+  return nfc.ntag2xx_ReadPage(7, outData) != 0;
 }
 
 /**
- * @brief RFID(=PN532) 세팅
+ * @brief RFID(=PN532) 세팅. 실패하면 false - 호출자가 재시도 일정을 잡는다.
+ *        (부팅 시 SensorInit, 실행 중 RfidMaintain 양쪽에서 쓴다)
  */
-void RfidInit(void)
+bool RfidInit(void)
 {
-  nfc.begin(); // nfc 함수 시작
+  BREADCRUMB("RfidInit");
+  // pn532_tag_locked/pn532_locked_data는 건드리지 않는다 - 재초기화 뒤 같은 태그가 그대로
+  // 붙어있으면 유지 모드가 이어져 반납 보상(chip_return_processed)이 다시 지급되지 않는다.
+  // 죽은 모듈이면 begin()의 wakeup(SAMConfig 대기 1초) + getFirmwareVersion(1초)로 약 2초 막힌다.
+  nfc.begin(); // 소프트 SPI 핀 재설정 + wakeup (RSTPDN이 배선돼 있지 않아 하드웨어 리셋은 없음)
   if (!(nfc.getFirmwareVersion()))
   {
-    Serial.println("!!!RFID connect failed!!! - continuing anyway");
-    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
-    return;
+    Serial.println("[RFID] PN532 firmware query failed");
+    return false;
   }
-  nfc.SAMConfig(); // configure board to read RFID tags
+  if (!nfc.SAMConfig())
+  {
+    Serial.println("[RFID] PN532 SAMConfig failed");
+    return false;
+  }
+  // 기본 0xFF는 카드가 올 때까지 InListPassiveTarget을 무한 수행한다. 유한 재시도를
+  // 설정해야 readPassiveTargetID의 timeout 뒤에도 PN532가 다음 명령을 받을 수 있다.
+  if (!nfc.setPassiveActivationRetries(RFID_ACTIVATION_RETRIES))
+  {
+    Serial.println("[RFID] PN532 activation retry setup failed");
+    return false;
+  }
   // PN532는 RF 설정을 저장하지 않으므로 초기화(전원 재투입/모듈 교체 포함)마다 재적용한다.
   pn532_gain = GAIN_NEAR;
-  ApplyGain(pn532_gain);
-  pn532_tag_locked = false;
+  if (!ApplyGain(pn532_gain))
+  {
+    Serial.println("[RFID] PN532 gain setup failed");
+    return false;
+  }
   Serial.println("RFID connected successfully");
+  return true;
+}
+
+// 리더 상태 변화를 서버에도 남긴다. device_state는 건드리지 않는다 - 게임 중에
+// activate/blink를 덮어쓰면 엔진·대시보드가 오동작하고, 복구돼도 되돌릴 근거가 없다.
+// 대신 제단만 쓰는 자유 형식 crash_log 컬럼을 재사용한다(WifiTimerFunc의
+// CrashReportSend가 다음 2초 주기에 한 번 보낸다. 공백/특수문자는 그쪽에서 치환).
+// 진짜 크래시 보고(재부팅 직후 CrashReportInit이 세움)가 아직 안 나갔으면 덮어쓰지 않는다 -
+// 그 경우 리더 이벤트는 Serial/Telnet 로그에만 남는다.
+static const char *rfid_fault_reason = "";
+static void RfidReportEvent(const char *event, const char *detail, unsigned fails)
+{
+  char msg[sizeof(g_crash_msg)];
+  snprintf(msg, sizeof(msg), "pn532=%s %s uptime=%lums fails=%u",
+           event, detail, (unsigned long)millis(), fails);
+  Serial.printf("[RFID] %s\n", msg);
+  if (g_crash_pending) return;
+  strncpy(g_crash_msg, msg, sizeof(g_crash_msg) - 1);
+  g_crash_msg[sizeof(g_crash_msg) - 1] = '\0';
+  g_crash_pending = true;
+}
+
+/**
+ * @brief ACK가 반드시 와야 하는 명령이 실패했을 때 호출 - 리더를 못 믿는 상태로 전환하고
+ *        재초기화를 예약한다. 즉시 재초기화하지 않는 이유: 죽은 모듈에 RfidInit을 돌리면
+ *        약 2초를 통째로 막히므로 loop()의 RfidMaintain이 백오프 간격으로 시도한다.
+ *        태그 유지 상태(pn532_tag_locked)는 그대로 둔다 - 복구 뒤 같은 태그면 세션이 이어진다.
+ */
+void RequestRfidReinit(const char *reason)
+{
+  rfid_fault_reason = reason;
+  rfid_recovery.request(millis());
+  RfidReportEvent("reinit_requested", reason, 0);
+}
+
+/**
+ * @brief loop()마다 호출. 재초기화가 예약돼 있고 재시도 시각이 됐을 때만 RfidInit을 돌린다.
+ *        정상 상태(ready)에서는 비교 한 번 하고 바로 돌아온다.
+ */
+void RfidMaintain(void)
+{
+  unsigned long now = millis();
+  if (!rfid_recovery.attemptDue(now)) return;
+
+  Serial.println("[RFID] re-initializing PN532...");
+  if (RfidInit())
+  {
+    unsigned fails = rfid_recovery.failureCount();
+    rfid_recovery.recordSuccess();
+    RfidReportEvent("recovered", rfid_fault_reason, fails);
+    // 부팅 때 실패해서 우리가 PN532 상태를 보냈던 경우에만 되돌린다(게임 중 상태는 건드리지 않음).
+    if ((String)(const char *)my["device_state"] == "PN532")
+    {
+      has2wifi.Send((String)(const char *)my["device_name"], "device_state", "setting");
+    }
+    return;
+  }
+  rfid_recovery.recordFailure(millis());
+  Serial.printf("[RFID] PN532 retry in %lu ms\n",
+                (unsigned long)RfidRecoveryPolicy::retryDelayMs(rfid_recovery.failureCount()));
 }
 
 /**
@@ -166,15 +266,30 @@ void RfidLoop()
   uint8_t data[RFID_PAGE_DATA_SIZE] = {0};
   bool tag_present = false;
 
-  if (!pn532_tag_locked)
+  if (!rfid_recovery.ready())
+  {
+    // 리더 재초기화 대기 중 - PN532를 건드리지 않는다(죽은 모듈에 명령을 보내면 매번
+    // 타임아웃까지 loop가 막힌다). 아래 공통 처리에서 "태그 없음"으로 게이트를 내려
+    // 리더를 못 믿는 동안엔 크랭크를 돌려도 솔레노이드가 열리지 않게 한다.
+  }
+  else if (!pn532_tag_locked)
   {
     // 탐색 모드: 현재 Gain으로 1회 시도 → 실패하면 반대 Gain으로 즉시 재시도
     //   (23dB↔33dB를 오가며 근접~4cm 전 구간을 커버, 둘 다 실패하면 이번 tick은 미검출)
+    // ApplyGain은 태그 유무와 무관하게 ACK가 와야 하는 명령이라, 여기서 실패하면
+    // 리더 자체가 응답하지 않는 것 - 재초기화를 예약한다(태그 없는 매 tick마다 검사됨).
     if (!DetectAndRead(data))
     {
-      pn532_gain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-      ApplyGain(pn532_gain);
-      pn532_tag_locked = DetectAndRead(data);
+      GainMode otherGain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
+      if (!ApplyGain(otherGain))
+      {
+        RequestRfidReinit("gain_switch_failed");
+      }
+      else
+      {
+        pn532_gain = otherGain;
+        pn532_tag_locked = DetectAndRead(data);
+      }
     }
     else
     {
@@ -198,19 +313,27 @@ void RfidLoop()
     if (!found)
     {
       GainMode otherGain = (pn532_gain == GAIN_NEAR) ? GAIN_FAR : GAIN_NEAR;
-      ApplyGain(otherGain);
-      if (DetectAndRead(data) && memcmp(data, pn532_locked_data, sizeof(pn532_locked_data)) == 0)
+      if (!ApplyGain(otherGain))
+      {
+        RequestRfidReinit("gain_switch_failed");
+      }
+      else if (DetectAndRead(data) && memcmp(data, pn532_locked_data, sizeof(pn532_locked_data)) == 0)
       {
         pn532_gain = otherGain; // 반대 Gain에서 같은 태그 재확인 → 그 Gain으로 전환해 유지
         found = true;
       }
-      else
+      else if (!ApplyGain(pn532_gain)) // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
       {
-        ApplyGain(pn532_gain); // 재확인 실패 — 칩 설정을 원래 Gain으로 되돌려 상태 일치시킴
+        RequestRfidReinit("gain_restore_failed");
       }
     }
 
-    if (found)
+    if (!rfid_recovery.ready())
+    {
+      // 위에서 재초기화가 예약됨 - 유예시간 로직을 타지 않고 즉시 태그 없음으로 처리
+      // (리더가 죽었는데 2.5초 동안 "태그 유지 중"으로 솔레노이드가 열리면 안 된다).
+    }
+    else if (found)
     {
       pn532_last_seen_ms = millis();
       tag_present = true;
@@ -226,18 +349,25 @@ void RfidLoop()
       // 유예시간 초과 - 태그 제거 확정, 탐색 모드로 복귀
       pn532_tag_locked = false;
       pn532_gain = GAIN_NEAR;
-      ApplyGain(pn532_gain);
+      if (!ApplyGain(pn532_gain))
+      {
+        RequestRfidReinit("gain_reset_failed");
+      }
     }
   }
 
   // Tagger left the reader without inserting a chip - reset and ignore.
+  // (리더 장애 중에도 내린다 - 솔레노이드 게이트라 확인 못 하면 닫혀 있어야 한다)
   if (!tag_present && tag_active)
   {
     Serial.println("[RFID] Tag left reader - reset, ignored");
     tag_active = false;
   }
   // 태그가 리더에서 떠났으면 반납 처리 게이트도 같이 리셋 (다음에 다시 태그하면 재처리 가능해야 함).
-  if (!tag_present)
+  // 단, 리더 장애(재초기화 대기)로 못 본 것은 "떠남"이 아니다 - 여기서 리셋하면 복구 직후 같은
+  // 태그에 taken_chip/exp 반납 보상이 한 번 더 지급된다. 제거 판정은 리더가 살아난 뒤 유지 모드의
+  // 유예시간 로직(또는 다른 카드 감지)이 내린다.
+  if (!tag_present && rfid_recovery.ready())
   {
     chip_return_processed = false;
     tag_data_fetched = false;
