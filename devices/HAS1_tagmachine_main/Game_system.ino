@@ -59,6 +59,7 @@ void NewbiePlayerOpen() {
 
 void NewbieGhostOpen() {
     ReturnNormalState();
+    ClearPendingDeviceState(); // NewbieGhostOpenTimerFunc 의 재확인이 큐에 남긴 낡은 lock 을 버린다
     ptrRfidMode = NewbieLogin;
     // Mp3PlayLargeFolder(1, VD1);  // [DFPlayer 비활성화]
     digitalWrite(RELAY_PIN, HIGH);
