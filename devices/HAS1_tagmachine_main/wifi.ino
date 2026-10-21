@@ -106,6 +106,29 @@ void QueuePendingDeviceState(String deviceState) {
     Serial.println("Queue Device State: " + deviceState);
 }
 
+/**
+ * @brief 펌웨어가 스스로 상태 전이를 끝냈을 때, 진행 중 DataChanged()가 큐에 넣어 둔
+ *        (이미 지나간) device_state를 버린다. (updated_tagmachine_main 6c0d8d8 이식)
+ *
+ * 잠금/해제 타이머 함수들은 완료 직전에 ReceiveMine()+DataChanged()로 서버 상태를 재확인하는데,
+ * 이때는 loginDone==true 라서 감지된 상태 변화가 즉시 적용되지 않고 큐에 들어간다.
+ * 그런데 직전 전이가 cur 에 반영되지 않은 경우(예: 잠금 완료 시 자기 자신이 보낸 lock 을
+ * ReceiveMine()으로만 읽고 DataChanged()를 거치지 않아 cur 이 activate 로 남음)에는 이 재확인이
+ * "activate→lock" 을 뒤늦게 감지해 "lock" 을 큐에 남긴다. 해제가 끝나 loginDone 이 풀리면
+ * ApplyPendingDeviceState()가 그 낡은 lock 을 적용해, 노랑(activate)이어야 할 네오픽셀이
+ * 초록(lock)으로 덮이고 릴레이까지 다시 잠긴다(하드모드 잠금→해제→잠금→해제 증상).
+ * 이 서버는 장치 자신의 Send 로는 shift_machine 을 올리지 않아 주기 폴링도 cur 을 못 맞춘다.
+ *
+ * 성공 분기에서는 서버 상태가 기대한 값임을 방금 확인했고, 그 상태에서 벗어나는 전이를
+ * 펌웨어 자신이 보내므로 큐에 남은 값은 항상 낡은 값이다. 버려도 안전하다.
+ */
+void ClearPendingDeviceState() {
+    if (pendingDeviceStateApply)
+        Serial.println("Drop stale pending state: " + pendingDeviceState);
+    pendingDeviceState = "";
+    pendingDeviceStateApply = false;
+}
+
 void ApplyPendingDeviceState() {
     if (BeetleOtaActive()) {
       digitalWrite(RELAY_PIN, LOW);
