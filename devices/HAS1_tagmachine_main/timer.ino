@@ -159,7 +159,11 @@ void PlayerUnlockTimerFunc(){
             has2wifi.Send((String)(const char*)my["device_name"], "device_state", "open");
             RoundNeoEffect(YELLOW);
             DoorOpen();
+            // DoorOpen 의 Loop(DataChanged)는 자기 Send 로는 shift_machine 이 안 올라 cur 을 못 맞춘다.
+            // 잠금 쪽과 같은 이유로 여기서 DataChanged()까지 돌려 cur 을 activate 로 맞춰야,
+            // 이후 쇼타임 봉쇄·대시보드가 lock 을 밀어도 변화로 감지돼 LED 가 초록으로 바뀐다.
             has2wifi.ReceiveMine();
+            DataChanged();
             SubSerialFlush();
             MainSerialFlush();
         }                                                       //시리얼 통신 버퍼 flush
@@ -195,6 +199,8 @@ void TaggerUnlockTimerFunc(){
             has2wifi.Send((String)(const char*)my["device_name"], "device_state", "open");
             RoundNeoEffect(PURPLE);
             DoorOpen();
+            has2wifi.ReceiveMine(); // PlayerUnlockTimerFunc 참고: cur 을 activate 로 맞춘다
+            DataChanged();
             SubSerialFlush();
             MainSerialFlush();
         }                                                          //시리얼 통신 버퍼 flush

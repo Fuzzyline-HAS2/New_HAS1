@@ -86,6 +86,7 @@ JsonDocument my;
 std::vector<std::string> events;
 int relay = LOW, last_color = -1;
 bool send_bumps_shift = false;   // store 1 ESP route: a device's own Send leaves shift_machine alone
+bool tagger_on_open = false;     // server flips the row to "tagger" the moment the firmware sends "open"
 struct Log {
   template <class T> void println(const T &) {}
   template <class... T> void printf(const char *, T...) {}
@@ -104,6 +105,7 @@ struct Wifi {
   void Send(String, const char *column, const char *value) {
     server[column] = value; events.push_back(std::string("send:") + column + "=" + value);
     if (send_bumps_shift) shift = true;
+    if (tagger_on_open && std::string(column) == "device_state" && std::string(value) == "open") server[column] = "tagger";
   }
   void Send(String d, const char *column, const String &value) { Send(d, column, value.c_str()); }
   void ReceiveMine() { for (auto &kv : server) my.m[kv.first] = kv.second; events.push_back("receive"); }
@@ -154,7 +156,7 @@ void expect_state(const char *server_state, const char *cur_state, bool pending)
 void tagLock()   { loginDone = true; gameTimerCnt = 0; PlayerLockTimerFunc();   ApplyPendingDeviceState(); }
 void tagUnlock() { loginDone = true; gameTimerCnt = 0; PlayerUnlockTimerFunc(); ApplyPendingDeviceState(); }
 void boot(bool bumps) {
-  events.clear(); relay = LOW; last_color = -1; send_bumps_shift = bumps;
+  events.clear(); relay = LOW; last_color = -1; send_bumps_shift = bumps; tagger_on_open = false;
   has2wifi = Wifi(); my = JsonDocument(); loginDone = false; gameTimerCnt = 0;
   strCurState = ""; pendingDeviceState = ""; pendingDeviceStateApply = false;
   has2wifi.server = {{"device_name", "AT"}, {"game_state", "activate"}, {"device_state", "activate"}, {"mode", "normal"}};
@@ -222,17 +224,27 @@ int main(int argc, char **argv) {
     expect_state("lock", "lock", false);
     assert(!loginDone && last_color == GREEN && relay == LOW);
   } else if (scenario == "tagger_override_during_unlock") {
-    // Server flips to "tagger" during the door-open effect: DoorOpen must apply tagger
+    // Server flips to "tagger" right after the firmware's "open" (i.e. during the door-open
+    // effect, past the completion re-check): DoorOpen's TaggerOverrideCheck must apply tagger
     // and skip the activate send; nothing stale may be queued or applied afterwards.
     boot(false);
     tagLock();
-    loginDone = true; gameTimerCnt = 0;
-    has2wifi.ReceiveMine(); DataChanged();    // completion re-check (nothing queued: cur is lock)
-    assert(!pendingDeviceStateApply);
-    has2wifi.dashboard("device_state", "tagger");
-    PlayerUnlockTimerFunc(); ApplyPendingDeviceState();
-    assert(has2wifi.server["device_state"] == "tagger");
+    tagger_on_open = true;
+    tagUnlock();
+    assert(has2wifi.server["device_state"] == "tagger");   // the activate send was skipped
     assert(strCurState == "tagger" && relay == HIGH && !pendingDeviceStateApply);
+  } else if (scenario == "lockdown_after_unlock") {
+    // Same root cause in the unlock direction: after a self-sent activate, cur must be
+    // "activate" so a later server-pushed lock (showtime lockdown, dashboard) is seen as a
+    // change and turns the LEDs green.
+    boot(false);
+    tagLock();
+    tagUnlock();
+    expect_state("activate", "activate", false);
+    has2wifi.dashboard("device_state", "lock");
+    has2wifi.Loop(DataChanged); ApplyPendingDeviceState();
+    expect_state("lock", "lock", false);
+    assert(last_color == GREEN && relay == LOW);
   } else {
     std::cerr << "unknown scenario " << scenario << "\n";
     return 1;
@@ -250,6 +262,6 @@ with tempfile.TemporaryDirectory(prefix="tagmachine-pending-lock-") as temp:
                     str(src), "-o", str(exe)], check=True)
     for scenario in ("cycle", "cycle_shift", "lock_syncs_cur", "stale_queue_dropped",
                      "dashboard_unlock_mid_unlock", "dashboard_lock_mid_lock",
-                     "tagger_override_during_unlock"):
+                     "tagger_override_during_unlock", "lockdown_after_unlock"):
         # Each scenario in its own process: DataChanged keeps `cur` in a function static.
         subprocess.run([str(exe), scenario], check=True)
