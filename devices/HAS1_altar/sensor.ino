@@ -552,6 +552,70 @@ void lightRgb(Adafruit_NeoPixel &pixels, int r, int g, int b)
 void NeoNo()
 {
 }
+
+// 칩 확인 연출(NeoChipGaugeBlink/NeoChipBlinkActivate)의 진행 상태. 함수 안 static이면
+// 크랭크로 연출을 도중에 끊었을 때 다음 연출이 끊긴 지점부터 이어져 보이므로 파일 범위로
+// 빼서 NeoSceneOff()가 되돌릴 수 있게 한다.
+static int chip_gauge_step = 0;
+static unsigned long chip_gauge_next_ms = 0;
+static bool chip_blink_on = false;
+static int chip_blink_count = 0;
+static unsigned long chip_blink_next_ms = 0;
+
+static void NeoAnimReset()
+{
+  chip_gauge_step = 0;
+  chip_gauge_next_ms = 0;
+  chip_blink_on = false;
+  chip_blink_count = 0;
+  chip_blink_next_ms = 0;
+}
+
+// 크랭크 통전 전후 LED 처리. 통전 2초는 delay()라 loop가 멈추고 LED는 그 직전 상태로
+// 고정된다 - 플레이어가 태그+칩 직후 바로 크랭크를 돌리면 확인 연출이 도중에 얼어붙은
+// 채 2초를 보내고 남은 칸부터 이어져 어색했고, 솔레노이드와 LED 전류가 그 2초 동안 겹쳤다.
+// 통전 직전에 모든 스트립을 끄고(피크 전류 최소화 + 의도된 암전), 통전이 끝나면 현재 서버
+// 상태의 기본 화면으로 되돌린다. 별도 성공 연출은 두지 않는다(성공음은 기존대로 복귀 뒤).
+void NeoSceneOff()
+{
+  NeoFunc = NeoNo; // 진행 중이던 연출 중단 - 복귀 시 상태별 기본 연출로 다시 지정한다
+  NeoAnimReset();
+  pixels_round.clear();   pixels_round.show();
+  pixels_pn532.clear();   pixels_pn532.show();
+  pixels_square.clear();  pixels_square.show();
+  pixels_square2.clear(); pixels_square2.show();
+  pixels_side.clear();    pixels_side.show();
+}
+
+// DataChange()의 상태 진입 처리와 같은 화면으로 되돌린다 (그쪽을 바꾸면 여기도 맞출 것).
+void NeoSceneRestore()
+{
+  String game_state = (String)(const char *)my["game_state"];
+  String device_state = (String)(const char *)my["device_state"];
+  if (game_state == "setting")
+  {
+    NeoFunc = NeoNo; // SettingFunc와 동일: 전체 흰색 고정
+    lightColor(pixels_round, white);
+    lightColor(pixels_side, white);
+    lightColor(pixels_square, white);
+  }
+  else if (game_state == "ready")
+  {
+    NeoFunc = NeoBeforeTagger; // 매 loop 빨간색
+  }
+  else if (device_state == "blink")
+  {
+    NeoFunc = NeoTagger; // round/square 흰색은 매 loop, side는 진입 시 한 번
+    lightColor(pixels_side, purple_white);
+  }
+  else if (device_state == "activate")
+  {
+    NeoFunc = NeoGaming; // round/square 게이지는 매 loop, pn532/side는 진입 시 한 번
+    lightColor(pixels_pn532, purple);
+    lightColor(pixels_side, purple);
+  }
+  // 그 외 상태(player_win/lose 등)는 기존에도 LED 지정이 없어 꺼진 채 둔다.
+}
 // NeoFunc()는 loop()에서 매 반복마다 무조건 호출되므로, 안에서 delay()를 쓰면
 // 그 시간만큼 IrSensorLoop/MicroSwLoop가 아예 안 돌아 짧은 스위치 입력을 통째로
 // 놓친다. 애니메이션 없는 원색이라 페이싱 자체가 불필요 — 그냥 매번 켠다.
@@ -630,8 +694,8 @@ void NeoGaming()
 // delay() 대신 NeoFunc()가 매 loop마다 한 칸씩만 진행시켜 논블로킹으로 동작한다.
 void NeoChipGaugeBlink()
 {
-  static int step = 0;
-  static unsigned long next_ms = 0;
+  int &step = chip_gauge_step;
+  unsigned long &next_ms = chip_gauge_next_ms;
 
   if (millis() < next_ms) return;
   next_ms = millis() + 50;
@@ -663,9 +727,9 @@ void NeoChipGaugeBlink()
 // pn532(태그 지점)는 이 연출과 무관하게 계속 보라색으로 둔다.
 void NeoChipBlinkActivate()
 {
-  static bool on = false;
-  static int blink_count = 0;
-  static unsigned long next_ms = 0;
+  bool &on = chip_blink_on;
+  int &blink_count = chip_blink_count;
+  unsigned long &next_ms = chip_blink_next_ms;
 
   if (millis() < next_ms) return;
   next_ms = millis() + 150;
@@ -853,6 +917,10 @@ void MicroSwLoop()
           ir_chip_pending = false;
           ir_chip_confirm_animated = false;
 
+          // 크랭크가 눌린 순간 LED를 전부 끈다 - 서버 전송과 2초 통전(delay) 동안 암전.
+          // 진행 중이던 확인 연출도 여기서 끝낸다(얼어붙은 채 이어지지 않게).
+          NeoSceneOff();
+
           // HTTP 요청이 끝난 다음 개방한다. setting 배출은 남은 태그 상태와
           // 무관하게 집계하지 않는다. Send() 반환은 서버 반영 성공의 증거가 아니다.
           if (!setting_state && tag_active)
@@ -860,6 +928,9 @@ void MicroSwLoop()
             RunAltarSuccess();
           }
           SolenoidPulse();
+
+          // 통전이 끝나면 현재 상태의 기본 화면으로 복귀. 성공음은 그 뒤에 재생한다.
+          NeoSceneRestore();
 
           if (pending_success_sound)
           {
