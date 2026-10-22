@@ -71,6 +71,9 @@ void Login(char role) {
     ptrRfidSub = CommnunicationBeetle;
     LoginTimerSelector(role);
   }
+  // 직전 has2wifi.Receive()의 HTTP 통신 직후에 바로 네오픽셀 프레임을 보내면
+  // 원형 끝 픽셀이 깨지는 사례가 있어, 첫 프레임 전에 잠시 쉬어 통신 잔여 처리와 겹치지 않게 한다.
+  delay(30);
   if (loginDone && ptrGameTimer != nullptr) ptrGameTimer();
 }
 

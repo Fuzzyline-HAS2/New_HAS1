@@ -108,13 +108,15 @@ void RoundNeoEffectDown(int neocolor)
 }
 
 void RoundNeoToggle(int neoColor, int toggle){
-  if(toggle%2 == 1){
-    lightColor(pixels[ROUND], color[neoColor]);
-    lightColor(pixels[ROUND_SUB], color[neoColor]);
-  }
-  else{
-    lightColor(pixels[ROUND], color[BLACK]);
-    lightColor(pixels[ROUND_SUB], color[BLACK]);
+  int c = (toggle % 2 == 1) ? neoColor : BLACK;
+  lightColor(pixels[ROUND], color[c]);
+  lightColor(pixels[ROUND_SUB], color[c]);
+  // 첫 프레임(toggle==1)은 태그 직후 HTTP 통신 바로 뒤에 나가서 원형 끝 한 칸이
+  // 한 바이트 밀린 색(초록→빨강, 보라→하늘색)으로 깨지는 사례가 있었다.
+  // 두 번째 프레임부터는 항상 정상이므로 첫 프레임만 한 번 더 보내 덮어쓴다.
+  if (toggle == 1) {
+    lightColor(pixels[ROUND], color[c]);
+    lightColor(pixels[ROUND_SUB], color[c]);
   }
 }
 void LineNeoToggle(int neoColor, int toggle){
