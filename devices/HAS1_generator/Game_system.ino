@@ -16,6 +16,7 @@ void StarterActivate(){
     static bool tagOnReader = false;    // 이번 체크에서 리더 위에 태그가 감지됐는지
     // 직전 체크에서의 감지 상태(새로 올라온 태그인지 판단용)는 전역 starterLastTagState —
     // ContribLoop()이 세션을 강제 종료한 뒤 false로 되돌려야 해서 함수 밖으로 옮겼다.
+    static String starterTagUser;
     static bool isPlayerTagged = false; // 현재 리더 위 태그가 role=="player"인지 여부
     static unsigned long lastRfidCheck = 0;
     if (starterRfidNeedsValidation) {
@@ -24,6 +25,7 @@ void StarterActivate(){
         starterLastTagState = false;
         lastRfidCheck = millis() - 200;
         starterRfidNeedsValidation = false;
+        starterTagUser="";GeneratorNetworkForgetTag();
     }
     if (millis() - lastRfidCheck >= 200){
         lastRfidCheck = millis();
@@ -31,27 +33,24 @@ void StarterActivate(){
         // (rfid.ino 참고). 감지에 성공한 Gain은 내부에 유지되어 뒤이은 ntag2xx_ReadPage에도 그대로 쓰인다.
         tagOnReader = RfidPresenceCheck();
         if (tagOnReader) {
-            if (!starterLastTagState) { // 새 태그가 올라왔을 때만 role 확인
-                uint8_t data[32];
-                if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)){
-                    String tagUser = "";
-                    for(int i = 0; i < 4; i++) tagUser += (char)data[i];
-                    has2wifi.Receive(tagUser); // 서버에 조회해 tag["role"]을 채움
-                    isPlayerTagged = ((String)(const char*)tag["role"] == "player");
-                    Serial.println(isPlayerTagged ? "Starter: Player OK" : "Starter: Revival Blocked");
-                    // 기여도 세션 시작 — 이 카드가 붙어 있는 동안 오른 칸 수가 이 사람 몫이 된다.
-                    if (isPlayerTagged) ContribBegin(tagUser, StarterGaugeCnt());
-                } else {
-                    isPlayerTagged = false;
+            uint8_t data[32] = {};
+            if (nfc[MAINPN532].ntag2xx_ReadPage(7, data)) {
+                String user;for (int i=0;i<4;++i)user+=(char)data[i];
+                if(user!=starterTagUser) {
+                    ContribEnd(StarterGaugeCnt());
+                    starterTagUser=user;isPlayerTagged=false;GeneratorNetworkForgetTag();
                 }
-            }
-            // 태그가 계속 얹혀 있는 동안(starterLastTagState==true)은 재조회하지 않고
-            // 직전에 판정한 isPlayerTagged 값을 그대로 유지한다 (통신 절약).
+                const bool accepted=GeneratorNetworkTag(user.c_str());
+                const bool player=accepted&&((String)(const char*)tag["role"]=="player");
+                if(player&&!isPlayerTagged)ContribBegin(user,StarterGaugeCnt());
+                isPlayerTagged=player;
+            } else if (!starterTagUser.length()) { isPlayerTagged=false; } // Retry initial read; keep an already validated presence through one read miss.
         }
         else if (starterLastTagState){
             // 태그가 떼어진 순간 — 이 세션의 순증을 확정해 서버에 남긴다.
             // (세션이 열려 있지 않으면 ContribEnd가 알아서 no-op)
             ContribEnd(StarterGaugeCnt());
+            starterTagUser="";isPlayerTagged=false;GeneratorNetworkForgetTag();
         }
         starterLastTagState = tagOnReader;
     }

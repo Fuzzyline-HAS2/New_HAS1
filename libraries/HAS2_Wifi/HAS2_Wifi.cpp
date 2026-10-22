@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>
 #include <esp_private/wifi.h>
 
 static String _activeHost = "http://172.30.1.43";
@@ -487,6 +488,170 @@ void HAS2_Wifi::PrintConnectedWifi()
  * @brief Wifi 연결 및 초기설정
  *
  */
+// The opt-in adapter is exclusively owned by the generator network worker.
+// Existing Setup/Connect/MaintainWifi behavior is deliberately unchanged.
+struct HAS2_Wifi::ConnectionBackend {
+  HAS2_Wifi &owner;
+  bool startStation() {
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    WiFi.setScanTimeout(5000);
+    return WiFi.mode(WIFI_STA);
+  }
+  bool stationStarted() const { return WiFi.STA.started(); }
+  bool connected() const { return WiFi.status() == WL_CONNECTED; }
+  void disconnect() { WiFi.disconnectAsync(false, false); }
+  int startScan() {
+    // A cancelled scan still owns Arduino's result until its completion event.
+    // Do not start another scan while the old callback may be writing it.
+    if (owner.connectionScanPending) return WIFI_SCAN_RUNNING;
+    owner.connectionScanCancelled = false;
+    const int result = WiFi.scanNetworks(true);
+    owner.connectionScanPending = result != WIFI_SCAN_FAILED;
+    return result;
+  }
+  bool scanFinished() const {
+    const auto bits = WiFiGenericClass::getStatusBits();
+    // _scanDone publishes DONE then clears RUNNING. Wait for both operations;
+    // otherwise its late clear could erase the next scan's RUNNING flag.
+    return (bits & WIFI_SCAN_DONE_BIT) && !(bits & WIFI_SCANNING_BIT);
+  }
+  int scanResult() {
+    if (!owner.connectionScanPending) return WIFI_SCAN_FAILED;
+    // Arduino 3.3.11 scanComplete() clears SCANNING on timeout, but _scanDone()
+    // could already be inside allocation/copy. DONE is published only after
+    // those writes, so never read/free that result before this barrier.
+    if (!scanFinished()) return WIFI_SCAN_RUNNING;
+    if (owner.connectionScanCancelled) { releaseScan(); return WIFI_SCAN_FAILED; }
+    return WiFi.scanComplete();
+  }
+  void releaseScan() {
+    if (!owner.connectionScanPending || !scanFinished()) return;
+    WiFi.scanDelete();
+    owner.connectionScanPending = owner.connectionScanCancelled = false;
+  }
+  void cancelScan() {
+    if (owner.connectionScanPending && !owner.connectionScanCancelled) {
+      owner.connectionScanCancelled = true;
+      owner.connectionCancelStarted = static_cast<uint32_t>(millis());
+      esp_wifi_scan_stop();
+    }
+    // Keep ownership across backoff. ServiceConnection gives the cancellation
+    // event a bounded grace period, then latches a driver fault without freeing.
+  }
+  bool selectCandidates(int count) {
+    auto *candidates = owner._theme == "city" ? city_wifi_candidates : badland_wifi_candidates;
+    int signal[WIFI_COUNT] = {-127, -127, -127};
+    for (int n = 0; n < count; ++n) {
+      const String ssid = WiFi.SSID(n);
+      const int rssi = WiFi.RSSI(n);
+      for (int i = 0; i < WIFI_COUNT; ++i)
+        if (ssid == candidates[i].ssid && rssi > signal[i]) signal[i] = rssi;
+    }
+    owner.connectionCount = 0; owner.connectionIndex = 0;
+    for (int i = 0; i < WIFI_COUNT; ++i)
+      if (signal[i] >= WIFI_MIN_RSSI) owner.connectionOrder[owner.connectionCount++] = i;
+    for (int i = 0; i < owner.connectionCount; ++i)
+      for (int j = i + 1; j < owner.connectionCount; ++j)
+        if (signal[owner.connectionOrder[j]] > signal[owner.connectionOrder[i]]) {
+          const uint8_t temp = owner.connectionOrder[i];
+          owner.connectionOrder[i] = owner.connectionOrder[j]; owner.connectionOrder[j] = temp;
+        }
+    return owner.connectionCount != 0;
+  }
+  bool connectCandidate() {
+    if (owner.connectionIndex >= owner.connectionCount) return false;
+    auto *candidates = owner._theme == "city" ? city_wifi_candidates : badland_wifi_candidates;
+    const auto &candidate = candidates[owner.connectionOrder[owner.connectionIndex]];
+    // Do not use WiFi.begin/STA.connect: a late connected event can send their
+    // internal disconnect path into a 1000ms wait. Match Arduino's default STA
+    // configuration and initiate the IDF connect operation directly instead.
+    wifi_config_t config = {};
+    const size_t ssidLength = strlen(candidate.ssid), passwordLength = strlen(candidate.password);
+    if (!ssidLength || ssidLength > sizeof(config.sta.ssid) ||
+        passwordLength > sizeof(config.sta.password)) return false;
+    memcpy(config.sta.ssid, candidate.ssid, ssidLength);
+    memcpy(config.sta.password, candidate.password, passwordLength);
+    config.sta.scan_method = WIFI_FAST_SCAN;
+    config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    config.sta.threshold.rssi = -127;
+    config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    config.sta.pmf_cfg.capable = true;
+    if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) return false;
+    if (!WiFi.STA.config()) return false; // DHCP configuration, not lease wait.
+    return esp_wifi_connect() == ESP_OK;
+  }
+  bool advanceCandidate() { return ++owner.connectionIndex < owner.connectionCount; }
+  void onConnected() { WiFi.setSleep(false); }
+};
+
+// Registration occurs once on main before the worker starts. The callback has
+// static lifetime (no captured HAS2_Wifi pointer), and only copies bounded POD.
+static portMUX_TYPE connectionDisconnectMux = portMUX_INITIALIZER_UNLOCKED;
+static HAS2_WifiDisconnectDiagnostic connectionDisconnectDiagnostic;
+static wifi_event_id_t connectionDisconnectEventId = 0;
+static void ConnectionDisconnectEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+  const uint32_t atMs = static_cast<uint32_t>(millis());
+  portENTER_CRITICAL(&connectionDisconnectMux);
+  ++connectionDisconnectDiagnostic.sequence;
+  if (!connectionDisconnectDiagnostic.sequence) ++connectionDisconnectDiagnostic.sequence;
+  connectionDisconnectDiagnostic.atMs = atMs;
+  connectionDisconnectDiagnostic.reason = info.wifi_sta_disconnected.reason;
+  portEXIT_CRITICAL(&connectionDisconnectMux);
+}
+
+HAS2_WifiDisconnectDiagnostic HAS2_Wifi::GetDisconnectDiagnostic() const {
+  portENTER_CRITICAL(&connectionDisconnectMux);
+  const HAS2_WifiDisconnectDiagnostic result = connectionDisconnectDiagnostic;
+  portEXIT_CRITICAL(&connectionDisconnectMux);
+  return result;
+}
+
+void HAS2_Wifi::BeginConnection(String theme) {
+  if (!connectionDisconnectEventId) {
+    connectionDisconnectEventId = WiFi.onEvent(ConnectionDisconnectEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  }
+  _theme = theme;
+  HOST_NAME = _theme == "city" ? "http://172.30.1.44" : "http://172.30.1.43";
+  _activeHost = HOST_NAME;
+  server = HOST_NAME + PHP_FILE_NAME;
+  freshReceivePending = true;
+  // esp_read_mac works before starting Wi-Fi; this value is never rewritten by
+  // the worker, so main-loop requests can safely copy it after BeginConnection.
+  uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    char text[18];
+    snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    my_mac = text;
+  } else {
+    my_mac = "";
+  }
+  connectionCount = connectionIndex = 0;
+  connectionController.begin(static_cast<uint32_t>(millis()));
+}
+
+bool HAS2_Wifi::ServiceConnection() {
+  if (!my_mac.length()) return false; // Never send requests with an invalid identity.
+  if (connectionDriverFault) return false;
+  ConnectionBackend backend{*this};
+  const uint32_t now = static_cast<uint32_t>(millis());
+  if (connectionScanPending && connectionScanCancelled && !backend.scanFinished() &&
+      Has2Connection::scanCancellationExpired(now, connectionCancelStarted)) {
+    // Normal AP absence completes a scan and never enters this state. Only a
+    // missing driver completion/cleanup event faults. The owning worker records
+    // this reason and applies its watchdog fail-stop policy; no unsafe free here.
+    connectionDriverFault = true;
+    return false;
+  }
+  return connectionController.service(now, backend);
+}
+
+bool HAS2_Wifi::ApplyNetworkSnapshot(const char *kind, const String &body) {
+  return kind && JsonParsingFresh(String(kind), body);
+}
+
 void HAS2_Wifi::Setup()
 {
   if (!TryConnectSaved() && !TryConnectOrdered())

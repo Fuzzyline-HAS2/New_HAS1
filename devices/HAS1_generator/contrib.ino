@@ -12,9 +12,25 @@
 // 아직 표시되지 않은 칸이 누락된다. 세션의 시작값과 끝값이 둘 다 목표값 기준이라 뺄셈은
 // 자기일관적이고, 방치 감소로 표시가 거꾸로 따라가는 중이어도 어긋나지 않는다.
 //
-// 전송은 has2wifi.SituationAsync()를 쓴다 (부활기와 같은 Situation API, 응답을 기다리지 않음).
+// 전송은 발전기 단일 네트워크 작업자의 고정 크기 큐에 등록한다.
 //   GET has2.php?request=Situation&table=generator_gauge&key=<발전기>&value=<GxPx>:<delta>
 // =================================================================================
+
+// Queue rejection is not transmission failure: keep up to four unsent events.
+// Once accepted by the network worker an event is never automatically repeated.
+struct PendingContribution { char user[16]; int delta; uint32_t generation; };
+static PendingContribution pendingContributions[4];
+static unsigned pendingContributionCount=0;
+static uint32_t starterContribGeneration=0;
+static void ContribDrainPending() {
+    if(!pendingContributionCount)return;
+    PendingContribution &event=pendingContributions[0];
+    const bool stale=event.generation!=GeneratorNetworkGeneration();
+    if(!stale&&!GeneratorNetworkContribution(event.user,event.delta))return;
+    if(stale)DiagnosticPrintf("[NET] unsent contribution discarded after game generation changed\r\n");
+    for(unsigned i=1;i<pendingContributionCount;++i)pendingContributions[i-1]=pendingContributions[i];
+    --pendingContributionCount;
+}
 
 // 현재 게이지 목표 칸 수. StarterActivate()의 gaugeNeoCnt 계산과 같은 식을 쓰며,
 // 세션 시작/종료 시점에도 같은 기준으로 칸 수를 읽기 위해 한 곳에 모아둔다.
@@ -31,18 +47,16 @@ void ContribBegin(const String &user, int cnt)
 {
     starterContribUser = user;
     starterContribStartCnt = cnt;
+    starterContribGeneration = GeneratorNetworkGeneration();
     Serial.println("[Contrib] begin " + user + " @" + String(cnt));
 }
 
 // 세션 종료 — 순증(delta)이 1칸 이상이면 서버에 한 행을 남긴다.
 // 세션이 열려 있지 않으면 아무 것도 하지 않으므로 호출부에서 따로 검사할 필요가 없다.
 //
-// 전송은 응답을 기다리지 않는 has2wifi.SituationAsync()로 보낸다 (Core 0 별도 태스크).
-// 블로킹 Situation()을 쓰면 안 된다 — 손잡이를 당기다 카드가 흔들려 "뗌"으로 판정될 때마다
-// 왕복 시간(실측 300ms~수 초)만큼 loop()가 멈추고, 그 사이 돌린 펄스는 곧바로 이어지는
-// EncoderDetach()/EncoderAttach()의 카운터 리셋에 버려져 게이지가 끊기며 덜 찬다.
-// 응답 바디를 쓰지 않고 실패해도 재시도하지 않으므로 결과를 기다릴 이유도 없다.
-// 성공/실패와 소요 시간은 비동기 태스크가 "[RFID] Situation send ... (async)"로 남긴다.
+// 큐 접수 전 거절만 최대 네 건 보관한다. 전송에 착수한 이벤트는 응답이 없어도
+// 자동 재전송하지 않는다. 기존 Situation API로 전송하며, 서버의 게임 세대
+// 검증이 없어 이미 전송한 이벤트의 지연 반영까지 취소할 수는 없다.
 void ContribEnd(int cnt)
 {
     if (starterContribUser.length() == 0) return;   // 열린 세션 없음
@@ -52,6 +66,10 @@ void ContribEnd(int cnt)
     String user = starterContribUser;
     int startCnt = starterContribStartCnt;
     starterContribUser = "";
+    if(starterContribGeneration!=GeneratorNetworkGeneration()) {
+        DiagnosticPrintf("[NET] active contribution discarded after game generation changed\r\n");
+        return;
+    }
 
     int delta = cnt - startCnt;
     String line = "[Contrib] " + user + " " + String(startCnt) + "->" + String(cnt) +
@@ -64,24 +82,20 @@ void ContribEnd(int cnt)
     }
 
     BREADCRUMB("ContribEnd:send");
-    has2wifi.SituationAsync(user + ":" + String(delta), "generator_gauge");
-    Serial.println(line + " sent(async)");
+    if (GeneratorNetworkContribution(user.c_str(), delta)) Serial.println(line + " queued");
+    else if(pendingContributionCount<4&&user.length()<sizeof(pendingContributions[0].user)) {
+        PendingContribution &event=pendingContributions[pendingContributionCount++];
+        snprintf(event.user,sizeof(event.user),"%s",user.c_str());event.delta=delta;event.generation=GeneratorNetworkGeneration();
+        DiagnosticPrintf("[NET] unsent contribution retained in bounded pending queue\r\n");
+    } else DiagnosticPrintf("[NET] contribution pending queue full; event rejected, no synchronous fallback\r\n");
 }
 
-// loop()에서 ptrCurrentMode() 바로 앞에 호출된다.
-//
-// 호출 위치가 중요하다 — 한 프레임 안에서 모드가 바뀔 수 있는 곳은 둘이다:
-// ptrCurrentMode() 자신과, TimerRun()이 부르는 has2wifi.Loop(DataChanged).
-// ptrCurrentMode() 앞에 두면 N번째 프레임 끝의 DataChanged가 바꾼 모드를 N+1 프레임 머리에서,
-// 새 모드 함수가 한 번도 돌기 전에 정리한다. TimerRun() 뒤에 두면 폴링 GET 바로 뒤에
-// 이 블로킹 GET이 같은 프레임에 연달아 붙는다.
-//
-// SettingFunc()/ReadyFunc()에서 ContribEnd를 직접 부르지 않는 이유도 같다 — 그 둘은
-// DataChanged() 콜백 안에서 실행되므로 블로킹 Situation()을 넣으면 재진입이 재현된다.
-// tagger 인터럽트, setting/ready 리셋, 서버가 직접 세트한 repaired 등 스타터 밖에서
-// 일어나는 모든 이탈을 여기 한 곳에서 잡는다.
+// 서버 상태 변경은 NetworkApplySnapshot에서 인코더 초기화 전에 세션을 닫는다.
+// 이 함수는 로컬 모드 이탈을 직전 프레임의 게이지 값으로 정리한다.
+// 새 게임 세대의 시작 전 열려 있던 세션/미전송 이벤트는 다음 게임에 합산하지 않는다.
 void ContribLoop()
 {
+    ContribDrainPending();
     if (starterContribUser.length() == 0) return;   // 열린 세션 없음
     if (ptrCurrentMode == StarterActivate) return;  // 아직 스타터 진행 중
 

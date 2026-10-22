@@ -82,7 +82,9 @@ struct Document {
 namespace Has1BleBeacon { void setDeviceName(const char*) {} }
 struct Wifi { void Send(String,const char*,String) {} } has2wifi;
 struct Log { template<class T> void println(T) {} } Serial;
-struct Ota { void check() {} } ota;
+struct Ota { void check() { assert(false && "OTA must be deferred out of state application"); } } ota;
+int maintenanceRequests=0;
+void GeneratorNetworkRequestMaintenance(bool) { ++maintenanceRequests; }
 void esp_task_wdt_delete(void*) {}
 void esp_task_wdt_add(void*) {}
 Timer GameTimer;
@@ -156,6 +158,8 @@ int main() {
     ptrCurrentMode=WaitFunc; my["device_state"]="tagger"; DataChanged();
     my["device_state"]="starter_finish"; DataChanged();
     assert(activations==1);
+    my["device_state"]="github"; DataChanged();
+    assert(maintenanceRequests==1);
     std::cout << "PASS: starter overlay, frozen charge animation, decay, purple-only feedback, resume, reset, non-starter, zero gauge, server transitions\n";
 }
 '''

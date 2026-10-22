@@ -1,13 +1,16 @@
+#include "generator_poll_schedule.h"
+#include <esp_random.h>
+static GeneratorPollSchedule generatorPollSchedule;
+
 // =================================================================================
 // timer.ino
 // ---------------------------------------------------------------------------------
-// SimpleTimer 기반 3개 인터벌(WifiTimer/GameTimer/BlinkTimer)의 초기화와 콜백을 모아놓은 파일.
-// TimerRun()이 매 loop마다 세 타이머를 갱신(run)하고, 각 인터벌이 도래하면 아래 콜백들이 호출된다.
+// Wi-Fi uses completion-based scheduling; game/blink retain SimpleTimer timing.
+// Missed Wi-Fi intervals are skipped, never replayed after a slow request.
 // GameTimer/BlinkTimer는 상시 동작하는 게 아니라 필요할 때만 deleteTimer/setInterval로 켜고 끈다.
 // =================================================================================
 
-// setup()에서 1회 호출: 세 인터벌을 등록한 뒤, GameTimer/BlinkTimer는 곧바로 정지시킨다
-// (WifiTimer만 상시 폴링, 나머지 둘은 게임 진행 상황에 따라 필요할 때 다시 켜짐).
+// setup()에서 1회 호출. GameTimer/BlinkTimer는 게임 진행 상황에 따라 켜진다.
 // 태스크 워치독도 여기서 함께 등록한다 — 배선을 다양한 device_state에서 빠르게 뺐다 꽂았다
 // 반복하면 loop()가 멈춰버려 물리 리셋 버튼을 눌러야만 복구되던 문제 대응. 30초 안에
 // TimerRun()의 esp_task_wdt_reset()이 안 불리면(=loop()가 멈춤) 자동으로 재부팅되고,
@@ -21,7 +24,7 @@ void TimerInit(){
     esp_task_wdt_reconfigure(&wdt_cfg);
     esp_task_wdt_add(NULL);  // 현재 태스크(loop) 등록
 
-    wifiTimerId = WifiTimer.setInterval(wifiTime,WifiIntervalFunc);
+    generatorPollSchedule.begin(millis());
     gameTimerId = GameTimer.setInterval(gameTime,GameTimerFunc);
 
     blinkTimerId = BlinkTimer.setInterval(blinkTime,BlinkTimerFunc);
@@ -31,8 +34,8 @@ void TimerInit(){
     BlinkTimer.deleteTimer(blinkTimerId);
 }
 
-// WifiTimer 콜백 (wifiTime = 2000ms마다 실행): 서버와 통신해 my/tag 등의 JSON을 갱신하고,
-// 변경분이 있으면 DataChanged() 콜백을 통해 게임 상태 전환을 처리한다.
+// Queue a poll without waiting for its network result. The main network service
+// applies validated snapshots and invokes DataChanged after completion.
 void WifiIntervalFunc(){
     // 2초마다 찍히는 브레드크럼이라 다른 함수 브레드크럼이 안 남았어도 "직전에 어느
     // device_state였는지"는 최소 2초 해상도로 남는다 - "어느 상태에서 멈췄는지" 질문에
@@ -40,7 +43,7 @@ void WifiIntervalFunc(){
     char stateBuf[40];
     snprintf(stateBuf, sizeof(stateBuf), "Wifi:ds=%s", (const char *)my["device_state"]);
     BREADCRUMB(stateBuf);
-    has2wifi.Loop(DataChanged);
+    if (!GeneratorNetworkRequestPoll()) generatorPollSchedule.rejected(millis());
     CrashReportSend((const char *)my["device_name"]);
     CrashNvsFlush();
 }
@@ -93,7 +96,13 @@ void BlinkTimerStart(int Neo, int NeoColor){
 void TimerRun(){
     esp_task_wdt_reset();
     g_loop_count++;
-    WifiTimer.run();
+    bool pollSuccess;
+    if (GeneratorNetworkTakePollResult(pollSuccess)) {
+        generatorPollSchedule.completed(millis(), pollSuccess, esp_random());
+    }
+    if (!GeneratorNetworkPollBusy() && generatorPollSchedule.due(millis())) {
+        WifiIntervalFunc();
+    }
     GameTimer.run();
 
     BlinkTimer.run();
