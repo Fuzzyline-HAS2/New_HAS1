@@ -21,6 +21,7 @@
 #include <freertos/task.h>
 
 #include <Preferences.h>
+#include "has2_wifi_connection.h"
 
 void update_started();
 void update_finished();
@@ -44,6 +45,13 @@ typedef struct HAS2_WifiCandidate
     unsigned long lastSeenMs;
 } HAS2_WifiCandidate;
 
+// Latest radio disconnect event; sequence detects coalesced events. No SSID,
+// credentials or dynamic allocations cross the event-task/main boundary.
+struct HAS2_WifiDisconnectDiagnostic {
+    uint32_t sequence = 0;
+    uint32_t atMs = 0;
+    uint8_t reason = 0;
+};
 
 /**
  * @brief HAS2 전용 Wifi 라이브러리
@@ -82,6 +90,13 @@ private:
     void SaveLastWifi(const char *new_ssid, const char *new_password);
     void MaintainWifi();
     void PrintConnectedWifi();
+    struct ConnectionBackend;
+    Has2Connection::Controller connectionController;
+    uint8_t connectionOrder[3] = {0, 1, 2};
+    uint8_t connectionCount = 0, connectionIndex = 0;
+    bool connectionScanPending = false, connectionScanCancelled = false;
+    bool connectionDriverFault = false;
+    uint32_t connectionCancelStarted = 0;
 
 public:
     HAS2_Wifi();
@@ -106,6 +121,22 @@ public:
     // These last three phases retain the same body-byte detail, even on JSON error.
     void SetHttpDiagnosticHook(void (*hook)(const char *request, const char *phase,
                                           int32_t result, uint32_t elapsedMs, uint32_t detail));
+
+    // Opt-in single network-worker API. Begin only configures state and captures
+    // an immutable MAC; call ServiceConnection periodically from that worker.
+    // No HTTP, reboot, delay(), or synchronous scan/connection wait. Uses the
+    // normal PHY profile and existing theme credentials; legacy Setup is intact.
+    void BeginConnection(String theme);
+    bool ServiceConnection();
+    // Main-safe snapshot. Enabled only by opt-in BeginConnection, radio-wide.
+    HAS2_WifiDisconnectDiagnostic GetDisconnectDiagnostic() const;
+    // Worker-only diagnostic: cancellation awaits the driver's completion event.
+    bool ConnectionScanPending() const { return connectionScanPending && connectionScanCancelled; }
+    bool ConnectionDriverFault() const { return connectionDriverFault; }
+    String GetMacAddress() const { return my_mac; }
+    String GetServerUrl() const { return server; }
+    // Main-loop only: validate a worker-owned response before updating globals.
+    bool ApplyNetworkSnapshot(const char *kind, const String &body);
 
     void Setup();
     void Setup(char *new_ssid, char *new_password);
