@@ -15,6 +15,7 @@
 #include <atomic>
 #include <errno.h>
 #include <math.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -43,6 +44,101 @@ char lastDeviceState[64] = {};
 char taggerName[24] = {};
 char versionReportedTo[24] = {};
 bool resetLatched = false;
+NetworkRecoveryPolicy recovery;
+portMUX_TYPE diagnosticsMux = portMUX_INITIALIZER_UNLOCKED;
+NetworkDiagnostics diagnostics;
+std::atomic<uint16_t> disconnectReason{0};
+bool otaOperation = false;
+
+void beginOperation(NetworkPhase phase, uint32_t deadlineMs, uint32_t idleDeadlineMs = 0) {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&diagnosticsMux);
+  diagnostics.phase = phase; ++diagnostics.sequence;
+  diagnostics.startedAtMs = diagnostics.progressAtMs = now;
+  diagnostics.deadlineMs = deadlineMs; diagnostics.idleDeadlineMs = idleDeadlineMs;
+  portEXIT_CRITICAL(&diagnosticsMux);
+}
+
+void finishOperation() {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&diagnosticsMux);
+  diagnostics.completedAtMs = now;
+  portEXIT_CRITICAL(&diagnosticsMux);
+  beginOperation(NetworkPhase::Idle, 20000);
+}
+
+void publishDiagnostics() {
+  static uint32_t lastSample = 0;
+  if (uint32_t(millis() - lastSample) < 1000) return;
+  lastSample = millis();
+  const auto result = wifi.LastHttpResult();
+  // Sample potentially locking/allocating APIs outside our short copy lock.
+  const uint32_t stack = uxTaskGetStackHighWaterMark(nullptr);
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  portENTER_CRITICAL(&diagnosticsMux);
+  diagnostics.lastHttpError = static_cast<uint8_t>(result.error);
+  diagnostics.lastHttpPhase = static_cast<uint8_t>(result.phase);
+  diagnostics.lastHttpStatus = result.status;
+  diagnostics.lastHttpElapsedMs = result.elapsedMs;
+  diagnostics.lastHttpBytes = result.bytes;
+  diagnostics.primaryTransportFailures = recovery.failures();
+  diagnostics.forcedReconnects = recovery.reconnects();
+  diagnostics.reconnectCooldownMs = recovery.cooldownMs();
+  diagnostics.wifiDisconnectReason = disconnectReason.load();
+  diagnostics.workerStackHighWater = stack;
+  diagnostics.heapFree = freeHeap; diagnostics.heapLargest = largest;
+  portEXIT_CRITICAL(&diagnosticsMux);
+}
+
+void observeResponseBackoff(const HAS2HttpResult& result);
+
+void httpProgress(HAS2HttpPhase phase, uint32_t bytes, void*) {
+  if (otaOperation) return;  // Keep completion acknowledgements inside the OTA exemption.
+  if (phase == HAS2HttpPhase::Connect) {
+    beginOperation(NetworkPhase::Http, 20000);
+    portENTER_CRITICAL(&diagnosticsMux);
+    diagnostics.lastHttpError = 0; diagnostics.lastHttpStatus = 0;
+    diagnostics.lastHttpElapsedMs = 0;
+    portEXIT_CRITICAL(&diagnosticsMux);
+  }
+  else if (phase == HAS2HttpPhase::Complete) {
+    const auto result = wifi.LastHttpResult();
+    observeResponseBackoff(result);
+    portENTER_CRITICAL(&diagnosticsMux);
+    diagnostics.lastHttpError = static_cast<uint8_t>(result.error);
+    diagnostics.lastHttpPhase = static_cast<uint8_t>(result.phase);
+    diagnostics.lastHttpStatus = result.status;
+    diagnostics.lastHttpElapsedMs = result.elapsedMs;
+    diagnostics.lastHttpBytes = result.bytes;
+    portEXIT_CRITICAL(&diagnosticsMux);
+    finishOperation();
+    return;
+  }
+  else {
+    portENTER_CRITICAL(&diagnosticsMux);
+    diagnostics.progressAtMs = millis();
+    portEXIT_CRITICAL(&diagnosticsMux);
+  }
+  portENTER_CRITICAL(&diagnosticsMux);
+  diagnostics.lastHttpPhase = static_cast<uint8_t>(phase);
+  diagnostics.lastHttpBytes = bytes;
+  portEXIT_CRITICAL(&diagnosticsMux);
+}
+
+void waitWorker(uint32_t durationMs) {
+  beginOperation(NetworkPhase::Backoff, durationMs + 20000);
+  publishDiagnostics();
+  vTaskDelay(pdMS_TO_TICKS(durationMs));
+  finishOperation();
+}
+
+void observeResponseBackoff(const HAS2HttpResult& result) {
+  if (result.status == 429 || result.status == 503)
+    recovery.defer(millis(), result.retryAfterMs ? result.retryAfterMs : kRetryMs);
+}
+
+bool serverRequestsDeferred() { return recovery.deferred(millis()); }
 
 bool copyString(JsonVariantConst value, char* out, size_t size) {
   const char* text = value.as<const char*>();
@@ -69,6 +165,7 @@ bool liveName(const char* name) { return ChipReportPolicy::liveDevice(name); }
 // ReceiveMine identifies the registration by this board's STA MAC. Its response
 // need not contain a known game state; the absolute-write API rechecks MAC/key.
 bool readChipIdentity() {
+  if (serverRequestsDeferred()) return false;
   char name[24];
   if (!wifi.ReceiveMineChecked() ||
       !copyString(my["device_name"], name, sizeof(name)) || !liveName(name)) {
@@ -143,12 +240,30 @@ void publishInvalid() {
   xQueueOverwrite(snapshots, &latest);
 }
 
-bool refresh() {
+bool refresh(bool primary = false) {
+  if (serverRequestsDeferred()) { publishInvalid(); return false; }
   ServerSnapshot fresh;
-  if (!readChipIdentity() || !decodeSnapshot(fresh)) { publishInvalid(); return false; }
+  const bool identified = readChipIdentity();
+  const auto primaryResult = wifi.LastHttpResult();
+  observeResponseBackoff(primaryResult);
+  const bool valid = identified && decodeSnapshot(fresh);
+  if (primary) {
+    recovery.observePrimary(millis(), primaryResult.error == HAS2HttpError::Transport, valid);
+    if (!valid) {
+      static uint32_t lastFailureLog = 0;
+      if (uint32_t(millis() - lastFailureLog) >= 15000) {
+        lastFailureLog = millis();
+        remoteConsoleLogf("[net] poll error=%u http=%d elapsed=%lu bytes=%lu failures=%lu rssi=%d\n",
+            static_cast<unsigned>(primaryResult.error), primaryResult.status,
+            (unsigned long)primaryResult.elapsedMs, (unsigned long)primaryResult.bytes,
+            (unsigned long)recovery.failures(), WiFi.RSSI());
+      }
+    }
+  }
+  if (!valid) { publishInvalid(); return false; }
   // The game can be activate while the tagger still waits for the altar.
   // Resolve the configured tagger instead of inferring altar activation from phase.
-  if (fresh.phase == Phase::Active && liveName(taggerName) && wifi.ReceiveChecked(taggerName)) {
+  if (!serverRequestsDeferred() && fresh.phase == Phase::Active && liveName(taggerName) && wifi.ReceiveChecked(taggerName)) {
     const char* remoteName = tag["device_name"] | "";
     const char* remoteRole = tag["role"] | "";
     const char* remoteState = tag["device_state"] | "";
@@ -162,7 +277,7 @@ bool refresh() {
 }
 
 bool send(const char* field, const String& value) {
-  return wifi.SendChecked(latest.deviceName, field, value);
+  return !serverRequestsDeferred() && wifi.SendChecked(latest.deviceName, field, value);
 }
 
 void execute(const GameEvent& event) {
@@ -198,7 +313,7 @@ void reportChip() {
   observePhysicalChip();
   ChipReportPolicy::Request request;
   if (!chipReport.begin(millis(), request)) return;
-  wifi.SetGloveChipChecked(request.device, request.present);
+  if (!serverRequestsDeferred()) wifi.SetGloveChipChecked(request.device, request.present);
   const bool readBack = readChipIdentity();
   long value, ready;
   const char* device = my["device_name"] | "";
@@ -216,12 +331,12 @@ void reportChip() {
 }
 
 void checkManagement() {
-  if (!hadValid || !wifi.LoopChecked()) return;
+  if (serverRequestsDeferred() || !hadValid || !wifi.LoopChecked()) return;
   long watchdog;
   if (!number(shift_machine["watchdog"], 0, 1, watchdog)) return;
   if (!watchdog) { resetLatched = false; return; }
   if (!resetLatched && latest.phase != Phase::Active && otaState.load() != NetworkOtaStatus::Running &&
-      send("watchdog", "0") && wifi.LoopChecked() &&
+      send("watchdog", "0") && !serverRequestsDeferred() && wifi.LoopChecked() &&
       number(shift_machine["watchdog"], 0, 1, watchdog) && watchdog == 0) {
     latest.resetRequested = true;
     resetLatched = true;
@@ -251,6 +366,19 @@ void performOta(const OtaRequest& request) {
   otaState.store(NetworkOtaStatus::Running);
   remoteConsoleLogf("[OTA] TTGO checking current=%d target=%lu (0=latest) partition=%d\n",
       version, (unsigned long)request.targetVersion, partitionVersion);
+  // Preserve the deployed latest/pinned OTA protocols. Their blocking transfer
+  // code has no progress contract for the new network-worker watchdog.
+  // Scope cleanup restores normal monitoring on every returning path.
+  struct OtaOperationScope {
+    OtaOperationScope() {
+      otaOperation = true;
+      beginOperation(NetworkPhase::Ota, 0);
+    }
+    ~OtaOperationScope() {
+      otaOperation = false;
+      finishOperation();
+    }
+  } operation;
   if (request.targetVersion) {
     const auto result = ota::checkPinned("iotglove", request.targetVersion, version,
         partitionVersion, HMAC_SECRET, [request] {
@@ -284,25 +412,49 @@ void performOta(const OtaRequest& request) {
   }
 }
 
+// Queue invalidation publishes an explicit result so the main loop clears its
+// in-flight token. Never synthesize a retry of an uncertain game mutation.
+void cancelQueuedCommand() {
+  GameEvent event;
+  if (xQueueReceive(commands, &event, 0) == pdTRUE) {
+    const GameResult result{event.sequence, GameResult::Status::Unknown};
+    xQueueOverwrite(results, &result);
+  }
+}
+
+void invalidateConnection() {
+  chipReport.disconnect();
+  publishInvalid();
+  cancelQueuedCommand();
+  if (otaState.load() == NetworkOtaStatus::Queued) {
+    OtaRequest cancelled;
+    xQueueReceive(otaRequests, &cancelled, 0);
+    remoteConsoleLogf("[OTA] TTGO queued request cancelled: connection lost\n");
+    otaState.store(NetworkOtaStatus::Failed);
+  }
+}
+
 void worker(void*) {
   uint32_t lastPoll = 0;
   Location location{};
   Battery battery{};
   while (true) {
     if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != "badland_shoot") {
-      chipReport.disconnect();
-      publishInvalid();
-      // Queued means no flash has started. Do not keep the application locked
-      // behind an update that may otherwise wait forever in the reconnect loop.
-      if (otaState.load() == NetworkOtaStatus::Queued) {
-        OtaRequest cancelled;
-        xQueueReceive(otaRequests, &cancelled, 0);
-        remoteConsoleLogf("[OTA] TTGO queued request cancelled: WiFi disconnected\n");
-        otaState.store(NetworkOtaStatus::Failed);
-      }
-      if (!wifi.TrySetupFixed("badland", "badland_shoot")) { vTaskDelay(pdMS_TO_TICKS(kRetryMs)); continue; }
+      invalidateConnection();
+      recovery.disconnected();
+      beginOperation(NetworkPhase::Connecting, 30000);
+      const bool connected = wifi.TrySetupFixed("badland", "badland_shoot");
+      finishOperation();
+      if (!connected) { waitWorker(kRetryMs); continue; }
       versionReportedTo[0] = 0;
       forceSnapshot.store(true);
+    }
+    if (recovery.deferred(millis())) {
+      // HTTP Retry-After applies to all server traffic, including side lanes.
+      // Keep monitoring Wi-Fi and queued command invalidation every 100ms.
+      cancelQueuedCommand();
+      waitWorker(100);
+      continue;
     }
     if (otaState.load() == NetworkOtaStatus::Queued) {
       OtaRequest request;
@@ -312,13 +464,27 @@ void worker(void*) {
     GameEvent event;
     if (xQueueReceive(commands, &event, 0) == pdTRUE) execute(event);
     if (forceSnapshot.exchange(false) || uint32_t(millis() - lastPoll) >= kPollMs) {
-      if (refresh()) {
+      if (refresh(true)) {
         if (strcmp(versionReportedTo, latest.deviceName) && send("esp_version", String(version)))
           strcpy(versionReportedTo, latest.deviceName);
         checkManagement();
       }
       lastPoll = millis();
     }
+    if (recovery.shouldReconnect(millis())) {
+      invalidateConnection();
+      recovery.reconnected(millis(), esp_random());
+      remoteConsoleLogf("[net] force reconnect=%lu cooldown=%lu reason=primary transport failure\n",
+          (unsigned long)recovery.reconnects(), (unsigned long)recovery.cooldownMs());
+      beginOperation(NetworkPhase::Connecting, 30000);
+      // Do not erase credentials. TrySetupFixed alone returns immediately if
+      // the STA still claims to be associated with this SSID.
+      WiFi.disconnect(true, false);
+      finishOperation();
+      waitWorker(100);
+      continue;
+    }
+    if (recovery.deferred(millis())) continue;
     reportChip();
     if (hadValid && xQueueReceive(locations, &location, 0) == pdTRUE) {
       // A lost/expired beacon clears the server field rather than leaving a
@@ -330,7 +496,7 @@ void worker(void*) {
         uint32_t(millis() - battery.sampledAt) < 60000) {
       send("battery_remaining", String(battery.volts, 2));
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
+    waitWorker(10);
   }
 }
 }  // namespace
@@ -339,6 +505,13 @@ bool networkBegin(int firmwareVersion, int firmwarePartitionVersion) {
   if (snapshots) return true;
   version = firmwareVersion; partitionVersion = firmwarePartitionVersion; bootId = esp_random();
   wifi.SetDebugPrint(&remoteConsoleWifiPrint());
+  wifi.EnableBoundedHttp();
+  wifi.SetHttpProgressHook(httpProgress);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+      disconnectReason.store(info.wifi_sta_disconnected.reason);
+  });
+  beginOperation(NetworkPhase::Starting, 30000);
   snapshots = xQueueCreate(1, sizeof(ServerSnapshot));
   commands = xQueueCreate(1, sizeof(GameEvent));
   results = xQueueCreate(1, sizeof(GameResult));
@@ -347,6 +520,14 @@ bool networkBegin(int firmwareVersion, int firmwarePartitionVersion) {
   otaRequests = xQueueCreate(1, sizeof(OtaRequest));
   if (!snapshots || !commands || !results || !locations || !batteries || !otaRequests) return false;
   return xTaskCreatePinnedToCore(worker, "glove_network", 12288, nullptr, 1, nullptr, 0) == pdPASS;
+}
+
+bool networkDiagnostics(NetworkDiagnostics& out) {
+  if (!snapshots) return false;
+  portENTER_CRITICAL(&diagnosticsMux);
+  out = diagnostics;
+  portEXIT_CRITICAL(&diagnosticsMux);
+  return true;
 }
 
 bool networkPoll(ServerSnapshot& snapshot) { return snapshots && xQueueReceive(snapshots, &snapshot, 0) == pdTRUE; }

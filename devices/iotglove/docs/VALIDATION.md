@@ -239,3 +239,49 @@ G1P1·G1P2에 `u`를 각각 **1회** 전송했다. 두 장치 모두 Beetle 업�
 - freshness는 14,999ms 유효 / 15,000ms 만료와 `millis()` 순환 경계를 생산 정책 함수로 확인했다.
 - C++ 호스트 실행 파일 **15개**, Python 회귀 **16개**가 통과했다. ESP32 core **3.3.11** compile-only에서 TTGO 본게임·훈련·Beetle 세 profile이 모두 성공했으며 프로그램/RAM은 각각 **1,089,737 / 62,784 bytes**, **418,941 / 42,540 bytes**, **728,151 / 25,384 bytes**였다.
 - placeholder 키를 사용한 빌드 검증이며 Release·OTA·실기기 LED 관찰은 수행하지 않았다. 실기기에서는 역할별 Photo 색, Wi-Fi 차단 직후와 15초 경과 후 색 유지, Tagger Blink 단절 중 점멸 지속을 별도로 확인해야 한다.
+
+## 2026-10-22 통신 복구 소프트웨어 검증
+
+이 항목은 OTA 경로 통합을 포함했던 이전 구현의 검증 이력이다. 이후 사용자 요청으로 OTA 구조를 복원했으므로, 최종 상태는 아래의 **OTA 기존 구조 유지** 검증 항목을 따른다.
+
+[통신 복구 변경](NETWORK_RECOVERY.md)의 최종 소스로 독립 검토와 로컬 검증을 완료했다. 현장 장애 원인은 미확정이며, 아래 결과는 실기 RF·OTA 성공이나 운영 배포를 의미하지 않는다. 기존 미커밋 변경을 보존했다.
+
+- C++ 호스트 테스트 실행 파일 **19개 통과**.
+- Python 도구/통합 회귀 테스트 **24개 통과**. 이 중 실제 수정 transport/parser를 컴파일하는 HTTP 장애 주입은 **31개 시나리오**를 검증했다.
+- 무응답/slow drip/조기 EOF/chunk/trailer/크기 제한/429·503, 재접속 임계값과 millis 순환, 명령 취소/busy 해제, RTC 재시작 예산, 실제 OTA install 함수의 실패 시 abort를 확인했다.
+- 독립 검토에서 확인한 SDK connect 오버로드 재귀, 마지막 flash write 시간 초과 후 commit 가능성, 503 오류 본문 정체의 Wi-Fi 장애 오인, SDK end 수신 drain 정체를 수정하고 재검증했다.
+- ESP32 Arduino **3.3.11**, 공개 link-validation 키를 사용하는 배포 금지 빌드로 아래 **5개 설정**이 모두 컴파일·링크됐다. 일반 placeholder로 최적화되는 OTA 경로를 피하고, TTGO/TagMachine ELF에서 실제 `checkPinned` 링크를 확인했다.
+- bounded HTTP 심볼은 TTGO에 존재하고 TagMachine Main에는 없다. 기능 선택용 함수 포인터로 공유 장치의 불필요한 코드 링크를 제거했다. TagMachine의 32KiB 슬롯 여유 기준도 통과했다.
+
+| 검증 대상 | 실제 앱 BIN (bytes) | OTA 슬롯 여유 (bytes) |
+| --- | ---: | ---: |
+| TTGO 본게임 | 1,115,584 | 850,496 |
+| TTGO 훈련 | 419,936 | 1,546,144 |
+| Beetle | 1,409,584 | 556,496 |
+| TagMachine Main | 1,276,528 | 34,192 |
+| TagMachine Sub | 1,152,784 | 157,936 |
+
+의존성: HAS2_Wifi first_store `a1581da9e1dafd3b5ea8056be2df20e8a7a8ef3f`, SecureOTA `162db758e6806895ef10ca39b101f9f8753bdc20`, SimpleTimer `23d60f37fc117f5368756bbf55e7d82ee4add051`. 최종 checked 패치 SHA-256 `fd5918eb8443b0dcf7f40ed22c0538ca4d60db4d45ee7e2630bdc4bd5c3066e2`, bounded HTTP tree SHA-256 `e3fbe0bf36e9ae82941f2b297473f5444038611c1ab23a9db11bc491a64b2381`. 준비한 라이브러리 전체 tree 해시와 현재 소스/manifest 일치를 확인했다. 로컬 상세 로그와 manifest는 `.omc/research/2026-10-22-iotglove-network-recovery/`에 보존했다.
+
+후속 실기 시험: 한 대에서 이동, AP/서버 끄기·복귀, 응답 중간 정체, 정상/중단 OTA를 분리해 시험하고 복구 시간·중복 변경·재시작 횟수를 측정한다. 실제 TLS/DNS/flash 내부 정체와 동적 heap/stack은 호스트 시험만으로 검증하지 못한다. 버전 증가·업로드·OTA·Release 게시·커밋/푸시는 수행하지 않았다.
+
+## 2026-10-22 OTA 기존 구조 유지 — 최종
+
+사용자 요청에 따라 앞선 OTA 통합을 철회했다. 최신 OTA는 원래 SecureOTA의 `version.txt/update.bin/update.sig`를 사용하고, 명시적 버전 지정은 기존 `checkPinned`를 사용한다. 최신 업데이트에 새 manifest/archive가 필요하지 않다. 공통 `IoTGloveOtaClient.cpp/.h`는 수정 전 git HEAD와 바이트 단위로 동일하게 복원했다. 새 OTA transport/progress hook과 해당 테스트는 제거했으며, 배포·서명 형식과 두 보드 업데이트 순서를 변경하지 않았다.
+
+일반 HTTP 제한·Wi-Fi 복구·작업 감시는 유지한다. 진행 hook이 없는 기존 OTA 실행과 완료 콜백은 새 worker 정체 감시에서 제외하며, 반환 후 일반 감시를 재개한다. OTA 자체의 기존 정체 가능성을 새로 해결한 것은 아니다.
+
+- 작성자와 다른 검토자가 OTA 분기·callback·감시 범위를 검토했다.
+- C++ 호스트 테스트 **18개**, Python 회귀 테스트 **24개** 통과. 실제 bounded HTTP 장애 시나리오 **31개**도 재통과했다.
+- 신규 `test_ota_compatibility.py`는 실제 생산 함수를 추출하여 기존 URL·최신/지정 버전 선택·성공/skip/실패·서버 명령 확인·OTA 중 감시 제외·반환 후 감시 복구·compile-only 차단을 검증한다.
+- 공개 시험 키로 실제 OTA 경로를 포함한 **5종 빌드 모두 exit 0**. TTGO ELF에 `SecureOTA::check()`와 원래 `checkPinned`가 있고 제거한 OTA transport는 없음을 확인했다.
+
+| 최종 검증 대상 | 실제 앱 BIN (bytes) | OTA 슬롯 여유 (bytes) |
+| --- | ---: | ---: |
+| TTGO 본게임 | 1,122,768 | 843,312 |
+| TTGO 훈련 | 419,936 | 1,546,144 |
+| Beetle | 1,407,872 | 558,208 |
+| TagMachine Main | 1,274,576 | 36,144 |
+| TagMachine Sub | 1,151,024 | 159,696 |
+
+core 및 준비 의존성은 앞선 2026-10-22 검증과 동일하다. 로그·manifest·복원한 공통 OTA 소스 해시는 `.omc/research/2026-10-22-iotglove-legacy-ota/`에 기록했다. 기존 미커밋 변경을 보존했으며 기기 업로드·Release 게시·실기 OTA는 수행하지 않았다.

@@ -68,14 +68,15 @@ jobs:
         run: arduino-cli lib install "Adafruit NeoPixel@1.12.0" "ArduinoJson@7.4.3"
       - name: Prepare current first_store and pinned SecureOTA dependencies
         run: python3 devices/iotglove/tools/prepare_libraries.py --libraries-dir "$RUNNER_TEMP/iotglove-libraries"
-      - name: Compile with a temporary placeholder key
+      - name: Link OTA paths with a public non-deployable test key
         env:
           PROFILE: ${{ matrix.profile }}
         run: |
           python3 devices/iotglove/tools/compile.py "$PROFILE" \
+            --check-ota-paths \
             --libraries-dir "$RUNNER_TEMP/iotglove-libraries" \
             --output-dir "$RUNNER_TEMP/compile-only"
-      # Placeholder-key firmware must not be published as a release artifact.
+      # Public-test-key firmware must not be published as a release artifact.
       - name: Record dependency revisions
         env:
           PROFILE: ${{ matrix.profile }}

@@ -76,6 +76,7 @@ def source_paths(root, device):
         "scripts/firmware_targets.py", "scripts/archive_iotglove_release.py",
         "devices/iotglove/tools/has2-wifi-result-api.patch", ".github/workflows/deploy-firmware.yml",
     ))
+    paths.update(path for path in (root / "devices/iotglove/tools/bounded_http").rglob("*") if path.is_file())
     return sorted(path.relative_to(root).as_posix() for path in paths)
 
 

@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
+#include <esp_attr.h>
 #include <WiFi.h>
 
 #include "battery.h"
@@ -10,6 +12,7 @@
 #include "feedback.h"
 #include "pixel_refresh.h"
 #include "network_policy.h"
+#include "network_restart.h"
 #include "state_policy.h"
 #include "library_and_pin.h"
 #include "wifi_client.h"
@@ -42,6 +45,10 @@ uint32_t inFlight = 0, lastSnapshotRequest = 0, lastLocationReport = 0;
 uint32_t lastBatterySample = 0, lastBatteryReport = 0;
 uint32_t resetStarted = 0, lastReset = 0;
 bool networkReady = false, desiredScan = false, modeKnown = false;
+RTC_NOINIT_ATTR NetworkRestartHistory networkRestartHistory;
+NetworkRestartPolicy networkRestartPolicy;
+esp_task_wdt_user_handle_t mainWatchdog = nullptr;
+bool stallReported = false;
 bool resetLatched = false;
 bool resetPending = false, resetHigh = false, resetTtgo = false, haveReset = false;
 bool ttgoOtaSubmitted = false;
@@ -193,6 +200,25 @@ void printDiagnostics(uint32_t now) {
   remoteConsoleLogf("[remote] dropped_usb_bytes=%lu dropped_telnet_bytes=%lu rejected_commands=%lu\n",
       (unsigned long)console.usbDroppedBytes, (unsigned long)console.telnetDroppedBytes,
       (unsigned long)console.rejectedCommands);
+  NetworkDiagnostics network;
+  if (networkReady && networkDiagnostics(network)) {
+    now = millis();  // Sample after the cross-core snapshot; its timestamps may be newer.
+    remoteConsoleLogf("[recovery] wifi=%d rssi=%d disconnect_reason=%u phase=%u sequence=%lu age_ms=%lu progress_age_ms=%lu deadline_ms=%lu idle_ms=%lu\n",
+        static_cast<int>(WiFi.status()), WiFi.RSSI(), network.wifiDisconnectReason,
+        static_cast<unsigned>(network.phase), (unsigned long)network.sequence,
+        (unsigned long)(now - network.startedAtMs), (unsigned long)(now - network.progressAtMs),
+        (unsigned long)network.deadlineMs, (unsigned long)network.idleDeadlineMs);
+    remoteConsoleLogf("[http] error=%u phase=%u status=%d elapsed_ms=%lu bytes=%lu primary_failures=%lu reconnects=%lu cooldown_ms=%lu\n",
+        network.lastHttpError, network.lastHttpPhase, network.lastHttpStatus,
+        (unsigned long)network.lastHttpElapsedMs, (unsigned long)network.lastHttpBytes,
+        (unsigned long)network.primaryTransportFailures, (unsigned long)network.forcedReconnects,
+        (unsigned long)network.reconnectCooldownMs);
+    remoteConsoleLogf("[resources] heap=%lu largest=%lu worker_stack_min=%lu reset_reason=%u recovery_restarts=%lu diagnostic_mode=%u main_wdt=%u\n",
+        (unsigned long)network.heapFree, (unsigned long)network.heapLargest,
+        (unsigned long)network.workerStackHighWater, static_cast<unsigned>(esp_reset_reason()),
+        (unsigned long)networkRestartHistory.attempts,
+        !NetworkRestartPolicy::allowed(networkRestartHistory), mainWatchdog != nullptr);
+  }
   remoteConsoleLogf("[inputs] chip_gpio26=%d button_gpio27=%d chip_debounced=%u button_debounced=%u chip_model=%u\n",
       sensorChipRaw(), sensorButtonRaw(),
       sensorChipPresent(), sensorButtonDown(), game.chipPresent());
@@ -492,6 +518,49 @@ void handleConsoleCommand(char command, uint32_t now) {
     if (command == 's' || command == '?') printDiagnostics(now);
     if (command == 'p') sendProbe(now, true);
 }
+void armMainWatchdog() {
+  if (mainWatchdog || !NetworkRestartPolicy::allowed(networkRestartHistory)) return;
+  // Preserve the configured idle subscribers; allow flash erases more time than
+  // the core's five-second default. HTTP worker stalls have their own 20s limit.
+  esp_task_wdt_config_t config{};
+  config.timeout_ms = 60000;
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+  config.idle_core_mask |= 1U;
+#endif
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+  config.idle_core_mask |= 2U;
+#endif
+  config.trigger_panic = true;
+  esp_err_t err = esp_task_wdt_reconfigure(&config);
+  if (err == ESP_ERR_INVALID_STATE) err = esp_task_wdt_init(&config);
+  if (err == ESP_OK) err = esp_task_wdt_add_user("glove-main-progress", &mainWatchdog);
+  if (err != ESP_OK) remoteConsoleLogf("[recovery] main watchdog unavailable error=%d\n", err);
+}
+
+void monitorNetwork() {
+  if (!networkReady) return;
+  NetworkDiagnostics d;
+  if (!networkDiagnostics(d)) return;
+  const uint32_t now = millis();  // Never compare a newer worker sample to an older loop time.
+  const bool stalled = networkWorkerStalled(d, now);
+  if (networkRestartPolicy.observe(now, d.sequence, stalled) && networkRestartHistory.attempts) {
+    networkRestartHistory = {NetworkRestartPolicy::kMagic, 0, false};
+    remoteConsoleLogf("[recovery] worker progressed for 10 minutes; restart budget restored\n");
+    armMainWatchdog();
+  }
+  if (!stalled) { stallReported = false; return; }
+  if (!stallReported) {
+    stallReported = true;
+    remoteConsoleLogf("[recovery] worker stalled phase=%u sequence=%lu age_ms=%lu idle_ms=%lu restarts=%lu\n",
+        static_cast<unsigned>(d.phase), (unsigned long)d.sequence,
+        (unsigned long)(now - d.startedAtMs), (unsigned long)(now - d.progressAtMs),
+        (unsigned long)networkRestartHistory.attempts);
+    if (NetworkRestartPolicy::request(networkRestartHistory)) {
+      ESP.restart();
+    }
+    remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
+  }
+}
 }  // namespace
 
 void gloveBegin(int firmwareVersion, int partitionVersion) {
@@ -517,8 +586,18 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   diagnosticLog.append("[diag] TTGO console ready: s/? status, p UART probe, b Beetle reset, u OTA\n");
   if (!battery.configured()) remoteConsoleLogf("[battery] Disabled: configure measured ADC divider and battery range\n");
   if (!kTraining) {
+    const esp_reset_reason_t reason = esp_reset_reason();
+    NetworkRestartPolicy::boot(networkRestartHistory, reason == ESP_RST_SW,
+        reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT ||
+        reason == ESP_RST_WDT || reason == ESP_RST_PANIC);
     networkReady = networkBegin(firmware, partition);
-    if (networkReady) networkReportChip(sensorChipPresent());
+    if (networkReady) {
+      networkReportChip(sensorChipPresent());
+      armMainWatchdog();
+      remoteConsoleLogf("[recovery] reset_reason=%u attempts=%lu diagnostic_mode=%u\n",
+          static_cast<unsigned>(reason), (unsigned long)networkRestartHistory.attempts,
+          !NetworkRestartPolicy::allowed(networkRestartHistory));
+    }
   }
   hello(nextId()); sendMode();
 }
@@ -549,5 +628,8 @@ void gloveLoop() {
   render(now);
   flushDiagnostics();
   remoteConsolePoll();
+  monitorNetwork();
+  // Feed only after completing a full main-loop pass, including the worker check.
+  if (mainWatchdog) esp_task_wdt_reset_user(mainWatchdog);
   delay(1);  // Yield to Wi-Fi/RTOS; all timers above are nonblocking.
 }

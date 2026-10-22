@@ -1,19 +1,35 @@
 --- a/HAS2_Wifi/HAS2_Wifi.h
 +++ b/HAS2_Wifi/HAS2_Wifi.h
-@@ -65,6 +65,7 @@
+@@ -12,6 +12,7 @@
+ #ifndef _HAS2_WIFI_
+ #define _HAS2_WIFI_
+ 
++#include "HAS2HttpResult.h"
+ #include "Arduino.h"
+ #include <WiFi.h>
+ #include <HTTPClient.h>  // wifi 관련 라이브러리
+@@ -65,6 +66,11 @@
  
      String _theme;
  
++    HAS2BoundedTransport boundedHttp_ = nullptr;
++    HAS2HttpResult lastHttpResult_;
++    HAS2HttpProgressHook httpProgressHook_ = nullptr;
++    void *httpProgressContext_ = nullptr;
 +    bool HttpRequestChecked(String request, String url);
      bool HttpRequest(String request, String string_request);
      void JsonParsing(String request, String json);
      void EnsureWifiCandidatesInitialized();
-@@ -82,6 +83,15 @@
+@@ -82,6 +88,19 @@
      HAS2_Wifi(String host, String php = "/has2.php");
  
      void SetDebugPrint(Print *debugPrint);
 +
 +    // Checked extension: single network worker; no restart on connection failure.
++    void EnableBoundedHttp(bool enabled = true) { boundedHttp_ = enabled ? has2BoundedGet : nullptr; }
++    const HAS2HttpResult &LastHttpResult() const { return lastHttpResult_; }
++    void SetHttpProgressHook(HAS2HttpProgressHook hook, void *context = nullptr) { httpProgressHook_ = hook; httpProgressContext_ = context; }
++
 +    bool TrySetup(String theme);
 +    bool TrySetupFixed(String theme, const char *ssid);
 +    bool ReceiveMineChecked();
@@ -67,7 +83,7 @@
  void HAS2_Wifi::EnsureWifiCandidatesInitialized()
 --- /dev/null
 +++ b/HAS2_Wifi/HAS2_Wifi_checked.cpp
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,102 @@
 +#include "HAS2_Wifi.h"
 +
 +// Additive first_store API. Legacy device methods and reconnect policy are unchanged.
@@ -98,29 +114,50 @@
 +}
 +
 +bool HAS2_Wifi::HttpRequestChecked(String request, String url) {
-+  if (WiFi.status() != WL_CONNECTED) return false;
-+  HTTPClient client;
-+  client.setConnectTimeout(1500);
-+  client.setTimeout(1500);
-+  if (!client.begin(url)) return false;
-+  const int code = client.GET();
-+  if (code != HTTP_CODE_OK || client.getSize() > 8192) { client.end(); return false; }
-+  const String payload = client.getString();
-+  client.end();
-+  if (payload.length() > 8192) return false;
++  const uint32_t started = millis();
++  lastHttpResult_ = HAS2HttpResult{};
++  String payload;
++  // Complete fires after the final JSON outcome is visible to the worker.
++  struct Completion {
++    HAS2HttpResult &result; uint32_t started; HAS2HttpProgressHook hook; void *context;
++    ~Completion() { result.elapsedMs = uint32_t(millis() - started); if (hook) hook(HAS2HttpPhase::Complete, result.bytes, context); }
++  } completion{lastHttpResult_, started, boundedHttp_ ? httpProgressHook_ : nullptr, httpProgressContext_};
++  if (WiFi.status() != WL_CONNECTED) { lastHttpResult_.error = HAS2HttpError::Transport; return false; }
++  if (boundedHttp_) {
++    if (!boundedHttp_(url, payload, lastHttpResult_, httpProgressHook_, httpProgressContext_)) return false;
++  } else {
++    HTTPClient client;
++    client.setConnectTimeout(1500);
++    client.setTimeout(1500);
++    if (!client.begin(url)) { lastHttpResult_.error = HAS2HttpError::Transport; return false; }
++    const int code = client.GET();
++    lastHttpResult_.status = code;
++    if (code != HTTP_CODE_OK || client.getSize() > 8192) {
++      client.end(); lastHttpResult_.error = code <= 0 ? HAS2HttpError::Transport : HAS2HttpError::HttpStatus; return false;
++    }
++    payload = client.getString(); client.end();
++    lastHttpResult_.bytes = payload.length();
++    if (payload.length() > 8192) { lastHttpResult_.error = HAS2HttpError::TooLarge; return false; }
++  }
 +  // A transport ACK is not proof that a game mutation was applied: callers re-read.
 +  if (request == "Send") return true;
 +  StaticJsonDocument<4096> parsed;
 +  if (deserializeJson(parsed, payload) || !parsed.is<JsonObject>() ||
-+      parsed["error"].is<const char *>() || parsed.overflowed()) return false;
++      parsed["error"].is<const char *>() || parsed.overflowed()) { lastHttpResult_.error = HAS2HttpError::Json; return false; }
 +  if (request == "ReceiveMine") {
-+    my.clear(); my.set(parsed); return !my.overflowed();
++    my.clear(); my.set(parsed);
++    if (my.overflowed()) { lastHttpResult_.error = HAS2HttpError::Json; return false; }
++    return true;
 +  }
 +  if (request == "Receive") {
-+    tag.clear(); tag.set(parsed); return !tag.overflowed();
++    tag.clear(); tag.set(parsed);
++    if (tag.overflowed()) { lastHttpResult_.error = HAS2HttpError::Json; return false; }
++    return true;
 +  }
 +  if (request == "Loop") {
-+    shift_machine.clear(); shift_machine.set(parsed); return !shift_machine.overflowed();
++    shift_machine.clear(); shift_machine.set(parsed);
++    if (shift_machine.overflowed()) { lastHttpResult_.error = HAS2HttpError::Json; return false; }
++    return true;
 +  }
 +  return false;
 +}

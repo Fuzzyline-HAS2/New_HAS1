@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 
 PATCH = Path(__file__).with_name("has2-wifi-result-api.patch")
+BOUNDED_HTTP = Path(__file__).with_name("bounded_http")
 SECUREOTA_REVISION = "162db758e6806895ef10ca39b101f9f8753bdc20"
 LIBRARIES = {
     "SecureOTA": (
@@ -96,6 +97,11 @@ def prepare(destination):
                 subprocess.run(["git", "-C", str(checkout), "apply", "--check", str(PATCH)], check=True)
                 subprocess.run(["git", "-C", str(checkout), "apply", str(PATCH)], check=True)
                 provenance[name]["patch_sha256"] = hashlib.sha256(PATCH.read_bytes()).hexdigest()
+                for source in BOUNDED_HTTP.iterdir():
+                    if source.suffix in {".h", ".cpp", ".inc"}:
+                        shutil.copy2(source, checkout / "HAS2_Wifi" / source.name)
+                provenance[name]["bounded_http_sha256"] = directory_sha256(BOUNDED_HTTP)
+                provenance[name]["bounded_http_core"] = "3.3.11"
         # Copy only after all downloads and patch checks pass.
         for name, (_, _, subdirectory, _) in LIBRARIES.items():
             shutil.copytree(

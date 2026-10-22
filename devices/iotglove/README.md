@@ -4,6 +4,8 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 
 ## 파일과 보드
 
+통신 복구 변경의 기한·재접속 정책·진단과 실기 확인 항목은 [NETWORK_RECOVERY.md](docs/NETWORK_RECOVERY.md)를 따른다. 이 소스 변경의 검증과 기존 설치 이력은 별도로 관리한다.
+
 기존 장치의 `library_and_pin.h`, `sensor`, `game_state`, `wifi`, `telnet` 역할 구분을 따른다. 주 `.ino`에는 버전과 진입점을 두고 기능은 `.cpp`와 명시적 헤더로 분리한다.
 
 | 글러브 파일 | 역할 | 기존 장치에서 대응하는 구성 |
