@@ -52,8 +52,9 @@ ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/test
 ```
 
 The ASan/UBSan harness compiles production `wire.ino`, the state header, and
-`wire_http.ino` against fake GPIO/server/HTTP streams, a deterministic task clock,
-and the actual ArduinoJson parser. It drives the production static sampler task
+`wire_http.ino` against fake GPIO/server/queued results, a deterministic task clock,
+and the actual ArduinoJson parser. The state-machine scenarios use an immediate
+server double; separate adapter scenarios exercise real Pending/result transitions. It drives the production static sampler task
 with fake FreeRTOS primitives, including samples while synchronous HTTP advances
 the clock. Checks cover the 100 ms sampling interval, a real ten-sample per-pin window,
 and the initial one-second wait. Exact 8/10 and 9/10 votes qualify, while 7/10
@@ -69,11 +70,9 @@ state lock.
 
 Other cases cover sub-threshold transients, 0–4 counts, LG's 3-pack threshold, lost ACKs,
 latest-value retries, the 2-second failure backoff, and successful updates without
-a blanket 2-second gate. Transport cleanup is checked with a continuously
-replenished unread response tail: success, conflict, status errors, invalid lengths,
-incomplete bodies, and invalid JSON all stop the socket before HTTP cleanup.
-A disconnect between headers and body is rejected without dereferencing a null stream.
-These checks model the core's drain behavior; they do not bound header reception.
+a blanket 2-second gate. The wire adapter checks wrong-device replies, stale generations, queue rejection,
+one outstanding request and changed desired values. Connection, framing, body
+limits and cleanup are now checked by the shared bounded-transport suite below.
 CAS fencing, new rounds/identity/epoch, preserved repaired
 state, strict response validation, and response size/deadline limits remain covered.
 The actual completion functions are also compiled with fake audio and HTTP to
@@ -142,3 +141,24 @@ sequence and millis wrap, previous-boot snapshot preservation, phase/kind replay
 fast HTTP failure visibility, bounded flood/truncation, UART bypass and incremental
 replay larger than the control buffer. Wire behavior tests also reject diagnostic
 calls made while the input lock is held. See `../DIAGNOSTICS.md` for log meanings.
+
+
+## Isolated networking and release gate
+
+See [network isolation](../NETWORK_ISOLATION.md) for behavior and the explicit
+production deployment block pending the server completion/contribution contract.
+
+```sh
+python3 devices/HAS1_generator/tests/run_poll_schedule_tests.py
+python3 libraries/HAS2_Wifi/tests/run_connection_tests.py
+SANITIZE=1 python3 libraries/HAS2_Wifi/tests/run_bounded_transport_tests.py
+ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/tests/run_network_tests.py
+```
+
+The polling/boot suite verifies missed ticks are skipped, completion-relative
+backoff, rollover, queue rejection and retained crash-report pending state without
+an external upload. The network suite compiles actual worker/facade code with
+controlled task scheduling in both default-gated and explicit legacy bench modes.
+The transport suite compiles the actual protocol engine/socket adapter with
+sanitizers and a real loopback peer. These do not replace hardware stack/timing,
+AP outage/recovery, OTA and updated-server integration validation.

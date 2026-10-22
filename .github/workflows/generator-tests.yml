@@ -23,6 +23,14 @@ jobs:
           python-version: '3.12'
       - name: Bounded NeoPixel transport with fault injection
         run: python devices/HAS1_generator/tests/run_neopixel_tests.py
+      - name: Completion-based polling and isolated crash reporting
+        run: python devices/HAS1_generator/tests/run_poll_schedule_tests.py
+      - name: Nonblocking Wi-Fi connection lifecycle
+        run: python libraries/HAS2_Wifi/tests/run_connection_tests.py
+      - name: Whole-request HTTP deadline and socket fault injection
+        env:
+          SANITIZE: "1"
+        run: python libraries/HAS2_Wifi/tests/run_bounded_transport_tests.py
       - name: Starter and tagger regression
         run: python devices/HAS1_generator/tests/run_tagger_tests.py
       - name: Bounded diagnostic logger and RTC journal with sanitizers
@@ -40,6 +48,10 @@ jobs:
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
         run: python devices/HAS1_generator/tests/run_wire_tests.py
+      - name: Isolated network worker and stale response handling
+        env:
+          ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
+        run: python devices/HAS1_generator/tests/run_network_tests.py
       - name: DFPlayer ACK deadline and recovery with actual driver
         run: python devices/HAS1_generator/tests/run_dfplayer_tests.py
       - name: HTTP response deadlines and protocol handling

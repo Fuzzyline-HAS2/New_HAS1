@@ -111,6 +111,7 @@ static GeneratorWireSnapshot serverState;
 static const char EPOCH1[]="11111111-1111-1111-1111-111111111111";
 static const char EPOCH2[]="22222222-2222-2222-2222-222222222222";
 struct WifiLibrary {
+ std::string GetMacAddress() { return "AA:BB:CC:DD:EE:FF"; }
  void ReceiveMine() {
    ++refreshes;
    my["device_name"]=serverState.device;
@@ -120,6 +121,11 @@ struct WifiLibrary {
    my["max_battery_pack"]=serverState.maximum;
  }
 } has2wifi;
+static uint32_t testNetworkGeneration=1;
+uint32_t GeneratorNetworkGeneration() { return testNetworkGeneration; }
+void GeneratorNetworkInvalidateGame() { ++testNetworkGeneration; }
+void GeneratorNetworkRefresh() { has2wifi.ReceiveMine(); DataChanged(); }
+void GeneratorNetworkRefreshCycle() { GeneratorNetworkRefresh(); }
 static int readRequests=0;
 struct Write { int count; uint32_t revision; std::string epoch; };
 static std::vector<Write> writes;
@@ -158,52 +164,43 @@ struct String : std::string {
  String(int number):std::string(std::to_string(number)) {}
  String(unsigned number):std::string(std::to_string(number)) {}
 };
-#define WL_CONNECTED 3
-struct Radio {
- int status() { return WL_CONNECTED; }
- String macAddress() { return "AA:BB:CC:DD:EE:FF"; }
-} WiFi;
-static const char GENERATOR_SERVER_URL[]="http://127.0.0.1";
+#define HAS2_BT_HOST 1
+#include "has2_bounded_transport.h"
+enum class NetworkKind { Wire };
+struct NetworkRequest { uint32_t generation=0,token=0; };
+static NetworkRequest queuedRequest;
+static void (*queuedCallback)(const NetworkRequest&,const Has2BoundedTransport::Result&,bool)=nullptr;
+static bool rejectQueue=false;
+static unsigned queuedCount=0;
+static uint32_t NetworkSubmit(NetworkKind,const String&,bool,uint32_t generation,uint32_t token,
+    void (*callback)(const NetworkRequest&,const Has2BoundedTransport::Result&,bool),int=-1) {
+  if(rejectQueue)return 0;
+  assert(!queuedCallback);
+  queuedRequest.generation=generation;queuedRequest.token=token;queuedCallback=callback;
+  return ++queuedCount;
+}
+static bool NetworkReplaceQueued(uint32_t,const String&,uint32_t,uint32_t,int) { return false; }
 static std::string httpBody;
-static int httpStatus=200,declaredLength=-1,connectTimeout=0,readTimeout=0;
-static bool streamStalled=false, continuousTail=false, streamGone=false;
-static int cleanupStops=0,cleanupEnds=0,cleanupDrainReads=0;
-struct FakeStream {
- size_t position=0;
- bool stopped=false;
- void stop() { ++cleanupStops; stopped=true; }
- int available() {
-   if(stopped || streamGone || streamStalled) return 0;
-   if(position<httpBody.size()) return static_cast<int>(httpBody.size()-position);
-   return continuousTail ? 1 : 0;
- }
- int read(uint8_t *buffer,size_t size) {
-   size=std::min(size,httpBody.size()-position);
-   memcpy(buffer,httpBody.data()+position,size); position+=size; return static_cast<int>(size);
- }
-};
-struct HTTPClient {
- FakeStream stream;
- void setConnectTimeout(int value) { connectTimeout=value; }
- void setTimeout(int value) { readTimeout=value; }
- void setReuse(bool) {}
- bool begin(const String&) { return true; }
- int GET() { return httpStatus; }
- void end() {
-   ++cleanupEnds;
-   // Model HTTPClient::disconnect -> NetworkClient::clear: a peer can keep
-   // replenishing the unread tail forever unless the socket is stopped first.
-   while(stream.available()>0) {
-     ++cleanupDrainReads;
-     if(stream.position<httpBody.size()) ++stream.position;
-     if(cleanupDrainReads>35000) throw "unbounded cleanup drain";
-   }
- }
- int getSize() { return declaredLength<0 ? static_cast<int>(httpBody.size()) : declaredLength; }
- bool connected() { return !stream.stopped && !streamGone; }
- FakeStream *getStreamPtr() { return connected() ? &stream : nullptr; }
-};
+static int httpStatus=200;
+static bool httpStale=false,httpFailed=false;
+static void deliver() {
+  assert(queuedCallback);
+  auto callback=queuedCallback;queuedCallback=nullptr;
+  Has2BoundedTransport::Result result;
+  result.status=httpStatus;result.payload=httpBody;
+  if(httpFailed)result.error=Has2BoundedTransport::Error::Deadline;
+  callback(queuedRequest,result,httpStale);
+}
+'''
 
+ASYNC_WRAPPER = r'''
+static GeneratorWireResult ActualWireHttpRequest(bool set,const char *device,int count,
+    const char *epoch,uint32_t revision,GeneratorWireSnapshot &snapshot) {
+  const auto first=QueuedWireHttpRequest(set,device,count,epoch,revision,snapshot);
+  if(first!=GeneratorWireResult::Pending)return first;
+  deliver();
+  return QueuedWireHttpRequest(set,device,count,epoch,revision,snapshot);
+}
 '''
 
 TESTS = r'''
@@ -460,7 +457,7 @@ int main() {
  puts("PASS server-declared battery_max bypasses the wire gate only until the next charge cycle");
 
 
- // Actual JSON parser and bounded HTTP body reader, against a fake TCP stream.
+ // Actual JSON parser and asynchronous wire-result handling.
  reset(); GeneratorWireSnapshot parsed; JsonDocument json;
  std::string valid=snapshotJson(); deserializeJson(json,valid);
  assert(WireParseSnapshot(json,"LG",parsed));
@@ -474,54 +471,45 @@ int main() {
  deserializeJson(json,valid); json["revision"]=uint64_t(4294967296ULL); assert(!WireParseSnapshot(json,"LG",parsed));
  deserializeJson(json,valid); json["epoch"]="old"; assert(!WireParseSnapshot(json,"LG",parsed));
  deserializeJson(json,valid); json["device_name"]="BG"; assert(!WireParseSnapshot(json,"LG",parsed));
- httpBody=valid; httpStatus=200; declaredLength=-1; streamStalled=false;
+ httpBody=valid; httpStatus=200;
  assert(ActualWireHttpRequest(true,"LG",3,EPOCH1,7,parsed)==GeneratorWireResult::Ok);
- assert(connectTimeout==700 && readTimeout==700);
  assert(ActualWireHttpRequest(true,"LG",2,EPOCH1,7,parsed)==GeneratorWireResult::Failed);
  assert(ActualWireHttpRequest(true,"LG",3,EPOCH1,8,parsed)==GeneratorWireResult::Failed);
  deserializeJson(json,valid); json["success"]=false; json["error"]="CONFLICT";
  httpBody.clear(); serializeJson(json,httpBody); httpStatus=409;
  assert(ActualWireHttpRequest(true,"LG",3,EPOCH1,7,parsed)==GeneratorWireResult::Conflict);
  httpStatus=200; assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
- httpBody=valid; declaredLength=1025;
+ puts("PASS production async wire strict JSON/ACK parser and conflict handling");
+ deserializeJson(json,valid);json["device_name"]="BG";
+ httpBody.clear();serializeJson(json,httpBody);
  assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
- declaredLength=-1; streamStalled=true; uint32_t start=now;
+ httpBody=valid;httpFailed=true;
  assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
- assert(now-start==1000);
- puts("PASS actual strict JSON/ACK parser, conflicts, body cap and body-read deadline");
- // Every post-GET exit must close before end(), including a successful body
- // with a malicious continuously replenished unread tail.
- streamStalled=false; continuousTail=true; declaredLength=static_cast<int>(valid.size());
- auto checkClosed = [&](GeneratorWireResult expected) {
-  const unsigned traceBegins=diagnosticTestBegins,traceEnds=diagnosticTestEnds;
-   cleanupStops=cleanupEnds=cleanupDrainReads=0;
-   const uint32_t before=now;
-   assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==expected);
-   assert(cleanupStops==1 && cleanupEnds==1 && cleanupDrainReads==0);
-  assert(diagnosticTestBegins==traceBegins+1 && diagnosticTestEnds==traceEnds+1);
-  assert(expected==GeneratorWireResult::Failed ? diagnosticTestLastCode<0 : diagnosticTestLastCode>0);
-   assert(uint32_t(now-before)<=1000);
- };
- httpBody=valid; httpStatus=200;
- checkClosed(GeneratorWireResult::Ok);
- deserializeJson(json,valid); json["success"]=false; json["error"]="CONFLICT";
- httpBody.clear(); serializeJson(json,httpBody);
- declaredLength=static_cast<int>(httpBody.size()); httpStatus=409;
- checkClosed(GeneratorWireResult::Conflict);
- httpStatus=503; checkClosed(GeneratorWireResult::Failed);
- httpStatus=-1; checkClosed(GeneratorWireResult::Failed);
- httpStatus=200;
- for(int length:{0,1025}) { declaredLength=length; checkClosed(GeneratorWireResult::Failed); }
- httpBody.clear(); declaredLength=-1; checkClosed(GeneratorWireResult::Failed);
- httpBody=valid; declaredLength=static_cast<int>(valid.size()); streamStalled=true;
- uint32_t cleanupStarted=now; checkClosed(GeneratorWireResult::Failed); assert(now-cleanupStarted==1000);
- streamStalled=false; httpBody="invalid JSON"; declaredLength=static_cast<int>(httpBody.size());
- checkClosed(GeneratorWireResult::Failed);
- // A peer disconnected between the headers and body has no stream pointer.
- streamGone=true; cleanupStops=cleanupEnds=cleanupDrainReads=0;
+ httpFailed=false;httpStale=true;
  assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
- assert(cleanupStops==0 && cleanupEnds==1 && cleanupDrainReads==0);
- puts("PASS stop-before-end on success/conflict/error/invalid length/stalled body/invalid JSON; disconnected stream");
+ httpStale=false;httpStatus=500;
+ assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
+ httpStatus=200;httpBody="invalid JSON";
+ assert(ActualWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
+ puts("PASS wrong device, expired transport, stale result, HTTP error, malformed JSON rejected");
+ httpBody=valid;
+ const auto beforeQueue=queuedCount;
+ assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Pending);
+ for(int i=0;i<100;++i)assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Pending);
+ assert(queuedCount==beforeQueue+1);
+ deliver();
+ assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Ok);
+ assert(QueuedWireHttpRequest(true,"LG",3,EPOCH1,7,parsed)==GeneratorWireResult::Pending);
+ deliver();
+ assert(QueuedWireHttpRequest(true,"LG",2,EPOCH1,7,parsed)==GeneratorWireResult::Failed);
+ assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Pending);
+ ++testNetworkGeneration;deliver();
+ assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
+ rejectQueue=true;
+ assert(QueuedWireHttpRequest(false,"LG",0,"",0,parsed)==GeneratorWireResult::Failed);
+ puts("PASS one wire request in flight, changed desired value/game generation and full queue");
+ // Connect/write/header/body/cleanup fault injection is covered by the actual
+ // shared transport suite; this harness tests its asynchronous application seam.
  return 0;
 }
 
@@ -531,8 +519,8 @@ with tempfile.TemporaryDirectory(prefix="generator-wire-test-") as directory:
     (temp/"HTTPClient.h").write_text("// Fake HTTPClient is defined by the harness.\n")
     audio_source = (ROOT/"dfplayer.ino").read_text().split('enum class BatteryAudioPhase',1)[1]
     source = PREFIX + '\n#define DIAGNOSTIC_TEST_CHECK assert(criticalDepth==0)\n#include "tests/diagnostic_test_stubs.h"\n' + '\nenum class BatteryAudioPhase'  + audio_source + '\n' + (ROOT/"wire.ino").read_text() + '\n' + HTTP
-    source += '\n#define WireHttpRequest ActualWireHttpRequest\n' + (ROOT/"wire_http.ino").read_text()
-    source += '\n#undef WireHttpRequest\n' + TESTS
+    source += '\n#define WireHttpRequest QueuedWireHttpRequest\n' + (ROOT/"wire_http.ino").read_text()
+    source += '\n#undef WireHttpRequest\n' + ASYNC_WRAPPER + TESTS
     (temp/"test.cpp").write_text(source)
     subprocess.run([os.environ.get("CXX","c++"),"-std=c++11","-Wall","-Wextra","-Werror",
                     "-fsanitize=address,undefined","-fno-omit-frame-pointer",
@@ -567,6 +555,12 @@ enum {MAINPN532};
 struct Reader { void SAMConfig() {} } nfc[1];
 bool batteryFinishDone=false,batteryFinishAudioPlayed=false,receiveMineOn=false,starterRfidNeedsValidation=false;
 static int played=0,sent=0,received=0,detached=0,started=0;
+static bool completionConfirmed=true;
+static std::string lastCompletion;
+bool GeneratorNetworkComplete(const char *state) {
+ if(lastCompletion!=state){lastCompletion=state;++sent;if(removeDuringSend)ready=false;}
+ return completionConfirmed;
+}
 long encoderValue=1000;
 int displayedGaugeNeoCnt=-1,gameTimerCnt=0,gameTimerId=0,blinkTimerId=0,gameTime=400;
 void GameTimerFunc() {}
@@ -614,12 +608,26 @@ int main() {
  std::cout<<"PASS actual BatteryFinish checks again after audio and HTTP; announcement/send are not repeated\n";
  sent=0;ready=false;StartFinish();assert(sent==0&&ptrCurrentMode==StarterActivate);
  ready=true;removeDuringSend=true;StartFinish();
- assert(sent==1&&received==1&&ptrCurrentMode==WaitFunc);
+ assert(sent==1&&received==0&&ptrCurrentMode==WaitFunc);
  std::cout<<"PASS actual StartFinish blocks unconfirmed inputs and does not undo an already-sent repair\n";
  batteryFinishDone=batteryFinishAudioPlayed=receiveMineOn=false;played=sent=0;
  ready=true;audioFinished=true;serverCompleted=true;ptrCurrentMode=BatteryFinish;BatteryFinish();
  assert(played==1&&sent==0&&!receiveMineOn&&batteryFinishDone&&ptrCurrentMode==StarterActivate);
  std::cout<<"PASS server-declared battery_max announces locally without sending battery_max again\n";
+ // A queued completion must not advance gameplay before acknowledgement.
+ batteryFinishDone=batteryFinishAudioPlayed=receiveMineOn=false;
+ serverCompleted=false;ready=true;audioFinished=true;removeDuringSend=false;
+ completionConfirmed=false;lastCompletion.clear();played=sent=0;
+ ptrCurrentMode=BatteryFinish;
+ BatteryFinish();assert(sent==1&&played==1&&!batteryFinishDone&&ptrCurrentMode==BatteryFinish);
+ for(int i=0;i<10;++i)BatteryFinish();
+ assert(sent==1&&played==1&&!batteryFinishDone);
+ completionConfirmed=true;BatteryFinish();assert(batteryFinishDone&&ptrCurrentMode==StarterActivate);
+ completionConfirmed=false;lastCompletion.clear();sent=0;
+ StartFinish();assert(sent==1&&ptrCurrentMode==StarterActivate);
+ for(int i=0;i<10;++i)StartFinish();assert(sent==1&&ptrCurrentMode==StarterActivate);
+ completionConfirmed=true;StartFinish();assert(ptrCurrentMode==WaitFunc);
+ std::cout<<"PASS queued battery/repair completion waits for confirmation without replaying sound or mutation\n";
  for(const char *state : {"battery_max","starter_finish"}) {
    my["device_state"]=state;
    accepted=0;serverCompleted=false;batteryFinishDone=true;ActivateFunc();assert(accepted==0);
