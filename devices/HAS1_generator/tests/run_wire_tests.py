@@ -625,7 +625,8 @@ int main() {
  completionConfirmed=true;BatteryFinish();assert(batteryFinishDone&&ptrCurrentMode==StarterActivate);
  completionConfirmed=false;lastCompletion.clear();sent=0;
  StartFinish();assert(sent==1&&ptrCurrentMode==StarterActivate);
- for(int i=0;i<10;++i)StartFinish();assert(sent==1&&ptrCurrentMode==StarterActivate);
+ for(int i=0;i<10;++i) { StartFinish(); }
+ assert(sent==1&&ptrCurrentMode==StarterActivate);
  completionConfirmed=true;StartFinish();assert(ptrCurrentMode==WaitFunc);
  std::cout<<"PASS queued battery/repair completion waits for confirmation without replaying sound or mutation\n";
  for(const char *state : {"battery_max","starter_finish"}) {

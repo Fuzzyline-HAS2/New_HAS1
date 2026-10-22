@@ -59,7 +59,7 @@ bool receiveMineOn=false;
 void ContribEnd(int);
 static bool exerciseActualDataChanged=false;
 void ProductionDataChanged();
-void DataChanged(){assert(!worker);++dataChanges;if(exerciseActualDataChanged)ProductionDataChanged();}
+void DataChanged(){assert(!worker);++dataChanges;if(exerciseActualDataChanged){ ProductionDataChanged(); }}
 void WaitFunc(){}
 static int activations=0;
 void ActivateFunc(){++activations;}
@@ -76,9 +76,9 @@ struct Has {
  bool ConnectionScanPending(){return false;}
  bool ConnectionDriverFault(){return false;}
  bool ApplyNetworkSnapshot(const char *kind,const String &body){
-   assert(!worker);JsonDocument doc;if(deserializeJson(doc,body.c_str()))return false;
-   if(!strcmp(kind,"Loop"))return shift_machine.set(doc);
-   if(!strcmp(kind,"ReceiveMine"))return my.set(doc);
+   assert(!worker);JsonDocument doc;if(deserializeJson(doc,body.c_str())){ return false; }
+   if(!strcmp(kind,"Loop")){ return shift_machine.set(doc); }
+   if(!strcmp(kind,"ReceiveMine")){ return my.set(doc); }
    return tag.set(doc);
  }
  void FirmwareUpdate(const char*,const char*){++otaChecks;}
@@ -103,7 +103,7 @@ namespace Has2BoundedTransport {
 Result get(const char*,uint16_t,const char *path,const Options &options){
  assert(worker&&depth==0);assert(options.deadlineMs==2000);++requestCalls;paths.emplace_back(path);
  if(strstr(path,"GeneratorWires")){assert(options.bodyDeadlineMs==1000&&options.maxBodyBytes==1024&&options.requireContentLength);}
- if(options.progressHook)options.progressHook();
+ if(options.progressHook){ options.progressHook(); }
  if(duringRequest){auto hook=duringRequest;duringRequest=nullptr;hook();}
  now+=nextReply.timings.totalMs;
  return nextReply;
@@ -137,12 +137,18 @@ tests=r'''
 static void reply(const char *json,int status=200){nextReply=Has2BoundedTransport::Result{};nextReply.status=status;nextReply.payload=json;nextReply.timings.totalMs=100;}
 static void workerTurn(){worker=true;try{NetworkWorker(nullptr);}catch(const Yield&){}worker=false;}
 static void mainTurn(){GeneratorNetworkLoop();}
-static int used(){int count=0;for(const auto&s:networkSlots)if(s.occupied)++count;return count;}
+static int used(){
+ int count=0;
+ for(const auto&s:networkSlots) {
+  if(s.occupied) {++count;}
+ }
+ return count;
+}
 static void reset(){
  now=100;online=true;worker=false;failWatchdog=false;requestCalls=restarts=dataChanges=otaChecks=0;depth=0;
  exerciseActualDataChanged=false;receiveMineOn=false;ptrCurrentMode=WaitFunc;cur.clear();gameTimerDeletes=0;
  paths.clear();diagnostics.clear();my.clear();tag.clear();shift_machine.clear();
- for(auto &s:networkSlots)s=NetworkSlot{};
+ for(auto &s:networkSlots){ s=NetworkSlot{}; }
  networkTask=(void*)1;networkGeneration=1;networkNextId=1;networkMailboxReady=false;networkMailboxSlot=-1;networkMailboxCancelled=false;
  networkMailbox=Has2BoundedTransport::Result{};
  networkPollPending=networkPollEvent=networkPollSuccess=networkPollAwaitingRefresh=false;networkUrgentRun=0;networkWorkerActiveId=0;networkScanPending=networkDriverFault=false;networkRefreshPending=networkRefreshInFlight=networkResetCyclePending=false;activations=0;networkBootReady=true;
@@ -151,14 +157,14 @@ static void reset(){
  pendingContributionCount=0;starterContribUser="";
  networkCompletionGeneration=0;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=false;
  GeneratorNetworkForgetTag();wireHttpPending=wireHttpDone=false;wireHttpRequestId=0;
- wireState.reset();for(int i=0;i<=10;++i)wireState.sampleMask(i*100,0);
+ wireState.reset();for(int i=0;i<=10;++i){ wireState.sampleMask(i*100,0); }
  my["device_name"]="TG";my["game_state"]="activate";my["device_state"]="activate";
  strcpy(networkIdentity,"TG");strcpy(networkGame,"activate");
  reply("{}");
 }
 static void pass(const char *text){printf("PASS %s\n",text);}
 int main(){
- reset();assert(GeneratorNetworkRequestPoll());for(int i=0;i<1000;++i)assert(GeneratorNetworkRequestPoll());
+ reset();assert(GeneratorNetworkRequestPoll());for(int i=0;i<1000;++i) {assert(GeneratorNetworkRequestPoll());}
  assert(used()==1&&requestCalls==0);reply("{\"shift_machine\":0,\"watchdog\":0}");workerTurn();assert(requestCalls==1&&dataChanges==0);
  mainTurn();bool ok=false;assert(GeneratorNetworkTakePollResult(ok)&&ok&&!GeneratorNetworkPollBusy());
  pass("poll coalescing and worker/main ownership; no transport on enqueue");
@@ -169,21 +175,25 @@ int main(){
  assert(!networkPollPending&&GeneratorNetworkTakePollResult(ok)&&ok);
  pass("independent refresh result cannot complete a still-queued poll");
 
- reset();for(int i=0;i<6;++i)assert(GeneratorNetworkSend("TG","crash_log","x"));assert(GeneratorNetworkRequestPoll());
+ reset();for(int i=0;i<6;++i) {assert(GeneratorNetworkSend("TG","crash_log","x"));}
+ assert(GeneratorNetworkRequestPoll());
  for(int i=0;i<4;++i){reply("{\"shift_machine\":0,\"watchdog\":0}");workerTurn();mainTurn();}
  assert(paths.size()==4&&paths[3].find("request=Loop")!=std::string::npos);
  pass("heartbeat is served after at most three other completed operations");
 
- reset();online=false;for(int i=0;i<6;++i)assert(GeneratorNetworkSend("TG","crash_log","x"));
+ reset();online=false;for(int i=0;i<6;++i){ assert(GeneratorNetworkSend("TG","crash_log","x")); }
  assert(!GeneratorNetworkSend("TG","crash_log","overflow"));assert(GeneratorNetworkRequestPoll());assert(used()==7);
- for(int i=0;i<500;++i)workerTurn();assert(used()==7&&requestCalls==0);
- online=true;reply("{}");workerTurn();assert(networkMailboxReady&&requestCalls==0);mainTurn();workerTurn();assert(networkMailboxReady&&requestCalls==1);for(int i=0;i<20;++i)workerTurn();assert(requestCalls==1);
+ for(int i=0;i<500;++i) {workerTurn();}
+ assert(used()==7&&requestCalls==0);
+ online=true;reply("{}");workerTurn();assert(networkMailboxReady&&requestCalls==0);mainTurn();workerTurn();assert(networkMailboxReady&&requestCalls==1);for(int i=0;i<20;++i) {workerTurn();}
+ assert(requestCalls==1);
  pass("bounded optional queue reserves heartbeat capacity; offline and unread result cannot spawn work");
 
  reset();reply("{\"role\":\"player\"}");assert(!GeneratorNetworkTag("G1P1"));workerTurn();assert(tag.isNull());
  GeneratorNetworkForgetTag();mainTurn();assert(tag.isNull());
  assert(!GeneratorNetworkTag("G1P2"));nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();
- int calls=requestCalls;for(int i=0;i<100;++i)assert(!GeneratorNetworkTag("G1P2"));assert(requestCalls==calls&&used()==0);
+ int calls=requestCalls;for(int i=0;i<100;++i) {assert(!GeneratorNetworkTag("G1P2"));}
+ assert(requestCalls==calls&&used()==0);
  now+=8001;reply("{\"role\":\"player\"}");assert(!GeneratorNetworkTag("G1P2"));workerTurn();mainTurn();assert(GeneratorNetworkTag("G1P2"));
  assert(!strcmp(tag["role"].as<const char*>(),"player"));
  pass("old card result discarded; same held card retries after bounded backoff");
@@ -221,7 +231,7 @@ int main(){
  pass("queued stale physical-generation SET is rejected before transport");
 
  reset();assert(WireHttpRequest(true,"TG",0,"11111111-1111-1111-1111-111111111111",1,snapshot)==GeneratorWireResult::Pending);
- for(int i=11;i<22;++i)wireState.sampleMask(i*100,1);
+ for(int i=11;i<22;++i){ wireState.sampleMask(i*100,1); }
  assert(WireHttpRequest(true,"TG",1,"11111111-1111-1111-1111-111111111111",1,snapshot)==GeneratorWireResult::Pending);
  workerTurn();assert(requestCalls==1&&paths[0].find("value=1")!=std::string::npos);
  pass("queued wire count coalesces to the latest qualified count");
@@ -237,7 +247,7 @@ int main(){
  pass("game/epoch invalidation rejects queued mutation before send");
 
  reset();
- for(int i=0;i<6;++i)assert(GeneratorNetworkSend("TG","crash_log","x"));
+ for(int i=0;i<6;++i){ assert(GeneratorNetworkSend("TG","crash_log","x")); }
  for(int i=0;i<6;++i){ContribBegin("G1P1",0);ContribEnd(2);}
  assert(pendingContributionCount==4&&used()==6);
  GeneratorNetworkInvalidateGame();ContribLoop();assert(pendingContributionCount==3);
@@ -280,7 +290,7 @@ int main(){
  assert(!strcmp(cur["device_state"].as<const char*>(),"repaired"));assert(requestCalls==2);
  pass("actual DataChanged completes repaired after card removal and gauge decay without StartFinish reentry");
 #else
- for(int i=0;i<1000;++i)assert(!GeneratorNetworkComplete("battery_max"));
+ for(int i=0;i<1000;++i) {assert(!GeneratorNetworkComplete("battery_max"));}
  assert(requestCalls==0&&used()==0&&!diagnostics.empty());
  pass("default deployment gate rejects unfenced completion without silently sending");
 #endif
