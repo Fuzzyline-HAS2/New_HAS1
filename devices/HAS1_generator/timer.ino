@@ -41,10 +41,13 @@ void WifiIntervalFunc(){
     // device_state였는지"는 최소 2초 해상도로 남는다 - "어느 상태에서 멈췄는지" 질문에
     // 직접 답하기 위함.
     char stateBuf[40];
-    snprintf(stateBuf, sizeof(stateBuf), "Wifi:ds=%s", (const char *)my["device_state"]);
+    // The asynchronous boot starts polling before ReceiveMine fills my.
+    // ESP32 newlib's %s formatter dereferences null; always provide a string.
+    const char *deviceState = my["device_state"] | "uninitialized";
+    snprintf(stateBuf, sizeof(stateBuf), "Wifi:ds=%s", deviceState);
     BREADCRUMB(stateBuf);
     if (!GeneratorNetworkRequestPoll()) generatorPollSchedule.rejected(millis());
-    CrashReportSend((const char *)my["device_name"]);
+    CrashReportSend(my["device_name"] | "");
     CrashNvsFlush();
 }
 

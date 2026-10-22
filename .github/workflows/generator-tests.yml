@@ -23,6 +23,8 @@ jobs:
           python-version: '3.12'
       - name: Bounded NeoPixel transport with fault injection
         run: python devices/HAS1_generator/tests/run_neopixel_tests.py
+      - name: Boot TCP/IP initialization before worker and Telnet sockets
+        run: python devices/HAS1_generator/tests/run_boot_network_tests.py
       - name: Completion-based polling and isolated crash reporting
         run: python devices/HAS1_generator/tests/run_poll_schedule_tests.py
       - name: Nonblocking Wi-Fi connection lifecycle
@@ -48,6 +50,10 @@ jobs:
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
         run: python devices/HAS1_generator/tests/run_wire_tests.py
+      - name: Boot timer polling before first server snapshot
+        env:
+          ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
+        run: python devices/HAS1_generator/tests/run_timer_boot_tests.py
       - name: Existing-server completion and isolated network worker
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src

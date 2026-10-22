@@ -35,7 +35,7 @@ extern HardwareSerial HardwareDebugSerial;
 extern TelnetDebugConsole DebugSerial;
 #define Serial DebugSerial
 
-void TelnetInit(); // Telnet 서버 시작 — WiFi 연결 완료 후 호출 (telnet.ino)
+void TelnetInit(); // Telnet 서버 시작 — Network.begin() 성공 후 호출 (telnet.ino)
 void TelnetRun();  // 클라이언트 접속/데이터 처리 — loop()에서 매 프레임 호출 (telnet.ino)
 void TelnetPreserveCrashReport(); // CrashReportInit 직후 직전 리셋 요약 원문을 별도 보존
 
