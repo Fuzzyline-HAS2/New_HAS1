@@ -44,6 +44,12 @@ python3 devices/iotglove/tools/compile.py all \
 
 `all` 대신 `ttgo`, `training`, `beetle` 하나만 지정할 수 있다. `--arduino-cli`, `--jobs`, `--output-dir`도 지원한다. `IOTGLOVE_LIBRARY_DIR` 환경변수는 `--libraries-dir` 기본값이다.
 
+`--check-ota-paths`를 추가하면 임시 스케치에 저장소의 공개 link-validation 시험 키를 사용하고 `IOTGLOVE_COMPILE_ONLY`를 생략한다. 일반 placeholder는 키 검사에서 OTA가 최적화로 제거될 수 있으므로, CI는 이 옵션으로 실제 OTA 분기의 링크와 크기까지 검증한다. 배포용 키 검사는 이 공개 시험 키를 거부한다. 이 경우도 업로드/서명/게시를 하지 않으며 바이너리를 설치해서는 안 된다.
+
+통신 복구 변경 후에도 글러브의 최신 OTA는 기존 SecureOTA 고정 태그의 `version.txt`/`update.bin`/`update.sig`를 사용한다. 최신 OTA에 새 manifest나 버전별 archive를 요구하지 않는다. 아래 버전별 archive 계약은 기존의 명시적 버전 지정 기능에 해당하며, 이번 변경으로 확대하지 않는다.
+
+통신 복구 패치는 `tools/bounded_http`의 프로젝트 한정 SDK 응답 파서를 준비된 HAS2_Wifi에 복사한다. `iotglove-dependencies.json`의 `bounded_http_sha256`, `bounded_http_core`, `patch_sha256`, `tree_sha256`로 출처를 기록하며 compile 도구가 현재 파서 해시를 대조한다. 원본 SDK 파일은 수정하지 않는다. 자세한 기한·제약은 [통신 복구 문서](NETWORK_RECOVERY.md)를 따른다.
+
 준비 스크립트는 배포 도구가 포함된 검증 SecureOTA 커밋 `162db758e6806895ef10ca39b101f9f8753bdc20`, HAS2_Wifi **first_store 최신**, Arduino-SimpleTimer를 받아 실제 커밋을 기록한다. 글러브 두 대상과 TagMachine Main/Sub의 HAS2_Wifi에 `has2-wifi-result-api.patch`를 적용한다. 이 패치는 checked 응답 API와 재부팅 없는 `TrySetup`을 공통으로 제공하고, 글러브에는 `badland_shoot` 직접 연결과 칩 절대값 보고 API도 제공한다. SecureOTA 커밋이 다르거나 `scripts/ci_deploy.py`가 없거나 원격 HAS2_Wifi 코드와 패치가 맞지 않으면 중단한다. 나머지 6개 배포 대상은 패치 없이 기존 방식으로 빌드한다. 기존 라이브러리 디렉터리는 덮어쓰지 않으므로 갱신할 때 새 경로를 준비한다.
 
 검증 빌드는 소스를 임시 스케치로 복사하고 그 안에만 placeholder `secrets.h`를 생성한다. 소스의 실제 `secrets.h`, 버전, 서명, Release를 바꾸지 않는다. 기본 출력은 Git에서 제외되는 `build/iotglove-compile-only/<profile>`이며, `iotglove-dependencies.json`에 실제 사용한 원격 커밋과 패치 해시를 남긴다. **이 placeholder 키 바이너리를 기기에 설치하거나 Release에 올리지 않는다.**

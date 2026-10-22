@@ -121,6 +121,17 @@ class BuildContractTests(unittest.TestCase):
         )
         self.assertEqual(checked_secret('key-with-"quote-and-backslash\\'), 'key-with-"quote-and-backslash\\')
 
+    def test_ota_link_check_uses_public_deployment_rejected_key_in_temp_only(self):
+        with tempfile.TemporaryDirectory() as work:
+            source, destination = Path(work) / "source", Path(work) / "staged"
+            source.mkdir()
+            (source / "secrets.h").write_text("LOCAL_SECRET_MUST_STAY_UNCHANGED")
+            glove_compile.stage_sketch(source, destination, check_ota_paths=True)
+            self.assertIn(LINK_VALIDATION_SECRET, (destination / "secrets.h").read_text())
+            self.assertEqual((source / "secrets.h").read_text(), "LOCAL_SECRET_MUST_STAY_UNCHANGED")
+            with self.assertRaises(ValueError):
+                checked_secret(LINK_VALIDATION_SECRET)
+
 
 if __name__ == "__main__":
     unittest.main()

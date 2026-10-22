@@ -57,6 +57,7 @@ std::atomic<bool> forceSnapshot{false};
 uint32_t now = 0;
 uint32_t millis() { return now; }
 void publishInvalid() {}
+bool serverRequestsDeferred() { return false; }
 void remoteConsoleLogf(const char*, ...) {}
 struct Wifi {
   unsigned writes = 0;

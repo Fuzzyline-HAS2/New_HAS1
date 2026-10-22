@@ -14,6 +14,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts"))
 from firmware_targets import ESP32_CORE_VERSION, TARGETS  # noqa: E402
+from write_firmware_secret import LINK_VALIDATION_SECRET  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prepare_libraries import BOUNDED_HTTP, directory_sha256
 
 PROFILES = {
     "ttgo": ("iotglove", 0),
@@ -23,7 +26,7 @@ PROFILES = {
 SOURCE_EXTENSIONS = {".ino", ".h", ".hpp", ".c", ".cpp", ".S", ".s", ".tpp", ".inc"}
 
 
-def stage_sketch(source, destination):
+def stage_sketch(source, destination, check_ota_paths=False):
     destination.mkdir()
     for entry in source.iterdir():
         if entry.name == "secrets.h":
@@ -32,8 +35,11 @@ def stage_sketch(source, destination):
             shutil.copy2(entry, destination / entry.name)
         elif entry.is_dir() and entry.name == "src":
             shutil.copytree(entry, destination / "src")
+    # The normal placeholder lets the optimizer erase OTA after its key guard.
+    # Use the existing public, deployment-rejected test key for full link checks.
+    key = LINK_VALIDATION_SECRET if check_ota_paths else "__COMPILE_ONLY_DO_NOT_DEPLOY__"
     (destination / "secrets.h").write_text(
-        '#pragma once\n#define HMAC_SECRET "__COMPILE_ONLY_DO_NOT_DEPLOY__"\n',
+        f'#pragma once\n#define HMAC_SECRET {json.dumps(key)}\n',
         encoding="utf-8",
     )
 
@@ -46,6 +52,8 @@ def main():
     parser.add_argument("--libraries-dir", type=Path, default=os.environ.get("IOTGLOVE_LIBRARY_DIR"))
     parser.add_argument("--output-dir", type=Path, default=ROOT / "build" / "iotglove-compile-only")
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--check-ota-paths", action="store_true",
+                        help="Link production OTA branches using a public test key; never deploy the output")
     args = parser.parse_args()
     if not args.libraries_dir:
         parser.error("--libraries-dir (or IOTGLOVE_LIBRARY_DIR) must name prepared dependencies")
@@ -56,7 +64,9 @@ def main():
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     patch_hash = hashlib.sha256(Path(__file__).with_name("has2-wifi-result-api.patch").read_bytes()).hexdigest()
     if (manifest.get("HAS2_Wifi", {}).get("branch") != "first_store" or
-            manifest.get("HAS2_Wifi", {}).get("patch_sha256") != patch_hash):
+            manifest.get("HAS2_Wifi", {}).get("patch_sha256") != patch_hash or
+            manifest.get("HAS2_Wifi", {}).get("bounded_http_sha256") != directory_sha256(BOUNDED_HTTP) or
+            manifest.get("HAS2_Wifi", {}).get("bounded_http_core") != ESP32_CORE_VERSION):
         parser.error("Prepared HAS2_Wifi is not first_store with the current patch; prepare a fresh directory")
     cli = [args.arduino_cli]
     if args.config_file:
@@ -73,20 +83,21 @@ def main():
         output.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=f"iotglove-{profile}-") as work:
             sketch = Path(work) / Path(directory).name
-            stage_sketch(ROOT / directory, sketch)
+            stage_sketch(ROOT / directory, sketch, check_ota_paths=args.check_ota_paths)
             command = cli + [
                 "compile", "--fqbn", fqbn, "--jobs", str(args.jobs),
                 "--build-path", str(Path(work) / "build"),
                 "--output-dir", str(output),
                 "--libraries", str(libraries),
                 "--library", str(ROOT / "libraries" / "IoTGloveProtocol"),
-                "--build-property", f"compiler.cpp.extra_flags=-DIOTGLOVE_TRAINING={training} -DIOTGLOVE_COMPILE_ONLY=1",
+                "--build-property", f"compiler.cpp.extra_flags=-DIOTGLOVE_TRAINING={training}" +
+                    ("" if args.check_ota_paths else " -DIOTGLOVE_COMPILE_ONLY=1"),
                 str(sketch),
             ]
             print(f"Compile {profile}: {fqbn}", flush=True)
             subprocess.run(command, check=True)
         (output / "COMPILE_ONLY.txt").write_text(
-            "Validation build with a placeholder HMAC key. Do not flash or publish.\n",
+            "Validation build with a non-production HMAC key. Do not flash or publish.\n",
             encoding="utf-8",
         )
         shutil.copy2(manifest_path, output / manifest_path.name)

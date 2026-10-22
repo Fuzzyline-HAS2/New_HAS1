@@ -1,5 +1,6 @@
 #pragma once
 #include "game_state.h"
+#include "network_recovery.h"
 
 namespace iotglove {
 struct GameResult {
@@ -11,6 +12,8 @@ enum class NetworkOtaStatus : uint8_t { Idle, Queued, Running, Skipped, Failed }
 
 // Single worker owns HAS2_Wifi, JSON, HTTP and OTA; all loop-facing calls are nonblocking.
 bool networkBegin(int firmwareVersion, int partitionVersion);
+// Coherent, nonblocking cross-core copy; contains no credentials or payload.
+bool networkDiagnostics(NetworkDiagnostics& diagnostics);
 bool networkPoll(ServerSnapshot& snapshot);
 bool networkPollResult(GameResult& result);
 bool networkSubmit(const GameEvent& event);
