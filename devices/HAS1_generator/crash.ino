@@ -126,45 +126,19 @@ static void UrlSafeInPlace(char *s) {
     }
 }
 
-// 구글시트에 연결된 Apps Script Web App — 디버깅용 크래시 로그를 실시간으로 한 줄씩 남긴다.
-// has2wifi가 쓰는 172.30.1.43(로컬 PHP 서버)과 완전히 별개의 목적지라, has2wifi 내부의
-// 공유 HTTPClient(extern http)를 재사용하지 않고 이 함수 전용 로컬 인스턴스를 쓴다 —
-// CrashReportSend()가 DataChanged()/has2wifi.Loop() 콜백 흐름과 얽혀 재진입 문제를
-// 만들지 않기 위함(이번 조사의 발단이 된 재진입 문제와 같은 클래스의 버그를 새로 만들지 않기 위한 조치).
-static const char *CRASH_SHEET_URL =
-    "https://script.google.com/macros/s/AKfycbyMnqK-bwSsKR3KtPObO4rdVN-bRGTisAr8AlEnHC3iRZsWLcg0th00oJauFrtJXLAZZA/exec";
-
-// 실패해도(오프라인/시트 문제 등) 조용히 무시 — 이 로그는 어디까지나 디버깅 보조 수단이고
-// 게임 진행에 필수인 has2wifi.Send(crash_log)가 이미 별도로 나가므로 여기서 막힐 이유가 없다.
-// 타임아웃을 짧게(5초) 잡아 이 호출 자체가 새로운 행 원인이 되지 않도록 한다.
-static void SendCrashLogToSheet(const char *device_name, const char *msg) {
-    DiagnosticScope trace(GeneratorDiagnostic::CrashUpload); // Includes TLS/redirects/cleanup; no overall deadline added.
-    trace.result(-1);
-    WiFiClientSecure client;
-    client.setInsecure();   // 구글 루트 인증서를 임베드하지 않고 스킵 — 디버그 로그 전송이라 허용
-    client.setTimeout(5000);
-
-    HTTPClient sheetHttp;
-    sheetHttp.setConnectTimeout(5000);
-    sheetHttp.setTimeout(5000);
-    sheetHttp.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);  // script.google.com -> googleusercontent.com 302 리다이렉트 대응
-
-    if (!sheetHttp.begin(client, CRASH_SHEET_URL)) return;
-    sheetHttp.addHeader("Content-Type", "application/x-www-form-urlencoded");
-    String body = "device_name=" + String(device_name) + "&msg=" + String(msg);
-    int code = sheetHttp.POST(body);
-    trace.result(code>0 && code<400 ? code : (code>0 ? -code : code));
-    Serial.println("[CrashSheet] POST code=" + String(code));
-    sheetHttp.end();
-}
+// External Google Sheet uploads are intentionally disabled. An optional
+// diagnostic destination must not block startup or the game loop; bounded local
+// RTC/Telnet evidence remains available even when the server cannot be reached.
 
 // WiFi 연결 후 서버로 전송 — g_crash_pending 플래그로 한 번만 전송
 void CrashReportSend(const char *device_name) {
     if (!g_crash_pending || !device_name || device_name[0] == '\0') return;
     UrlSafeInPlace(g_crash_msg);   // 전송 직전 1회 — Serial/Telnet 출력은 원문 그대로 이미 나갔다
-    has2wifi.Send(device_name, "crash_log", g_crash_msg);
-    SendCrashLogToSheet(device_name, g_crash_msg);
-    g_crash_pending = false;
+    // A full queue leaves this report pending. Accepted reports are owned by
+    // the bounded network worker; local RTC/Telnet evidence is not cleared.
+    if (GeneratorNetworkSend(device_name, "crash_log", g_crash_msg)) {
+        g_crash_pending = false;
+    }
 }
 
 // 30초마다 현재 BREADCRUMB 위치를 NVS에 flush — 전원 차단/물리 리셋 후에도 복원 가능

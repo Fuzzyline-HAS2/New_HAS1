@@ -2,6 +2,7 @@
 #include <SecureOTA.h>
 #include <nvs_flash.h>
 #include <WiFi.h>
+#include "network_release_gate.h"
 
 /**
  * @file Done_Generator_code.ino
@@ -41,43 +42,25 @@ void setup() {
     Mp3_Init();      // DFPlayer(MP3) 모듈 초기화
     TimerInit();     // SimpleTimer 3종 등록(및 정지)
 
-    // NVS(비휘발성 저장소) 파티션을 지우고 재초기화 — WiFi 등 라이브러리가 저장한
-    // 이전 상태(예: 예전 접속 정보)를 남기지 않고 항상 깨끗하게 시작하기 위함.
-    nvs_flash_erase();
-    nvs_flash_init();
-
-    // "badland" 테마로 연결 — HAS2_Wifi 라이브러리가 badland_ruins/badland_auto/badland_shoot
-    // 후보 AP 중 신호가 가장 좋은 곳으로 자동 접속하고, 서버 호스트도 badland용(172.30.1.43)으로 설정된다.
-    // 연결 직후 현재 펌웨어 버전을 서버에 보고한다.
-    has2wifi.Setup("badland");
-
-    // ---- [실험용 디버깅] 어느 AP/서브넷에 붙었는지 확인용 (taewoo.kim 요청) ----
-    // GW가 172.30.1.1이 아니면 다른 망, GW는 맞는데 BSSID가 3C:78:95:E9:A0:0F 계열이 아니면
-    // 같은 대역을 쓰는 다른 매장/테마 AP에 붙은 것으로 의심. ESP IP가 172.30.1.130/.131
-    // 근처면 VLAN 분리 여부도 확인 필요.
-    Serial.printf("IP=%s GW=%s MASK=%s\n",
-        WiFi.localIP().toString().c_str(),
-        WiFi.gatewayIP().toString().c_str(),
-        WiFi.subnetMask().toString().c_str());
-    Serial.printf("SSID=%s BSSID=%s RSSI=%d\n",
-        WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), WiFi.RSSI());
-    // ---------------------------------------------------------------------
-
-    has2wifi.Send((String)(const char*)my["device_name"], "esp_version", String(FIRMWARE_VER));
-
-    TelnetInit(); // WiFi 연결 후 서버 시작. 접속 전 최근 로그도 RAM에서 재전송함
+    // BeginConnection only configures state; one network worker performs Wi-Fi
+    // recovery and HTTP while main remains responsive. Preserve NVS crash data.
+    ptrCurrentMode = WaitFunc;
+    ptrRfidMode = WaitFunc;
+    has2wifi.BeginConnection("badland");
+    GeneratorNetworkBegin();
+    TelnetInit();
 
     // OTA 진행 로그를 시리얼로 출력하도록 설정
     ota.setLogStream(Serial);
 
     // OTA 성공 시: 서버에 "setting" 상태를 알리고 재부팅 시작을 로그로 남김
     ota.setOnSuccess([]() {
-        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "setting");
+        GeneratorNetworkSend(my["device_name"] | "", "device_state", "setting");
         Serial.println("[OTA] update succees! Start rebooting...");
     });
     // OTA 스킵(이미 최신 버전) 시: 마찬가지로 "setting" 상태를 알림
     ota.setOnSkip([]() {
-        has2wifi.Send((String)(const char*)my["device_name"], "device_state", "setting");
+        GeneratorNetworkSend(my["device_name"] | "", "device_state", "setting");
         Serial.println("[OTA] Already up-to-date version.");
     });
 
@@ -94,10 +77,7 @@ void setup() {
     ptrCurrentMode = WaitFunc;
     ptrRfidMode = WaitFunc;
 
-    // 서버로부터 받아온 초기 데이터(my)를 한 번 처리해서 현재 game_state/device_state에 맞는
-    // 모드로 즉시 전환되도록 함 (예: 이미 game_state가 "activate"라면 ActivateFunc가 바로 호출됨)
-    DataChanged();
-    // WiFi와 장치 초기화가 끝난 뒤에만 BLE 컨트롤러를 준비한다.
+    // 초기 서버 상태는 GeneratorNetworkLoop에서 비동기 응답을 받은 뒤 적용한다.
     Has1BleBeacon::begin();
 }
 
@@ -110,22 +90,16 @@ void setup() {
 // ---------------------------------------------------------------------------------
 void loop() {
     DiagnosticLoop();
+    GeneratorNetworkLoop();
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
     WireServiceLoop(); // Sample/synchronize before any starter progress or completion.
     EncoderLoop();     // PCNT 하드웨어 카운터 → encoderValue 반영
-    // 스타터를 벗어난 채 열려 있는 기여도 세션을 정리한다.
-    // [중요] ptrCurrentMode() "앞"이어야 한다 — 이 위치가 두 가지를 동시에 보장한다:
-    //  1) 직전 프레임 끝의 TimerRun()->DataChanged()가 모드를 바꿨다면, 새 모드 함수가
-    //     한 번도 돌기 전에 여기서 마무리된다.
-    //  2) encoderValue를 리셋하는 두 곳(BatteryFinish의 =1, SettingFunc의 =100)보다 항상
-    //     먼저 실행된다. BatteryFinish는 오직 ptrCurrentMode로만 실행되고(WirePollMain이
-    //     직접 부르는 경우도 그 프레임의 ptrCurrentMode는 이미 StarterActivate가 아니다),
-    //     SettingFunc은 프레임 끝 DataChanged 안에서 돈다. 그래서 세션 종료는 언제나
-    //     리셋 이전의 칸 수로 확정된다. TimerRun() 뒤로 옮기면 이 보장이 깨지고,
-    //     덤으로 폴링 GET 바로 뒤에 전송 GET이 같은 프레임에 연달아 붙는다.
+    // 서버 응답에 의한 상태 전환은 NetworkLoop에서 인코더 초기화 전에 세션을 닫는다.
+    // 로컬 모드 이탈은 직전 게이지 값으로 여기서 정리한다. 게임 세대가 바뀐 세션은
+    // 폐기하며, 기여도 전송도 큐에만 등록하므로 메인 루프에서 응답을 기다리지 않는다.
     ContribLoop();
     ptrCurrentMode();  // 현재 모드 함수 실행 (예: WaitFunc / RfidLoopMain / WirePollMain / StarterActivate)
-    TimerRun();         // WifiTimer / GameTimer / BlinkTimer 갱신 — 인터벌이 도래하면 콜백 실행
+    TimerRun();         // 완료 기준 HTTP 폴링 예약 및 GameTimer/BlinkTimer 갱신
     // 엔코더/배선/서버 처리가 끝난 뒤 BLE 설정을 대기 없이 한 단계만 진행한다.
     Has1BleBeacon::poll();
 }

@@ -46,67 +46,54 @@ static bool WireParseSnapshot(const JsonDocument &json, const char *device,
   return snapshot.maximum >= 1 && snapshot.maximum <= 4; // GET may reveal an old invalid accumulated count.
 }
 
-GeneratorWireResult WireHttpRequest(bool set, const char *device, int count,
-                                    const char *epoch, uint32_t revision,
-                                    GeneratorWireSnapshot &snapshot) {
-  DiagnosticScope trace(GeneratorDiagnostic::WireHttp,set?1:0);
-  trace.result(-101); // Invalid/offline request. Diagnostic codes documented in DIAGNOSTICS.md.
-  if (WiFi.status() != WL_CONNECTED || !device || !device[0] || strlen(device) >= sizeof(snapshot.device))
-    return GeneratorWireResult::Failed;
-  String url = String(GENERATOR_SERVER_URL) + "/has2.php?request=" +
-      (set ? "SetGeneratorWires" : "GetGeneratorWires") +
-      "&mac=" + WireUrlEncode(WiFi.macAddress().c_str()) + "&key=" + WireUrlEncode(device);
-  if (set) url += "&value=" + String(count) + "&epoch=" + WireUrlEncode(epoch) + "&revision=" + String(revision);
-  HTTPClient request;
-  request.setConnectTimeout(700);
-  request.setTimeout(700);
-  request.setReuse(false);
-  if (!request.begin(url)) { trace.result(-102); return GeneratorWireResult::Failed; }
-  trace.phase("get.begin",0,set?1:0); // Includes DNS/TCP/header work; HTTPClient exposes no finer boundary.
-  const int status = request.GET();
-  trace.phase("get.end",status,static_cast<uint32_t>(request.getSize()));
-  if (status != 200 && status != 409) {
-    trace.result(-103,static_cast<uint32_t>(status));
-    Serial.printf("[WireSync] %s HTTP=%d\n", set ? "set" : "get", status);
-    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status); return GeneratorWireResult::Failed;
-  }
-  const int length = request.getSize();
-  char body[1025];
-  if (length <= 0 || length >= static_cast<int>(sizeof(body))) {
-    trace.result(-104,static_cast<uint32_t>(length));
-    Serial.println("[WireSync] invalid/missing response length");
-    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status); return GeneratorWireResult::Failed;
-  }
-  auto *stream = request.getStreamPtr();
-  if (!stream) {
-    trace.result(-105);
-    trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status);
-    return GeneratorWireResult::Failed;
-  }
-  size_t received = 0;
-  const uint32_t started = millis();
-  while (received < static_cast<size_t>(length) && uint32_t(millis() - started) < 1000) {
-    const int available = stream->available();
-    if (available > 0) {
-      const size_t remaining = static_cast<size_t>(length) - received;
-      const size_t chunk = static_cast<size_t>(available) < remaining ? static_cast<size_t>(available) : remaining;
-      const int read = stream->read(reinterpret_cast<uint8_t *>(body) + received, chunk);
-      if (read <= 0) break;
-      received += static_cast<size_t>(read);
-    } else if (!request.connected()) break;
-    else delay(1);
-  }
-  trace.phase("body.end",received==static_cast<size_t>(length)?0:-1,received);
-  trace.phase("close.begin",status); Has2HttpBody::closeResponse(request); trace.phase("close.end",status);
-  if (received != static_cast<size_t>(length)) { trace.result(-106,received); return GeneratorWireResult::Failed; }
+// One outstanding wire operation. Repeated main-loop calls poll its result;
+// changing count/context/generation rejects its old result instead of applying it.
+static bool wireHttpPending=false,wireHttpDone=false;
+static String wireHttpKey;
+static char wireHttpExpectedDevice[32]={};
+static uint32_t wireHttpRequestId=0;
+static uint32_t wireHttpGeneration=0,wireHttpNetworkGeneration=0;
+static GeneratorWireResult wireHttpOutcome=GeneratorWireResult::Failed;
+static GeneratorWireSnapshot wireHttpResponse;
+static void WireHttpResult(const NetworkRequest &request,const Has2BoundedTransport::Result &response,bool stale) {
+  wireHttpDone=true;
+  wireHttpOutcome=GeneratorWireResult::Failed;
+  if(stale||!response.ok()||(response.status!=200&&response.status!=409))return;
   JsonDocument json;
-  if (deserializeJson(json, body, received) || !json["success"].is<bool>() ||
-      !WireParseSnapshot(json, device, snapshot)) { trace.result(-107); return GeneratorWireResult::Failed; }
-  if (status == 409 && !json["success"].as<bool>() && json["error"].is<const char *>() &&
-      strcmp(json["error"].as<const char *>(), "CONFLICT") == 0) { trace.result(409,snapshot.revision); return GeneratorWireResult::Conflict; }
-  if (status != 200 || !json["success"].as<bool>()) { trace.result(-108,status); return GeneratorWireResult::Failed; }
-  if (set && (strcmp(snapshot.epoch, epoch) != 0 || snapshot.count != count || snapshot.revision <= revision))
-    { trace.result(-109,snapshot.revision); return GeneratorWireResult::Failed; }
-  trace.result(200,snapshot.revision);
-  return GeneratorWireResult::Ok;
+  if(deserializeJson(json,response.payload)||!json["success"].is<bool>()||
+     !WireParseSnapshot(json,wireHttpExpectedDevice,wireHttpResponse))return;
+  if(response.status==409&&!json["success"].as<bool>()&&json["error"].is<const char*>()&&
+     !strcmp(json["error"].as<const char*>(),"CONFLICT"))wireHttpOutcome=GeneratorWireResult::Conflict;
+  else if(response.status==200&&json["success"].as<bool>())wireHttpOutcome=GeneratorWireResult::Ok;
+  (void)request;
+}
+GeneratorWireResult WireHttpRequest(bool set,const char *device,int count,const char *epoch,uint32_t revision,GeneratorWireSnapshot &snapshot) {
+  if(!device||!device[0]||strlen(device)>=sizeof(snapshot.device))return GeneratorWireResult::Failed;
+  const uint32_t generation=WireSnapshot().generation();
+  const uint32_t gameGeneration=GeneratorNetworkGeneration();
+  String path=String("/has2.php?request=")+(set?"SetGeneratorWires":"GetGeneratorWires")+
+      "&mac="+WireUrlEncode(has2wifi.GetMacAddress().c_str())+"&key="+WireUrlEncode(device);
+  if(set)path+="&value="+String(count)+"&epoch="+WireUrlEncode(epoch)+"&revision="+String(revision);
+  if(wireHttpPending) {
+    if(!wireHttpDone) {
+      if(wireHttpKey!=path||wireHttpGeneration!=generation||wireHttpNetworkGeneration!=gameGeneration) {
+        if(NetworkReplaceQueued(wireHttpRequestId,path,gameGeneration,generation,set?count:-1)) {
+          wireHttpKey=path;wireHttpGeneration=generation;wireHttpNetworkGeneration=gameGeneration;
+          snprintf(wireHttpExpectedDevice,sizeof(wireHttpExpectedDevice),"%s",device);
+        }
+      }
+      return GeneratorWireResult::Pending;
+    }
+    wireHttpPending=false;wireHttpDone=false;
+    if(wireHttpKey!=path||wireHttpGeneration!=generation||wireHttpNetworkGeneration!=gameGeneration)return GeneratorWireResult::Failed;
+    snapshot=wireHttpResponse;
+    if(wireHttpOutcome==GeneratorWireResult::Ok&&set&&
+       (strcmp(snapshot.epoch,epoch)||snapshot.count!=count||snapshot.revision<=revision))return GeneratorWireResult::Failed;
+    return wireHttpOutcome;
+  }
+  snprintf(wireHttpExpectedDevice,sizeof(wireHttpExpectedDevice),"%s",device);
+  wireHttpRequestId=NetworkSubmit(NetworkKind::Wire,path,set,gameGeneration,generation,WireHttpResult,set?count:-1);
+  if(!wireHttpRequestId)return GeneratorWireResult::Failed;
+  wireHttpKey=path;wireHttpGeneration=generation;wireHttpNetworkGeneration=gameGeneration;
+  wireHttpPending=true;return GeneratorWireResult::Pending;
 }

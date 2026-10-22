@@ -2,8 +2,8 @@
 // wifi.ino
 // ---------------------------------------------------------------------------------
 // 서버와의 통신 결과(my: 이 기기 상태 JSON, tag: 마지막으로 조회한 태그 정보 JSON)를 받아
-// 게임 상태 머신을 전환하는 핵심 로직. WifiIntervalFunc()가 주기적으로 has2wifi.Loop(DataChanged)를
-// 호출하고, 서버 응답이 오면 DataChanged()가 콜백으로 실행된다.
+// 게임 상태 머신을 전환하는 핵심 로직. 단일 네트워크 작업자의 응답을
+// GeneratorNetworkLoop가 메인에서 검증한 뒤 DataChanged()를 실행한다.
 //
 // 상태는 크게 두 축으로 나뉜다.
 //   - my["game_state"]   : 방 전체의 큰 흐름 (setting / ready / activate)
@@ -12,7 +12,7 @@
 //                           player_win / player_lose / github(OTA 트리거) 등)
 // =================================================================================
 
-// WifiTimer에 의해 주기적으로 호출됨 (has2wifi.Loop 콜백).
+// 서버 스냅샷을 메인 루프에 적용한 뒤 호출된다.
 // 직전에 저장해둔 값(cur)과 새로 받아온 값(my)을 비교해서, 바뀐 항목에 해당하는 처리만 수행한다.
 // 이런 "diff 후 처리" 방식 덕분에 서버 폴링이 반복되어도 같은 동작이 중복 실행되지 않는다.
 // JsonDocument(크기 템플릿 없는 v7 타입) 사용 — StaticJsonDocument<N>은 N이 my와 정확히
@@ -160,15 +160,9 @@ void DataChanged()
       }
       else if((String)(const char*)my["device_state"] == "github"){
         BREADCRUMB("DataChanged:github:otaCheck");
-        // 서버가 원격으로 OTA 업데이트를 트리거하는 채널
-        Serial.println("[OTA] OTA 업데이트 요청 수신");
-        // OTA 다운로드+플래시는 30초 넘게 걸릴 수 있어(설계된 esp_task_wdt_reset()이 그 동안
-        // 안 불림) 워치독을 그대로 두면 업데이트 도중 재부팅으로 끊겨버린다 - 실측된 문제.
-        // ota.check() 동안만 이 태스크를 워치독에서 잠시 빼고, 끝나면 다시 등록한다
-        // (업데이트 성공 시엔 SecureOTA가 자체적으로 재부팅하므로 아래 재등록까지 안 감).
-        esp_task_wdt_delete(NULL);
-        ota.check();
-        esp_task_wdt_add(NULL);  // 업데이트 없이 돌아온 경우(이미 최신 버전 등) 워치독 보호 복원
+        // Execute maintenance only after the result callback has released the
+        // mailbox, so the worker can transmit OTA callback reports before reboot.
+        GeneratorNetworkRequestMaintenance(false);
       }
     }
   }
@@ -243,7 +237,7 @@ void ActivateFunc(void){
         // 서버 판단을 따라 이번 충전 사이클 동안은 물리 배선 확인 없이 스타터로 넘어간다.
         // 직접 완충한 뒤 되돌아온 battery_max(batteryFinishDone)는 기존대로 배선 확인을 유지한다.
         if (!batteryFinishDone) WireAcceptServerCompletion();
-        // ActivateFunc()은 has2wifi.Loop()의 콜백(DataChanged()) 안에서 호출되므로, 블로킹 오디오
+        // ActivateFunc()은 서버 응답을 적용하는 DataChanged() 안에서 호출되므로, 블로킹 오디오
         // 재생+Send를 포함한 BatteryFinish()를 여기서 직접 부르지 않고 다음 loop 반복으로 미룬다.
         ptrCurrentMode = BatteryFinish;
     }

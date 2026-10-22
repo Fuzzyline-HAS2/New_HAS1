@@ -89,6 +89,7 @@ int WireCountPlugged() {
 int WireDisplayCount() { const int count = WireSnapshot().stable(); return count < 0 ? 0 : count; }
 
 void WireResetTracking() {
+    GeneratorNetworkInvalidateGame();
     portENTER_CRITICAL(&wireStateMux);
     wireState.reset();
     wireSamplingEnabled = wireEnabled;
@@ -193,15 +194,9 @@ static bool WireAdoptContext(const GeneratorWireSnapshot &snapshot) {
         // The CAS reply is a partial object, never replace the full device JSON.
         // A failed legacy refresh leaves the acknowledgement invalid; the next
         // bounded retry fetches and checks the CAS context again.
-        has2wifi.ReceiveMine();
+        if(changedEpoch)GeneratorNetworkRefreshCycle();
+        else GeneratorNetworkRefresh();
         if (resetCycle) receiveMineOn = false;
-        DataChanged();
-        if (changedEpoch && WireTextEquals(my["game_state"],snapshot.gameState) &&
-            WireTextEquals(my["device_state"],snapshot.deviceState) &&
-            WireTextEquals(snapshot.gameState,"activate") &&
-            (WireTextEquals(snapshot.deviceState,"activate") ||
-             WireTextEquals(snapshot.deviceState,"battery_max") ||
-             WireTextEquals(snapshot.deviceState,"starter_finish"))) ActivateFunc();
         Serial.println("[WireSync] server context changed; full state refresh requested");
         return false;
     }
@@ -258,6 +253,7 @@ void WireServiceLoop() {
     if (!wireContextValid) {
         const uint32_t generation = observed.generation();
         const GeneratorWireResult result = WireHttpRequest(false,name,0,"",0,response);
+        if (result == GeneratorWireResult::Pending) return;
         wireLastAttempt = millis();
         if (result != GeneratorWireResult::Ok || WireSnapshot().generation() != generation || !WireAdoptContext(response)) {
             WireInvalidateAck(); wireContextValid = false; wireRetryPending = true; return;
@@ -283,6 +279,7 @@ void WireServiceLoop() {
     // Uncertain writes (including a previous boot) still require a CAS fence.
     wireFenceNeeded = true;
     const GeneratorWireResult result = WireHttpRequest(true,name,sending,expectedEpoch,expectedRevision,response);
+    if (result == GeneratorWireResult::Pending) return;
     wireLastAttempt = millis();
     if (result != GeneratorWireResult::Ok || strcmp(response.epoch,expectedEpoch) != 0 ||
         response.count != sending || response.revision <= expectedRevision ||

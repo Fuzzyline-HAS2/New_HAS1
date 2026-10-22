@@ -16,6 +16,7 @@
 #include "generator_wire_state.h"
 #include "generator_wire_protocol.h"
 #include "generator_diagnostics.h"
+#include "generator_network.h"
 
 // Telnet 원격 디버깅 콘솔 — Serial을 텔넷으로 미러링 (telnet.ino 구현).
 // 아래 #define으로 기존 코드 전체의 Serial.print/println/printf 호출이 자동으로
@@ -42,7 +43,7 @@ const int rfid_num = 1; // 설치된 pn532의 개수
 
 //****************************************WIFI****************************************************************
 // has2wifi: 서버(172.30.1.43, badland 테마)와 주기적으로 통신하며 my/tag 등 JSON 상태를 동기화하는 객체.
-//           TimerRun() -> WifiIntervalFunc() -> has2wifi.Loop(DataChanged) 로 매 tick 폴링된다.
+//           TimerRun()이 완료 기준으로 폴링을 예약하고 NetworkLoop가 응답을 메인에서 적용한다.
 static const char GENERATOR_SERVER_URL[] = "http://172.30.1.43";
 HAS2_Wifi has2wifi(GENERATOR_SERVER_URL);
 
@@ -105,14 +106,13 @@ void ContribBegin(const String &user, int cnt);    // 세션 시작 (contrib.ino
 void ContribEnd(int cnt);                          // 세션 종료 + 순증 전송. 세션이 없으면 no-op (contrib.ino)
 void ContribLoop();                                // 스타터 이탈 감지 — loop()에서 ptrCurrentMode() 직전 호출 (contrib.ino)
 //****************************************Timer System****************************************************************
-// SimpleTimer 인스턴스 3개 — 각각 독립된 인터벌로 TimerRun()에서 매 loop마다 run()된다.
+// 게임/LED 타이머. HTTP 폴링은 완료 시각 기준의 별도 스케줄러가 큐에 등록한다.
 SimpleTimer GameTimer;  // 스타터 진행 중 엔코더 값 감소를 주기적으로 트리거
-SimpleTimer WifiTimer;  // 서버 폴링(has2wifi.Loop) 주기 트리거
 
 SimpleTimer BlinkTimer; // 특정 네오픽셀을 깜빡이게 하는 주기 트리거
 
-void TimerInit();        // 세 타이머의 인터벌을 등록(및 즉시 정지)함 — setup()에서 1회 호출 (timer.ino)
-void WifiIntervalFunc(); // WifiTimer 콜백: 서버와 통신 (timer.ino)
+void TimerInit();        // 게임/LED 인터벌 및 HTTP 폴링 스케줄을 초기화 — setup()에서 1회 호출 (timer.ino)
+void WifiIntervalFunc(); // 서버 폴링 요청을 큐에 등록 (timer.ino)
 void GameTimerFunc();    // GameTimer 콜백: 엔코더 값을 서서히 감소시켜 방치 시 게이지가 줄어들게 함 (timer.ino)
 
 
@@ -121,12 +121,10 @@ void BlinkTimerStart(int Neo, int NeoColor); // 특정 네오픽셀(Neo)을 특�
 int blinkNeo = 0;   // 현재 깜빡이고 있는 네오픽셀 인덱스 (GAUGE/STARTER/DEVICESTATE/CIRCUIT)
 int blinkColor = 0; // 현재 깜빡임에 사용 중인 색상 인덱스 (color[] 배열의 인덱스)
 
-int wifiTimerId; // WifiTimer에 등록된 인터벌의 ID (deleteTimer 등에 사용)
 int gameTimerId; // GameTimer에 등록된 인터벌의 ID
 
 int blinkTimerId; // BlinkTimer에 등록된 인터벌의 ID
 
-unsigned long wifiTime = 2000;    // 1sec  (실제 값은 2000ms — 주석은 과거 값의 잔재로 보임)
 
 unsigned long gameTime = 400;    // 3sec  (실제 값은 400ms — 위와 동일)
 unsigned long blinkTime = 1800;   // 1sec  (실제 값은 1800ms — 위와 동일)

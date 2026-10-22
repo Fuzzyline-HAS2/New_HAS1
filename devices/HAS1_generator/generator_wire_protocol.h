@@ -10,5 +10,5 @@ struct GeneratorWireSnapshot {
   int count = 0;
   int maximum = 0;
 };
-enum class GeneratorWireResult { Ok, Conflict, Failed };
+enum class GeneratorWireResult { Ok, Conflict, Failed, Pending };
 #endif

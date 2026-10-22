@@ -177,7 +177,7 @@ void RfidLoopMain()
     if (RfidDetectTag(data)){ // ntag 데이터에 접근해서 불러와서 data행열에 저장
       Serial.println("TAGGGED");
       CheckingPlayers(data);
-    }
+    } else GeneratorNetworkForgetTag();
   }
 }
 
@@ -201,7 +201,7 @@ void TaggerRfidLoop()
     String tagUser = "";
     for(int i = 0; i < 4; i++) tagUser += (char)data[i];
     Serial.println("Tagger tag_user_data : " + tagUser);
-    has2wifi.Receive(tagUser);
+    if (!GeneratorNetworkTag(tagUser.c_str())) return;
     String role = (String)(const char*)tag["role"];
     if (role == "player" || role == "revival"){
       Serial.println("Tagger Tag: " + role);
@@ -214,11 +214,12 @@ void TaggerRfidLoop()
       }
     }
   }
+  if (!tagOnReader) GeneratorNetworkForgetTag();
   taggerLastTagState = tagOnReader;
 }
 
 // 태그에서 읽어온 4바이트("GxPx" 형식의 그룹/플레이어 코드)를 문자열로 조립하고,
-// 서버(has2wifi.Receive)에 조회해 그 사용자의 역할(role: player/tagger/revival)을 받아온 뒤 분기 처리한다.
+// 역할 조회를 단일 네트워크 큐에 등록하고 검증된 응답(role: player/tagger/revival)을 적용한다.
 // - "MMMM" 태그는 스태프용 마스터 카드로, 태그되면 기기를 즉시 재부팅한다(디버깅/리셋용).
 // - role이 "player"인 경우에만 ptrRfidMode()를 호출해 실제 게임 진행(예: StartFinish)을 트리거한다.
 // - tagger/revival/그 외 값은 로그만 남기고 별도 동작은 하지 않는다.
@@ -232,7 +233,7 @@ void CheckingPlayers(uint8_t rfidData[32]) //어떤 카드가 들어왔는지 �
   if(tagUser == "MMMM"){  //스태프카드 초기화
     ESP.restart();
   }
-  has2wifi.Receive(tagUser);                        // 2. 술래인지, 플레이어인지 구분
+  if (!GeneratorNetworkTag(tagUser.c_str())) return; // Nonblocking role lookup/retry
   if((String)(const char*)tag["role"] == "player"){ // 3. 태그한 사용자가 플레이어고
     Serial.println("Player Tagged");
     ptrRfidMode();
@@ -271,18 +272,18 @@ void BatteryFinish()
     }
     if (!Mp3BatteryFinished()) return;
     if (!WireReadyForCompletion()) { EncoderDetach(); return; }
-    batteryFinishDone = true;
     BREADCRUMB("BatteryFinish:send");
     // 서버가 먼저 battery_max로 정한 경우(대시보드 강제 진행)는 이미 서버 상태이므로 다시 보내지 않는다 —
     // 같은 값을 또 보내면 서버가 배선 완료 이벤트/효과음을 한 번 더 낼 수 있다.
     if (!WireServerCompleted()) {
-      has2wifi.Send((String)(const char*)my["device_name"], "device_state", "battery_max"); //메인으로 전송
+      if (!GeneratorNetworkComplete("battery_max")) return;
       // 이 Send가 서버를 거쳐 그대로 되돌아오면(다음 폴링에서 device_state=="battery_max") DataChanged()가
       // 이걸 "새로 바뀐 값"으로 착각해 ActivateFunc()->BatteryFinish()를 또 호출하는 걸 막는다.
       // (has2wifi.Loop() 콜백 안에서 이 함수가 불린 경우 — 예: activate 재진입으로 바로 완충 판정된 경우 —
       // 이 중복 호출은 콜백 안에서 has2wifi.Send()를 재진입 호출하게 되어 와이파이 연결이 불안정해졌었다.)
       receiveMineOn = true;
     }
+    batteryFinishDone = true;
     Serial.println("Battery Finish Func!");
     // encoderValue/GameTimer 리셋도 최초 1회만 — tagger로 갔다가 battery_max로 되돌아와 이 함수가
     // 다시 불릴 때는 리셋하면 안 된다. tagger 중에도 GameTimer(wifi.ino)를 멈추지 않았으므로
@@ -316,14 +317,13 @@ void StartFinish()
   BREADCRUMB("StartFinish:start");
   if (!WireReadyForCompletion()) { EncoderDetach(); return; }
   Serial.println("StartFinish PTRFUNC");
+  if (!GeneratorNetworkComplete("repaired")) return;
   GameTimer.deleteTimer(gameTimerId);        //게임 타이머 종료3
   BlinkTimer.deleteTimer(blinkTimerId);
   Serial.println("Generator Fixed!");
   BREADCRUMB("StartFinish:send");
-  has2wifi.Send((String)(const char*)my["device_name"], "device_state", "repaired");
-  receiveMineOn = true;       // 서버 응답을 다시 폴링해서 아래 있는 device_state를 최신값으로 받아옴
-  BREADCRUMB("StartFinish:receiveMine");
-  has2wifi.ReceiveMine();
+  // The asynchronous completion transaction already confirmed this snapshot.
+  receiveMineOn = true;
   if ((String)(const char*)my["device_state"] == "repaired_all") {
     ptrRfidMode = WaitFunc;
     ptrCurrentMode = WaitFunc;
