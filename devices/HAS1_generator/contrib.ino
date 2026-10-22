@@ -55,8 +55,8 @@ void ContribBegin(const String &user, int cnt)
 // 세션이 열려 있지 않으면 아무 것도 하지 않으므로 호출부에서 따로 검사할 필요가 없다.
 //
 // 큐 접수 전 거절만 최대 네 건 보관한다. 전송에 착수한 이벤트는 응답이 없어도
-// 자동 재전송하지 않는다. 서버의 멱등 이벤트/게임 세대 검증 계약이 없으므로
-// 기본 빌드는 전송을 차단하고, 벤치 옵션으로만 기존 Situation API를 시험한다.
+// 자동 재전송하지 않는다. 기존 Situation API로 전송하며, 서버의 게임 세대
+// 검증이 없어 이미 전송한 이벤트의 지연 반영까지 취소할 수는 없다.
 void ContribEnd(int cnt)
 {
     if (starterContribUser.length() == 0) return;   // 열린 세션 없음

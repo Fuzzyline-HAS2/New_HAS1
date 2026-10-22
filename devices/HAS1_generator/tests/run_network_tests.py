@@ -10,6 +10,9 @@ JSON=Path(os.environ['ARDUINOJSON_INCLUDE'])
 network=(ROOT/'network.ino').read_text().replace('#include <esp_task_wdt.h>','')
 contrib=(ROOT/'contrib.ino').read_text()
 wifi=(ROOT/'wifi.ino').read_text()
+actual_activate=wifi[wifi.index('void ActivateFunc(void)'):wifi.index('// game_state == \"ready\"')].replace('void ActivateFunc(void)', 'void ProductionActivateFunc(void)')
+rfid=(ROOT/'rfid.ino').read_text()
+actual_finish=rfid[rfid.index('void BatteryFinish()'): ]
 actual_datachanged=wifi[wifi.index('JsonDocument cur;'):wifi.index('// 아무 동작도 하지 않는 대기 콜백.')].replace('void DataChanged()', 'void ProductionDataChanged()')
 wire=(ROOT/'wire_http.ino').read_text().replace('#include <HTTPClient.h>','').replace('#include <has2_http_body.h>','')
 prefix=r'''
@@ -62,7 +65,8 @@ void ProductionDataChanged();
 void DataChanged(){assert(!worker);++dataChanges;if(exerciseActualDataChanged){ ProductionDataChanged(); }}
 void WaitFunc(){}
 static int activations=0;
-void ActivateFunc(){++activations;}
+void ProductionActivateFunc();
+void ActivateFunc(){++activations;if(exerciseActualDataChanged)ProductionActivateFunc();}
 void SettingFunc(){}
 void ReadyFunc(){}
 void EncoderDetach(){}
@@ -94,8 +98,11 @@ bool starterLastTagState=false;
 void StarterActivate(){}
 static std::vector<std::string> diagnostics;
 void DiagnosticPrintf(const char *format,...){diagnostics.emplace_back(format);}
+static bool serverWireBypass=false;
+bool WireServerCompleted(){assert(!worker);return serverWireBypass;}
 static GeneratorWireState wireState;
-GeneratorWireState WireSnapshot(){return wireState;}
+static void (*duringWireSnapshot)()=nullptr;
+GeneratorWireState WireSnapshot(){auto value=wireState;if(duringWireSnapshot){auto hook=duringWireSnapshot;duringWireSnapshot=nullptr;hook();}return value;}
 static Has2BoundedTransport::Result nextReply;
 static void (*duringRequest)()=nullptr;
 static std::vector<std::string> paths;
@@ -113,12 +120,12 @@ Result get(const char*,uint16_t,const char *path,const Options &options){
 application_stubs=r'''
 namespace Has1BleBeacon {void setDeviceName(const char*){}}
 static int gameTimerDeletes=0;
-struct Timer {void deleteTimer(int){++gameTimerDeletes;}} GameTimer,BlinkTimer;
+struct Timer {void deleteTimer(int){++gameTimerDeletes;} int setInterval(unsigned,void(*)()){return 1;} bool isEnabled(int){return true;}} GameTimer,BlinkTimer;
 int gameTimerId=1,blinkTimerId=2,starterDecreaseAmount=1;
 bool starterTaggerActive=false;
 void (*ptrRfidMode)()=WaitFunc;
-const int BLUE=0,RED=1,YELLOW=2,STARTER=0,DEVICESTATE=1,CIRCUIT=2;
-int color[3]={0,1,2};
+const int BLUE=0,RED=1,YELLOW=2,GREEN=3,STARTER=0,DEVICESTATE=1,CIRCUIT=2;
+int color[4]={0,1,2,3};
 void WireObserveServerSnapshot(){}
 void UpdateBrightness(){}
 void LeftGenerator(){}
@@ -131,7 +138,22 @@ void WirePollMain(){}
 void NeoLightColor(int,int){}
 void WireResetTracking(){}
 void TaggerRfidLoop(){}
-void TaggerEnter(){}
+void TaggerEnter(){ptrCurrentMode=TaggerRfidLoop;}
+void BatteryFinish();void StartFinish();int StarterGaugeCnt();
+bool batteryFinishDone=false,batteryFinishAudioPlayed=false,starterRfidNeedsValidation=false;
+int displayedGaugeNeoCnt=-1,gameTimerCnt=0;unsigned gameTime=400;
+void GameTimerFunc(){}
+bool WireReadyForCompletion(){return serverWireBypass||wireState.qualified(now);}
+void WireAcceptServerCompletion(){serverWireBypass=true;}
+void BatteryPackSend(){}
+const int MAINPN532=0;
+struct Nfc{void SAMConfig(){}} nfc[1];
+void RfidLoopMain(){}
+void BlinkTimerStart(int,int){}
+void Mp3BatteryStart(){}
+bool Mp3BatteryFinished(){return true;}
+void EncoderNeopixelOn(int){}
+
 '''
 tests=r'''
 static void reply(const char *json,int status=200){nextReply=Has2BoundedTransport::Result{};nextReply.status=status;nextReply.payload=json;nextReply.timings.totalMs=100;}
@@ -145,7 +167,8 @@ static int used(){
  return count;
 }
 static void reset(){
- now=100;online=true;worker=false;failWatchdog=false;requestCalls=restarts=dataChanges=otaChecks=0;depth=0;
+ now=100;serverWireBypass=false;online=true;worker=false;failWatchdog=false;requestCalls=restarts=dataChanges=otaChecks=0;depth=0;
+ batteryFinishDone=batteryFinishAudioPlayed=starterRfidNeedsValidation=false;displayedGaugeNeoCnt=-1;
  exerciseActualDataChanged=false;receiveMineOn=false;ptrCurrentMode=WaitFunc;cur.clear();gameTimerDeletes=0;
  paths.clear();diagnostics.clear();my.clear();tag.clear();shift_machine.clear();
  for(auto &s:networkSlots){ s=NetworkSlot{}; }
@@ -155,12 +178,14 @@ static void reset(){
  networkVersionSent=true;networkWatchdogPending=networkWatchdogRequested=false;networkWasConnected=true;
  networkMaintenance=networkMaintenanceLegacy=false;networkRefreshAt=0;networkIdentity[0]=networkGame[0]=0;
  pendingContributionCount=0;starterContribUser="";
- networkCompletionGeneration=0;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=false;
+ networkCompletionGeneration=0;networkCompletionToken=1;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
+ duringWireSnapshot=nullptr;
+ networkCompletionSince=networkCompletionWarningAt=0;
  GeneratorNetworkForgetTag();wireHttpPending=wireHttpDone=false;wireHttpRequestId=0;
  wireState.reset();for(int i=0;i<=10;++i){ wireState.sampleMask(i*100,0); }
  my["device_name"]="TG";my["game_state"]="activate";my["device_state"]="activate";
  strcpy(networkIdentity,"TG");strcpy(networkGame,"activate");
- reply("{}");
+ now=1100;reply("{}");
 }
 static void pass(const char *text){printf("PASS %s\n",text);}
 int main(){
@@ -237,12 +262,8 @@ int main(){
  pass("queued wire count coalesces to the latest qualified count");
 
  reset();
-#if GENERATOR_ALLOW_UNFENCED_COMPLETION
  assert(GeneratorNetworkContribution("G1P1",2));
-#else
- assert(!GeneratorNetworkContribution("G1P1",2));
- NetworkSubmit(NetworkKind::Contribution,"/test",true,GeneratorNetworkGeneration(),0,NetworkReportResult);
-#endif
+
  GeneratorNetworkInvalidateGame();workerTurn();assert(requestCalls==0);mainTurn();
  pass("game/epoch invalidation rejects queued mutation before send");
 
@@ -273,13 +294,12 @@ int main(){
  pass("worker watchdog registration failure cannot leave an accepting dead queue");
 
  reset();
-#if GENERATOR_ALLOW_UNFENCED_COMPLETION
  assert(!GeneratorNetworkComplete("battery_max"));assert(used()==1);
  nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();
  assert(used()==1); // Main loop schedules verification even without another game callback.
  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();
  assert(GeneratorNetworkComplete("battery_max"));assert(requestCalls==2);
- pass("bench-only completion verifies uncertain mutation and never blindly repeats Send");
+ pass("legacy completion verifies uncertain mutation and never blindly repeats Send");
  reset();my["device_state"]="battery_max";my["left_generator"]="3";cur.set(my);
  ptrCurrentMode=StarterActivate;exerciseActualDataChanged=true;encoderValue=28;tag["role"]="player";
  assert(!GeneratorNetworkComplete("repaired"));
@@ -289,17 +309,101 @@ int main(){
  workerTurn();mainTurn();assert(ptrCurrentMode==WaitFunc&&gameTimerDeletes>=2&&!receiveMineOn);
  assert(!strcmp(cur["device_state"].as<const char*>(),"repaired"));assert(requestCalls==2);
  pass("actual DataChanged completes repaired after card removal and gauge decay without StartFinish reentry");
-#else
- for(int i=0;i<1000;++i) {assert(!GeneratorNetworkComplete("battery_max"));}
- assert(requestCalls==0&&used()==0&&!diagnostics.empty());
- pass("default deployment gate rejects unfenced completion without silently sending");
-#endif
+
+
+ reset();assert(GeneratorNetworkContribution("G1P1",3));reply("{}");workerTurn();mainTurn();
+ assert(requestCalls==1&&paths[0].find("request=Situation")!=std::string::npos&&paths[0].find("G1P1%3A3")!=std::string::npos);
+ for(int i=0;i<20;++i){mainTurn();workerTurn();}assert(requestCalls==1);
+ pass("default build sends legacy contribution once without a background retry");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{\"success\":true}");workerTurn();mainTurn();
+ assert(!networkCompletionConfirmed);reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();
+ assert(GeneratorNetworkComplete("battery_max"));assert(!GeneratorNetworkComplete("repaired"));reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\"}");workerTurn();mainTurn();
+ assert(GeneratorNetworkComplete("repaired")&&requestCalls==4);
+ pass("normal legacy battery then repair each sends once and confirms by fresh snapshot");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();
+ for(int i=0;i<18;++i){reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();now+=2100;mainTurn();}
+ int sends=0;for(const auto &path:paths){if(path.find("request=Send")!=std::string::npos){++sends;}}
+ bool warning=false;for(const auto &line:diagnostics){if(line.find("staff recovery required")!=std::string::npos){warning=true;}}
+ assert(sends==1&&!networkCompletionConfirmed&&warning);
+ pass("unapplied uncertain completion is read-only retried with bounded staff-recovery warning");
+
+ reset();assert(!GeneratorNetworkComplete("battery_max"));for(int i=1;i<=10;++i){wireState.sampleMask(now+i*100,1);}workerTurn();mainTurn();
+ assert(requestCalls==0&&!networkCompletionSent);
+ pass("wire change cancels queued completion before transmission");
+ reset();serverWireBypass=true;wireState.reset();assert(!GeneratorNetworkComplete("repaired"));workerTurn();assert(requestCalls==1);
+ pass("staff forced completion retains explicit physical gate bypass");
+
+ reset();assert(!GeneratorNetworkComplete("battery_max"));duringWireSnapshot=[](){++networkGeneration;};workerTurn();mainTurn();
+ assert(requestCalls==0);
+ pass("game cancellation between preflight and dispatch wins under the final dispatch lock");
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));duringRequest=[](){++networkGeneration;};workerTurn();mainTurn();
+ assert(requestCalls==1&&!networkCompletionConfirmed);for(int i=0;i<20;++i){mainTurn();workerTurn();}assert(requestCalls==1);
+ pass("game change after dispatch discards outcome and cannot trigger automatic mutation retry");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
+ NetworkRequest oldVerify={};for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Verify){oldVerify=slot.request;}}
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"starter_finish\"}");assert(NetworkApplySnapshot(nextReply,false));
+ assert(!GeneratorNetworkComplete("repaired"));uint32_t token=networkCompletionToken;
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");NetworkCompletionVerifyResult(oldVerify,nextReply,false);
+ assert(networkCompletionToken==token&&!strcmp(networkCompletion,"repaired")&&!strcmp(my["device_state"]|"","starter_finish"));
+ pass("authoritative advancement releases prior stage and late old verify cannot overwrite the next operation");
+
+ reset();assert(!GeneratorNetworkComplete("battery_max"));reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired_all\"}");
+ assert(NetworkApplySnapshot(nextReply,false));workerTurn();mainTurn();assert(requestCalls==0);
+ pass("authoritative terminal state cancels an obsolete queued completion");
+ reset();serverWireBypass=true;my["device_state"]="battery_max";assert(!GeneratorNetworkComplete("repaired"));
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\"}");assert(NetworkApplySnapshot(nextReply,false));workerTurn();mainTurn();assert(requestCalls==0&&!networkCompletionSent);
+ my["device_state"]="starter_finish";assert(!GeneratorNetworkComplete("repaired"));
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"starter_finish\"}");assert(NetworkApplySnapshot(nextReply,false));workerTurn();assert(requestCalls==1);
+ pass("known unsent cancellation recaptures current state before a valid retry");
+
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"WRONG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();assert(!networkCompletionConfirmed&&!strcmp(my["device_name"]|"","TG"));
+ now+=2100;mainTurn();reply("{\"device_name\":\"TG\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();assert(!networkCompletionConfirmed);
+ pass("wrong-device and malformed completion snapshots cannot confirm or replace current state");
+
+ reset();for(int i=0;i<7;++i){assert(NetworkSubmit(NetworkKind::Tag,"/filler",false,0,networkTagToken,nullptr));}
+ assert(!GeneratorNetworkComplete("battery_max")&&!networkCompletionSent);reply("{}");workerTurn();mainTurn();
+ assert(!GeneratorNetworkComplete("battery_max")&&networkCompletionSent);for(int i=0;i<100;++i){assert(!GeneratorNetworkComplete("battery_max"));}
+ int completions=0;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Completion){++completions;}}
+ assert(completions==1);
+ pass("queue-full rejection may retry enqueue but never duplicates an accepted completion");
+
+ reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");
+ assert(NetworkApplySnapshot(nextReply,false));assert(activations==0&&networkCompletionConfirmed&&!receiveMineOn);
+ pass("ordinary refresh of own dispatched battery echo cannot masquerade as staff override");
+ reset();my["device_state"]="battery_max";my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=StarterActivate;receiveMineOn=true;
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");
+ assert(NetworkApplySnapshot(nextReply,false));assert(ptrCurrentMode==WaitFunc&&!receiveMineOn&&gameTimerDeletes>=2);
+ pass("ordinary repaired refresh cannot be swallowed by a stale battery echo guard");
+
+ reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=BatteryFinish;
+ BatteryFinish();assert(!batteryFinishDone&&networkCompletionSent);
+ reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");workerTurn();mainTurn();
+ BatteryFinish();assert(batteryFinishDone&&ptrCurrentMode==StarterActivate&&!serverWireBypass);
+ StartFinish();reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");workerTurn();mainTurn();
+ assert(ptrCurrentMode==WaitFunc&&networkCompletionConfirmed&&requestCalls==4&&!serverWireBypass);
+ pass("actual BatteryFinish and StartFinish complete legacy gameplay without granting staff wire bypass");
+
+ reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;
+ assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");workerTurn();mainTurn();batteryFinishDone=true;
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\",\"left_generator\":\"3\"}");assert(NetworkApplySnapshot(nextReply,false));assert(ptrCurrentMode==TaggerRfidLoop);
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");assert(NetworkApplySnapshot(nextReply,false));
+ assert(ptrCurrentMode==BatteryFinish&&!serverWireBypass);BatteryFinish();assert(ptrCurrentMode==StarterActivate);
+ pass("confirmed local battery transaction cannot swallow later authoritative tagger return");
  return 0;
 }
 '''
 with tempfile.TemporaryDirectory(prefix='generator-network-test-') as tmp:
- p=Path(tmp);src=p/'test.cpp';src.write_text(prefix+'\n'+application_stubs+'\n'+actual_datachanged+'\n'+network+'\n'+wire+'\n'+contrib+'\n'+tests)
- for mode in (0,1):
-  exe=p/f'test-{mode}'
-  subprocess.run([os.environ.get('CXX','c++'),'-std=c++11','-Wall','-Wextra','-Werror','-Wno-unused-function','-fsanitize=address,undefined','-fno-omit-frame-pointer',f'-DGENERATOR_ALLOW_UNFENCED_COMPLETION={mode}','-I',str(ROOT),'-I',str(LIB),'-I',str(JSON),str(src),'-o',str(exe)],check=True)
-  subprocess.run([str(exe)],check=True)
+ p=Path(tmp);src=p/'test.cpp';src.write_text(prefix+'\n'+application_stubs+'\n'+actual_datachanged+'\n'+actual_activate+'\n'+actual_finish+'\n'+network+'\n'+wire+'\n'+contrib+'\n'+tests)
+ exe=p/'test'
+ subprocess.run([os.environ.get('CXX','c++'),'-std=c++11','-Wall','-Wextra','-Werror','-Wno-unused-function','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I',str(ROOT),'-I',str(LIB),'-I',str(JSON),str(src),'-o',str(exe)],check=True)
+ subprocess.run([str(exe)],check=True)

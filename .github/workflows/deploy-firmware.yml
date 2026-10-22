@@ -223,7 +223,6 @@ jobs:
           esac
           if [[ "$TARGET_DEVICE" == "HAS1_generator" ]]; then
             EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/DFRobotDFPlayerMini")
-            EXTRA_LIBRARIES+=(--build-property "compiler.cpp.extra_flags=-DGENERATOR_PRODUCTION_BUILD")
           fi
           arduino-cli compile --fqbn "$FQBN" "${EXTRA_LIBRARIES[@]}" --output-dir "$RUNNER_TEMP/build-out" "$DEVICE_DIR"
 

@@ -74,11 +74,3 @@ with tempfile.TemporaryDirectory(prefix='generator-poll-test-') as folder:
                     '-Werror', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                     '-I', str(ROOT), str(d / 'test.cpp'), '-o', str(d / 'test')], check=True)
     subprocess.run([str(d / 'test')], check=True)
-    gate = [os.environ.get('CXX', 'c++'), '-x', 'c++', '-fsyntax-only',
-            '-include', str(ROOT / 'network_release_gate.h'), '-']
-    subprocess.run(gate, input='', text=True, check=True)
-    for flags in [['-DGENERATOR_PRODUCTION_BUILD'],
-                  ['-DGENERATOR_PRODUCTION_BUILD', '-DGENERATOR_ALLOW_UNFENCED_COMPLETION=1']]:
-        result = subprocess.run(gate + flags, input='', text=True, capture_output=True)
-        assert result.returncode != 0 and 'not deployable' in result.stderr
-    print('PASS production build is blocked even with the legacy bench flag')

@@ -1,23 +1,27 @@
-# Generator network isolation — development build
+# Generator networking with the existing server
 
-## Release status
+## Compatibility and release status
 
-**Do not install this development build in the store.** The inspected server has
-no game-generation check for `Send device_state=battery_max/repaired`, and a
-duplicate `repaired` can decrement `left_generator` again. Contributions also use
-the session at arrival rather than the originating game.
+Completion and contribution transmission are enabled in the normal build using
+existing `Send device_state=battery_max/repaired` and `Situation generator_gauge`
+requests. No new server endpoint, generation parameter or capability is required.
+The earlier development-only transmission block and deliberate production-build
+error have been removed at the user's request.
 
-Completion and contribution transmission are disabled by default until that
-server contract is implemented and verified. Inputs, wire CAS, polling, local
-diagnostics and server-directed state transitions can be tested. A normal local
-game cannot finish with this gate enabled. `GENERATOR_ALLOW_UNFENCED_COMPLETION=1`
-exists only for controlled legacy-protocol tests; it is not a production fix.
+Completion allows one transport attempt per local operation, followed by
+ReceiveMine state checks. Enqueue failure or definite cancellation before
+dispatch can be retried after fresh gameplay checks. After dispatch, a timeout,
+HTTP failure or missing confirmation does not cause an automatic repeat of that Send. HTTP 200 by itself is not completion. Reads
+remain retryable and do not block gameplay input or the network polling loop.
 
-The deployment workflow defines `GENERATOR_PRODUCTION_BUILD`, and
-`network_release_gate.h` deliberately rejects that build, including when the
-legacy bench flag is enabled. Removing the release gate requires server contract
-implementation, integration evidence and hardware validation. Firmware version
-was not incremented, and no firmware release was published.
+Contributions retain a bounded buffer only until queue acceptance; uncertain
+transmission is not retried automatically. This avoids introducing blind
+repetition into APIs that can apply duplicates. It is not durable exactly-once
+delivery across reboot, and it can lose an event when a request never arrives.
+
+Server changes are not a prerequisite for this compatibility version. Field
+validation is still needed before claiming that the resets are resolved. No
+firmware release or installation has been performed by this change.
 
 ## What changed
 
@@ -45,7 +49,7 @@ was not incremented, and no firmware release was published.
   changed physical/game generations invalidate old work/results.
 - Tag lookup is asynchronous and retryable while a card remains present. Old
   card results cannot approve a replacement card. Completion waits for server
-  confirmation in the bench path rather than assuming a queued Send succeeded.
+  confirmation rather than assuming a queued Send succeeded.
 - External Google Sheet uploads are removed from boot/game execution. RTC/Telnet
   diagnostics and queued local crash reports remain. A full queue leaves the
   initial report pending; transport failure is visible without deleting retained
@@ -79,13 +83,19 @@ Local request generations reject queued work and stale responses. They cannot
 undo a mutation already sent to the server. The current wire CAS protects its
 own writes; it does not prove that completion or contribution APIs are protected.
 
-The eventual server contract must verify the originating game generation and
-handle duplicate completion/contribution IDs atomically with its state changes.
-It must reject an old game's operation even after a new game becomes active.
-HTTP 200 alone is not completion: `success:true, ignored:STALE_GENERATION` means
-the operation was not applied. An explicit capability/version and real endpoint
-tests are required before the production gate is removed. Merely appending `gen`
-to a legacy URL is insufficient because old code can ignore unknown parameters.
+The existing server does not check a game generation for completion or
+contributions; duplicate `repaired` can decrement its counter again. A request
+already sent can still arrive during the next game despite local cancellation.
+The existing APIs cannot resolve that case fully on the client. Polling can also
+miss a complete reset/start transition while the device is offline.
+
+If a completion request never applied, the device keeps checking the state but
+does not repeat the mutation automatically. Unconfirmed completion is logged at
+a bounded rate after 30 seconds. Staff may need to confirm/correct the
+state in the existing OS. A future server generation/idempotency contract can
+remove this tradeoff; merely appending an unsupported `gen` parameter cannot.
+An ignored/error response, including HTTP 200 with an application-level rejection,
+must not be interpreted as proof of completion.
 
 Existing input, audio and LED code can have their own bounded delays. Moving
 network waits off main does not establish a universal maximum main-loop duration.
@@ -114,24 +124,31 @@ Required hardware checks before release: delayed/partial/no server responses,
 server and AP outage/recovery, wire changes while requests are pending, tag swap,
 new-game transition during an in-flight mutation, explicit employee reboot,
 OTA maintenance, repeated startup and worker stack/heap/socket high-water marks.
-Run the obsolete-completion and duplicate-`repaired` cases against the updated
-server, including lost replies after a committed mutation.
+With the existing server, test successful completion, lost replies after a
+committed mutation, requests that never applied, and staff recovery. Observe
+cross-game delayed requests as a remaining limitation; this firmware cannot
+guarantee that the server rejects them.
 
-## Recorded verification (2026-10-22)
+## Verification (2026-10-22)
 
-Independent review resolved the scan-buffer race, offline maintenance drain,
+Independent review of the network isolation resolved the scan-buffer race, offline maintenance drain,
 stale contribution session, epoch restoration of completed states, tag queue
-exhaustion and completion verification after card removal.
+exhaustion and completion verification after card removal. Compatibility review
+also fixed operation-result mixups, completion suppression by a prior echo flag,
+queued writes overriding newer server states, and cancellation racing dispatch.
+The host suite verifies normal completion, lost ACK, unchanged/error/ignored
+responses, same-stage re-entry, definite pre-dispatch retry, staff override and
+tagged-stage restoration without introducing automatic mutation retries.
 
 | Check | Result |
 | --- | --- |
 | Bounded transport, including real loopback sockets | 48 cases passed, ASan/UBSan |
-| Network worker/facade, wire and contribution integration | Default 20 / legacy bench 21 groups passed, ASan/UBSan; includes actual `DataChanged` |
+| Existing-server worker/completion integration | 37 groups passed, ASan/UBSan; includes actual `DataChanged`, `ActivateFunc`, `BatteryFinish` and `StartFinish` |
 | Wi-Fi | 13 controller cases plus scan barrier, missing-event fault, callback concurrency and blocking-path guards passed |
-| Wire / polling and release gate | 36 / 5 groups passed |
+| Wire / polling and crash reporting | 36 / 4 groups passed |
 | Diagnostic / Telnet / Telnet lifecycle | 10 / 14 / 15 groups passed |
 | DFPlayer / NeoPixel / legacy HTTP / tagger | 20 / 8 / 9 groups and tagger suite passed |
-| TTGO T1, Arduino-ESP32 3.3.11 | Compile passed: 1,335,633 bytes flash (67%), 90,388 bytes globals (27%) |
+| TTGO T1, Arduino-ESP32 3.3.11 | Compile passed: 1,339,533 bytes flash (68%), 90,532 bytes globals (27%) |
 
 The compile used a placeholder signing secret and is not an installable release.
 Build memory figures do not measure runtime heap or worker stack headroom.

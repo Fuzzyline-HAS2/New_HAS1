@@ -8,20 +8,19 @@ enum class NetworkDiscard:uint8_t {None,Cancelled,TagChanged,GameChanged,WireCha
 enum class NetworkKind : uint8_t { Poll, Refresh, Tag, Wire, Completion, Verify, Contribution, Report, Watchdog };
 struct NetworkRequest {
   char path[768];
-  uint32_t id, generation, enqueued, started, token;
+  uint32_t id, generation, enqueued, started, token, wireGeneration;
   int expectedWireCount;
   NetworkKind kind;
   bool mutation;
   bool cancelled;
+  bool dispatched;
+  bool wireBypass;
   void (*callback)(const NetworkRequest &,const Has2BoundedTransport::Result &,bool);
 };
 
-// Unfenced legacy completion can modify a newer server game after a timeout.
-// Deployment requires an epoch-checked server completion contract. Bench-only
-// opt-in retains legacy Send semantics; it does not solve that server race.
-#ifndef GENERATOR_ALLOW_UNFENCED_COMPLETION
-#define GENERATOR_ALLOW_UNFENCED_COMPLETION 0
-#endif
+// Existing Send/Situation server API. A timeout is ambiguous: queued work can
+// be cancelled locally, but an already dispatched mutation cannot be fenced by
+// the legacy server. Never automatically resend uncertain mutations.
 void GeneratorNetworkBegin();
 void GeneratorNetworkLoop();
 bool GeneratorNetworkRequestPoll();

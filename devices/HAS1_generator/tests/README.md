@@ -143,10 +143,10 @@ replay larger than the control buffer. Wire behavior tests also reject diagnosti
 calls made while the input lock is held. See `../DIAGNOSTICS.md` for log meanings.
 
 
-## Isolated networking and release gate
+## Isolated networking and existing-server compatibility
 
-See [network isolation](../NETWORK_ISOLATION.md) for behavior and the explicit
-production deployment block pending the server completion/contribution contract.
+See [network isolation](../NETWORK_ISOLATION.md) for the existing-server
+completion policy, automatic retry limits and remaining server-side risks.
 
 ```sh
 python3 devices/HAS1_generator/tests/run_poll_schedule_tests.py
@@ -158,7 +158,7 @@ ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/test
 The polling/boot suite verifies missed ticks are skipped, completion-relative
 backoff, rollover, queue rejection and retained crash-report pending state without
 an external upload. The network suite compiles actual worker/facade code with
-controlled task scheduling in both default-gated and explicit legacy bench modes.
+controlled task scheduling and the normal existing-server completion path.
 The transport suite compiles the actual protocol engine/socket adapter with
 sanitizers and a real loopback peer. These do not replace hardware stack/timing,
-AP outage/recovery, OTA and updated-server integration validation.
+AP outage/recovery, OTA and existing-server integration validation.

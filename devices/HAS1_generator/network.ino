@@ -34,6 +34,9 @@ static char networkTagKey[16]={};
 static uint32_t networkTagToken=1,networkTagRequest=0,networkTagRetryAt=0;
 static bool networkTagReady=false;
 static uint8_t networkTagFailures=0;
+static uint32_t networkCompletionToken=1;
+static void NetworkCompletionObserveSnapshot();
+static bool NetworkOwnBatteryEcho(const JsonDocument &snapshot);
 static String NetworkEncode(const char *text) {
   static const char hex[]="0123456789ABCDEF";
   String out;
@@ -49,13 +52,13 @@ uint32_t GeneratorNetworkGeneration() {
   portENTER_CRITICAL(&networkMux);const uint32_t result=networkGeneration;portEXIT_CRITICAL(&networkMux);return result;
 }
 static uint32_t NetworkSubmit(NetworkKind kind,const String &path,bool mutation,uint32_t generation,uint32_t token,
-    void (*callback)(const NetworkRequest &,const Has2BoundedTransport::Result &,bool),int expectedWireCount=-1) {
+    void (*callback)(const NetworkRequest &,const Has2BoundedTransport::Result &,bool),int expectedWireCount=-1,uint32_t wireGeneration=0,bool wireBypass=false) {
   if (networkMaintenance&&kind!=NetworkKind::Report){ return 0; }
   if (path.length()>=sizeof(NetworkRequest::path)) { return 0; }
   NetworkRequest request={};
   memcpy(request.path,path.c_str(),path.length()+1);
   request.kind=kind;request.mutation=mutation;request.generation=generation;request.token=token;
-  request.enqueued=millis();request.callback=callback;request.expectedWireCount=expectedWireCount;
+  request.enqueued=millis();request.callback=callback;request.expectedWireCount=expectedWireCount;request.wireGeneration=wireGeneration;request.wireBypass=wireBypass;
   portENTER_CRITICAL(&networkMux);
   unsigned used=0;for (const auto &slot:networkSlots) if(slot.occupied){ ++used; }
   // Leave capacity for heartbeat/state repair when optional reports fill the queue.
@@ -80,6 +83,15 @@ static NetworkDiscard NetworkDiscardReason(const NetworkRequest &request) {
     if(request.token!=token){ return NetworkDiscard::TagChanged; }
   }
   if(request.generation&&request.generation!=GeneratorNetworkGeneration()){ return NetworkDiscard::GameChanged; }
+  if(request.kind==NetworkKind::Completion||request.kind==NetworkKind::Verify) {
+    portENTER_CRITICAL(&networkMux);const uint32_t token=networkCompletionToken;portEXIT_CRITICAL(&networkMux);
+    if(request.token!=token){ return NetworkDiscard::Cancelled; }
+  }
+  if(request.kind==NetworkKind::Completion&&!request.dispatched&&!request.wireBypass) {
+    const GeneratorWireState wire=WireSnapshot();
+    if(request.wireGeneration!=wire.generation()){ return NetworkDiscard::WireChanged; }
+    if(!wire.qualified(millis())||wire.stable()!=request.expectedWireCount){ return NetworkDiscard::WireUnstable; }
+  }
   if(request.kind==NetworkKind::Wire) {
     const GeneratorWireState wire=WireSnapshot();
     if(request.token!=wire.generation()){ return NetworkDiscard::WireChanged; }
@@ -162,6 +174,19 @@ static void NetworkWorker(void *) {
     Has2BoundedTransport::Result result;
     NetworkDiscard discard=NetworkDiscardReason(request);
     if(discard==NetworkDiscard::None&&!request.mutation&&uint32_t(millis()-request.enqueued)>kNetworkReadLifetime){ discard=NetworkDiscard::QueueExpired; }
+    if(discard==NetworkDiscard::None) {
+      // This lock is the dispatch boundary: a cancellation published before it
+      // must win. Once dispatched is published, the outcome is conservatively
+      // uncertain even if a later local cancellation arrives before socket I/O.
+      portENTER_CRITICAL(&networkMux);
+      const NetworkRequest &current=networkSlots[selected].request;
+      if(current.cancelled){ discard=NetworkDiscard::Cancelled; }
+      else if(request.generation&&request.generation!=networkGeneration){ discard=NetworkDiscard::GameChanged; }
+      else if(request.kind==NetworkKind::Tag&&request.token!=networkTagToken){ discard=NetworkDiscard::TagChanged; }
+      else if((request.kind==NetworkKind::Completion||request.kind==NetworkKind::Verify)&&request.token!=networkCompletionToken){ discard=NetworkDiscard::Cancelled; }
+      else {request.dispatched=true;networkSlots[selected].request.dispatched=true;}
+      portEXIT_CRITICAL(&networkMux);
+    }
     const bool cancelled=discard!=NetworkDiscard::None;
     if(!cancelled) {
       Has2BoundedTransport::Options options;
@@ -195,6 +220,7 @@ static bool NetworkApplySnapshot(const Has2BoundedTransport::Result &result,bool
   if(!identity[0]||strlen(identity)>=sizeof(networkIdentity)){ return false; }
   const bool unchangedState=!strcmp(candidate["game_state"] | "",my["game_state"] | "")&&
       !strcmp(candidate["device_state"] | "",my["device_state"] | "");
+  localCompletion=localCompletion||NetworkOwnBatteryEcho(candidate);
   if(!has2wifi.ApplyNetworkSnapshot("ReceiveMine",result.payload)){ return false; }
   NetworkIdentityChanged();networkBootReady=true;
   if(!unchangedState||networkResetCyclePending) {
@@ -202,7 +228,7 @@ static bool NetworkApplySnapshot(const Has2BoundedTransport::Result &result,bool
     // generation deliberately discards the prior session in ContribEnd.
     ContribEnd(starterContribLastCnt);starterLastTagState=false;
   }
-  if(localCompletion){ receiveMineOn=true; }
+  receiveMineOn=localCompletion;
   DataChanged();
   if(networkResetCyclePending) {
     networkResetCyclePending=false;
@@ -214,6 +240,7 @@ static bool NetworkApplySnapshot(const Has2BoundedTransport::Result &result,bool
       else if(!strcmp(game,"ready")){ ReadyFunc(); }
     }
   }
+  NetworkCompletionObserveSnapshot();
   if(!strcmp(my["device_state"] | "", "update")){ GeneratorNetworkRequestMaintenance(true); }
   return true;
 }
@@ -279,11 +306,7 @@ bool GeneratorNetworkSend(const char *device,const char *column,const char *valu
 }
 bool GeneratorNetworkContribution(const char *user,int delta) {
   if(!networkBootReady||!user||delta<1){ return false; }
-#if !GENERATOR_ALLOW_UNFENCED_COMPLETION
-  static uint32_t warned=0;
-  if(warned!=GeneratorNetworkGeneration()){warned=GeneratorNetworkGeneration();DiagnosticPrintf("[NET] CONTRIBUTION BLOCKED: server epoch-checked event contract required\r\n");}
-  return false;
-#endif
+
   String value=String(user)+":"+String(delta);
   String path="/has2.php?request=Situation&table=generator_gauge&key="+NetworkEncode(my["device_name"]|"")+"&value="+NetworkEncode(value.c_str());
   return NetworkSubmit(NetworkKind::Contribution,path,true,GeneratorNetworkGeneration(),0,NetworkReportResult)!=0;
@@ -314,58 +337,129 @@ bool GeneratorNetworkTag(const char *user) {
   }
   return false;
 }
-static char networkCompletion[24]={};
+static char networkCompletion[24]={},networkCompletionDevice[32]={},networkCompletionStartState[24]={};
 static uint32_t networkCompletionGeneration=0,networkCompletionRetryAt=0;
-static bool networkCompletionSent=false,networkCompletionVerify=false,networkCompletionConfirmed=false;
+static uint32_t networkCompletionSince=0,networkCompletionWarningAt=0;
+static bool networkCompletionSent=false,networkCompletionVerify=false,networkCompletionConfirmed=false,networkCompletionSuperseded=false,networkCompletionDispatched=false;
+static bool NetworkOwnBatteryEcho(const JsonDocument &snapshot) {
+  if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||networkCompletionGeneration!=GeneratorNetworkGeneration()||strcmp(networkCompletion,"battery_max")||
+      strcmp(snapshot["device_name"]|"",networkCompletionDevice)||strcmp(snapshot["game_state"]|"","activate")||strcmp(snapshot["device_state"]|"","battery_max")){ return false; }
+  bool dispatched=networkCompletionDispatched;
+  portENTER_CRITICAL(&networkMux);
+  for(const auto &slot:networkSlots) {
+    if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&slot.request.token==networkCompletionToken&&slot.request.dispatched){ dispatched=true; }
+  }
+  portEXIT_CRITICAL(&networkMux);
+  return dispatched;
+}
+static bool NetworkCompletionOwns(const NetworkRequest &request) {
+  return request.generation==networkCompletionGeneration&&request.token==networkCompletionToken;
+}
+static void NetworkCompletionObserveSnapshot() {
+  if(!networkCompletionSent||networkCompletionGeneration!=GeneratorNetworkGeneration()||
+      strcmp(my["device_name"]|"",networkCompletionDevice)||strcmp(my["game_state"]|"","activate")){ return; }
+  const char *state=my["device_state"]|"";
+  const bool wasResolved=networkCompletionConfirmed||networkCompletionSuperseded;
+  if(!strcmp(state,networkCompletion)||(!strcmp(networkCompletion,"repaired")&&!strcmp(state,"repaired_all"))) {
+    networkCompletionConfirmed=true;
+  } else if(!strcmp(networkCompletion,"battery_max")&&
+      (!strcmp(state,"starter_finish")||!strcmp(state,"repaired")||!strcmp(state,"repaired_all"))) {
+    // A staff command or another fresh snapshot already advanced this stage.
+    // Do not return battery completion to the caller and rewind local gameplay.
+    networkCompletionSuperseded=true;
+  }
+  bool cancelQueued=false;
+  portENTER_CRITICAL(&networkMux);
+  if(strcmp(state,networkCompletionStartState)) {
+    for(auto &slot:networkSlots) {
+      if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&
+          slot.request.token==networkCompletionToken&&!slot.request.dispatched) {
+        slot.request.cancelled=true;cancelQueued=true;
+      }
+    }
+  }
+  if(cancelQueued||(!wasResolved&&(networkCompletionConfirmed||networkCompletionSuperseded))) {
+    ++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }
+  }
+  portEXIT_CRITICAL(&networkMux);
+  if(cancelQueued&&!networkCompletionConfirmed&&!networkCompletionSuperseded) {
+    networkCompletionSent=false;networkCompletionVerify=false;
+    DiagnosticPrintf("[NET] queued completion cancelled after authoritative state override\r\n");
+  }
+}
 static void NetworkCompletionVerifyResult(const NetworkRequest &request,const Has2BoundedTransport::Result &result,bool cancelled) {
-  if(request.generation!=networkCompletionGeneration){ return; }
+  if(!NetworkCompletionOwns(request)){ return; }
   networkCompletionVerify=false;networkCompletionRetryAt=millis()+2000;
   if(!NetworkOk(result,cancelled)){ return; }
-  JsonDocument snapshot;if(deserializeJson(snapshot,result.payload)){ return; }
+  JsonDocument snapshot;
+  if(deserializeJson(snapshot,result.payload)||!snapshot["device_name"].is<const char*>()||
+      !snapshot["game_state"].is<const char*>()||!snapshot["device_state"].is<const char*>()||
+      strcmp(snapshot["device_name"]|"",networkCompletionDevice)){ return; }
   const char *state=snapshot["device_state"]|"";
   const bool match=!strcmp(state,networkCompletion)||(!strcmp(networkCompletion,"repaired")&&!strcmp(state,"repaired_all"));
   const bool battery=!strcmp(networkCompletion,"battery_max");
   if(match&&!battery){ receiveMineOn=false; }
-  // Repair confirmation is authoritative even if the card was removed or its
-  // gauge decayed while waiting. Apply its normal DataChanged transition now.
-  if(NetworkApplySnapshot(result,cancelled,match&&battery)&&match&&request.generation==GeneratorNetworkGeneration()){ networkCompletionConfirmed=true; }
+  // Repair confirmation remains authoritative after card removal/gauge decay.
+  NetworkApplySnapshot(result,cancelled,match&&battery);
 }
-static void NetworkCompletionSendResult(const NetworkRequest &request,const Has2BoundedTransport::Result &,bool) {
-  if(request.generation!=networkCompletionGeneration){ return; }
-  // Never repeat an uncertain legacy mutation. Verify actual state instead.
+static void NetworkCompletionSendResult(const NetworkRequest &request,const Has2BoundedTransport::Result &,bool cancelled) {
+  if(!NetworkCompletionOwns(request)){ return; }
+  if(cancelled&&!request.dispatched) {
+    // Definite pre-dispatch cancellation has no server side effect. A fresh
+    // gameplay completion check may enqueue again once its prerequisites hold.
+    networkCompletionSent=false;networkCompletionVerify=false;
+    portENTER_CRITICAL(&networkMux);++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }portEXIT_CRITICAL(&networkMux);
+    return;
+  }
+  networkCompletionDispatched=request.dispatched;
+  // HTTP 200 alone is not proof of an applied mutation. Always read actual state.
   networkCompletionRetryAt=millis();
 }
 static void NetworkCompletionService() {
-#if GENERATOR_ALLOW_UNFENCED_COMPLETION
-  if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionVerify||
-      networkCompletionGeneration!=GeneratorNetworkGeneration()||int32_t(millis()-networkCompletionRetryAt)<0){ return; }
+  if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||
+      networkCompletionGeneration!=GeneratorNetworkGeneration()){ return; }
+  if(uint32_t(millis()-networkCompletionSince)>=30000&&
+      uint32_t(millis()-networkCompletionWarningAt)>=30000) {
+    networkCompletionWarningAt=millis();
+    DiagnosticPrintf("[NET] completion target=%s unconfirmed for %lu ms; Send will NOT be repeated; staff recovery required if state remains unchanged\r\n",
+      networkCompletion,(unsigned long)(millis()-networkCompletionSince));
+  }
+  if(networkCompletionVerify||int32_t(millis()-networkCompletionRetryAt)<0){ return; }
   String path="/has2.php?request=ReceiveMine&table=device&mac="+NetworkEncode(has2wifi.GetMacAddress().c_str());
-  networkCompletionVerify=NetworkSubmit(NetworkKind::Verify,path,false,networkCompletionGeneration,0,NetworkCompletionVerifyResult)!=0;
+  networkCompletionVerify=NetworkSubmit(NetworkKind::Verify,path,false,networkCompletionGeneration,networkCompletionToken,NetworkCompletionVerifyResult)!=0;
   if(!networkCompletionVerify){ networkCompletionRetryAt=millis()+250; }
-#endif
 }
 bool GeneratorNetworkComplete(const char *state) {
-  if(!state||!networkBootReady){ return false; }
+  if(!state||!networkBootReady||(strcmp(state,"battery_max")&&strcmp(state,"repaired"))){ return false; }
   const uint32_t generation=GeneratorNetworkGeneration();
   if(generation!=networkCompletionGeneration||strcmp(state,networkCompletion)) {
-    snprintf(networkCompletion,sizeof(networkCompletion),"%s",state);networkCompletionGeneration=generation;
-    networkCompletionSent=false;networkCompletionVerify=false;networkCompletionConfirmed=false;networkCompletionRetryAt=0;
+    // Do not replace an unresolved transaction just because the caller changed.
+    // A fresh authoritative snapshot can confirm/supersede the preceding stage.
+    if(generation==networkCompletionGeneration&&networkCompletionSent&&
+        !networkCompletionConfirmed&&!networkCompletionSuperseded){ return false; }
+    portENTER_CRITICAL(&networkMux);++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }portEXIT_CRITICAL(&networkMux);
+    snprintf(networkCompletion,sizeof(networkCompletion),"%s",state);
+    snprintf(networkCompletionDevice,sizeof(networkCompletionDevice),"%s",my["device_name"]|"");
+    snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",my["device_state"]|"");
+    networkCompletionGeneration=generation;
+    networkCompletionSent=false;networkCompletionVerify=false;networkCompletionConfirmed=false;networkCompletionSuperseded=false;networkCompletionDispatched=false;
+    networkCompletionRetryAt=0;
   }
   if(networkCompletionConfirmed){ return true; }
-#if !GENERATOR_ALLOW_UNFENCED_COMPLETION
-  static uint32_t loggedGeneration=0;
-  if(loggedGeneration!=generation){loggedGeneration=generation;DiagnosticPrintf("[NET] COMPLETION BLOCKED: server epoch-checked completion contract required; deployment gate active\r\n");}
-  return false;
-#else
+  if(networkCompletionSuperseded){ return false; }
   if(!networkCompletionSent) {
-    String path="/has2.php?request=Send&table=device&key="+NetworkEncode(my["device_name"]|"")+"&column=device_state&value="+NetworkEncode(state);
-    if(NetworkSubmit(NetworkKind::Completion,path,true,generation,0,NetworkCompletionSendResult)) {
+    const GeneratorWireState wire=WireSnapshot();
+    const bool bypass=WireServerCompleted();
+    if(!bypass&&!wire.qualified(millis())){ return false; }
+    String path="/has2.php?request=Send&table=device&key="+NetworkEncode(networkCompletionDevice)+"&column=device_state&value="+NetworkEncode(state);
+    if(NetworkSubmit(NetworkKind::Completion,path,true,generation,networkCompletionToken,NetworkCompletionSendResult,wire.stable(),wire.generation(),bypass)) {
+      snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",my["device_state"]|"");
       networkCompletionSent=true;networkCompletionRetryAt=millis()+2500;
+      networkCompletionSince=millis();networkCompletionWarningAt=millis();
     }
   }
   NetworkCompletionService();
   return false;
-#endif
 }
 void GeneratorNetworkRequestMaintenance(bool legacy) {
   if(networkMaintenance){ return; }

@@ -48,7 +48,7 @@ jobs:
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
         run: python devices/HAS1_generator/tests/run_wire_tests.py
-      - name: Isolated network worker and stale response handling
+      - name: Existing-server completion and isolated network worker
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
         run: python devices/HAS1_generator/tests/run_network_tests.py

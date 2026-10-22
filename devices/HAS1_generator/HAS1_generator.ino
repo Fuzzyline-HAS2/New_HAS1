@@ -2,7 +2,6 @@
 #include <SecureOTA.h>
 #include <nvs_flash.h>
 #include <WiFi.h>
-#include "network_release_gate.h"
 
 /**
  * @file Done_Generator_code.ino
