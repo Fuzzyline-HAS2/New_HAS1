@@ -2,6 +2,8 @@
 #include <SecureOTA.h>
 #include <nvs_flash.h>
 #include <WiFi.h>
+#include <Network.h>
+#include <esp_task_wdt.h>
 
 /**
  * @file Done_Generator_code.ino
@@ -20,6 +22,8 @@
 #define FIRMWARE_VER 28
 #define PARTITION_VER 1
 #include "HAS1_generator.h"
+
+static bool generatorTcpIpReady = false;
 
 // ---------------------------------------------------------------------------------
 // setup(): 전원이 켜지거나 리셋될 때 1회만 실행되는 초기화 루틴.
@@ -45,6 +49,14 @@ void setup() {
     // recovery and HTTP while main remains responsive. Preserve NVS crash data.
     ptrCurrentMode = WaitFunc;
     ptrRfidMode = WaitFunc;
+    // NetworkServer::begin() opens an lwIP socket without initializing TCP/IP.
+    // Initialize on main before the worker can concurrently enter WiFi.mode().
+    // Wi-Fi association remains asynchronous; no connection or delay is needed.
+    generatorTcpIpReady = Network.begin();
+    if (!generatorTcpIpReady) {
+        Serial.println("[NET] TCP/IP initialization failed; network startup disabled");
+        return;
+    }
     has2wifi.BeginConnection("badland");
     GeneratorNetworkBegin();
     TelnetInit();
@@ -89,6 +101,13 @@ void setup() {
 // ---------------------------------------------------------------------------------
 void loop() {
     DiagnosticLoop();
+    if (!generatorTcpIpReady) {
+        // Keep reset evidence readable over UART and yield without opening any
+        // sockets, starting network work, or repeatedly rebooting on init failure.
+        esp_task_wdt_reset(); // TimerInit already registered this main task.
+        delay(1);
+        return;
+    }
     GeneratorNetworkLoop();
     TelnetRun();        // Telnet 클라이언트 접속/데이터 처리
     WireServiceLoop(); // Sample/synchronize before any starter progress or completion.

@@ -22,6 +22,27 @@ The harness does not emulate HTTP, PN532, DFPlayer UART, or the Arduino schedule
 ## Telnet logging regression checks
 
 ```sh
+python3 devices/HAS1_generator/tests/run_boot_network_tests.py
+```
+
+The boot harness executes production `setup()`, `loop()`, and `TelnetInit()`.
+It keeps the network worker unscheduled to expose sockets opened before TCP/IP
+initialization. It also injects `Network.begin()` failure and checks 1,000 loop
+iterations: diagnostics continue, the main watchdog is fed, execution yields,
+and neither a worker nor a socket is started. This checks initialization order
+and failure handling; it does not emulate lwIP or prove physical boot timing.
+
+```sh
+ARDUINOJSON_INCLUDE=/path/to/ArduinoJson/src python3 devices/HAS1_generator/tests/run_timer_boot_tests.py
+```
+
+The timer boot harness executes production `TimerInit()`, `TimerRun()`, and
+`WifiIntervalFunc()` with ArduinoJson v7.4.3. It checks 1,000 polls before the
+first server snapshot, null/non-string fields, and later valid/long/empty states.
+The `%s` argument is explicitly required to be non-null because desktop printf
+may silently tolerate a null pointer that crashes ESP32 newlib.
+
+```sh
 python3 devices/HAS1_generator/tests/run_telnet_tests.py
 python3 devices/HAS1_generator/tests/run_telnet_lifecycle_tests.py
 ```
