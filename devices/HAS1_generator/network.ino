@@ -391,7 +391,10 @@ static void NetworkCompletionObserveSnapshot() {
   const char *state=my["device_state"]|"";
   const bool wasResolved=networkCompletionConfirmed||networkCompletionSuperseded;
   // Any authoritative state other than the start state makes an undelivered
-  // resend obsolete, even if the state later returns to the start value.
+  // resend obsolete, even if the state later returns to the start value. If the
+  // resend is merely pending the transaction stays unresolved (verify loop and
+  // staff warning continue); if it is already queued, the queued-cancel path
+  // below resets the transaction as it always did for queued completions.
   if(strcmp(state,networkCompletionStartState)){ networkCompletionResendPending=false; }
   if(!strcmp(state,networkCompletion)||(!strcmp(networkCompletion,"repaired")&&!strcmp(state,"repaired_all"))) {
     networkCompletionConfirmed=true;

@@ -14,14 +14,19 @@ dispatch can be retried after fresh gameplay checks. After dispatch, a timeout,
 HTTP failure or missing confirmation does not cause an automatic repeat of that
 Send, with one narrow exception: when the TCP connect itself failed or the
 shared deadline expired while still connecting, no request byte was written and
-the server cannot have applied the mutation. That undelivered Send is re-queued
-after a two-second delay, at most two more times (three attempts per
-transaction), under the same token and with the original wire expectations, so
-the dispatch guard still rejects it if wires, the game generation or the device
-state changed meanwhile. A failure after any request byte (write, header or
-body stage) stays uncertain and is never repeated. HTTP 200 by itself is not
-completion. Reads remain retryable and do not block gameplay input or the
-network polling loop.
+the server cannot have applied the mutation. That undelivered Send may be
+resent, at most two more times (three attempts per transaction), under the same
+token and with the original wire expectations. The resend is armed only by a
+successful ReceiveMine verify, taken after the failed attempt, that still shows
+the state the transaction started from; the cached state is never trusted for
+this. A queued resend is withdrawn (without resetting the transaction) while
+WiFi is offline or after five seconds in the queue, so it cannot sit through an
+outage and land after staff changed the state. The snapshot observer drops the
+pending resend as soon as any other authoritative device state is seen, and the
+dispatch guard still rejects a resend whose wires or game generation changed.
+A failure after any request byte (write, header or body stage) stays uncertain
+and is never repeated. HTTP 200 by itself is not completion. Reads remain
+retryable and do not block gameplay input or the network polling loop.
 
 Contributions retain a bounded buffer only until queue acceptance; uncertain
 transmission is not retried automatically. This avoids introducing blind
@@ -152,10 +157,17 @@ responses, same-stage re-entry, definite pre-dispatch retry, staff override and
 tagged-stage restoration without introducing automatic mutation retries after a
 request byte was written. It also covers the connect-stage resend (added
 2026-10-23 after a field case where a completion Send was lost to a 2 s connect
-timeout and staff had to force the state): bounded to three attempts, same
-token, deferred while the queue is full, dropped after a staff override or any
-other authoritative state change, rejected at dispatch when wires changed, and
-never issued for a previous game generation.
+timeout and staff had to force the state): armed only by a fresh start-state
+verify, bounded to three attempts, same token, deferred to the next verify while
+the queue is full, withdrawn while offline or after five seconds in the queue,
+dropped after a staff override or any other authoritative state change,
+rejected at dispatch when wires changed, never issued for a previous game
+generation, and not mistaken for the device's own echo. With these cases the
+network suite is 48 groups (was 37). Remaining known limits: the five-second
+queue lifetime is enforced from the main loop, so a main-loop stall (audio
+wait, LED blink) extends it by that stall; and when the server leaves the start
+state while a resend is merely pending the transaction stays unresolved, while
+an already queued resend takes the existing queued-cancel reset.
 
 | Check | Result |
 | --- | --- |
