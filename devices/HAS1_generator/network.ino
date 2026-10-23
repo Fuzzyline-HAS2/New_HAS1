@@ -341,6 +341,25 @@ static char networkCompletion[24]={},networkCompletionDevice[32]={},networkCompl
 static uint32_t networkCompletionGeneration=0,networkCompletionRetryAt=0;
 static uint32_t networkCompletionSince=0,networkCompletionWarningAt=0;
 static bool networkCompletionSent=false,networkCompletionVerify=false,networkCompletionConfirmed=false,networkCompletionSuperseded=false,networkCompletionDispatched=false;
+// A completion Send whose TCP connect never succeeded (connect error or the
+// shared deadline expiring while still connecting) ended before the GET line
+// was written, so the server cannot have applied it. Only that case is resent,
+// a bounded number of times, with the original wire expectations so the
+// dispatch guard still rejects it if wires or the game changed meanwhile. Any
+// failure after a request byte was written remains uncertain and is never
+// repeated, exactly as before.
+static constexpr uint8_t kNetworkCompletionMaxAttempts=3;
+static constexpr uint32_t kNetworkCompletionResendDelayMs=2000;
+static uint8_t networkCompletionAttempts=0;
+static bool networkCompletionResendPending=false;
+static uint32_t networkCompletionResendAt=0;
+static int networkCompletionWireCount=-1;
+static uint32_t networkCompletionWireGeneration=0;
+static bool networkCompletionWireBypass=false;
+static bool NetworkRequestUndelivered(const Has2BoundedTransport::Result &result) {
+  return (result.error==Has2BoundedTransport::Error::Connect||result.error==Has2BoundedTransport::Error::Deadline)&&
+         result.phase==Has2BoundedTransport::Phase::Connect;
+}
 static bool NetworkOwnBatteryEcho(const JsonDocument &snapshot) {
   if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||networkCompletionGeneration!=GeneratorNetworkGeneration()||strcmp(networkCompletion,"battery_max")||
       strcmp(snapshot["device_name"]|"",networkCompletionDevice)||strcmp(snapshot["game_state"]|"","activate")||strcmp(snapshot["device_state"]|"","battery_max")){ return false; }
@@ -383,9 +402,10 @@ static void NetworkCompletionObserveSnapshot() {
   }
   portEXIT_CRITICAL(&networkMux);
   if(cancelQueued&&!networkCompletionConfirmed&&!networkCompletionSuperseded) {
-    networkCompletionSent=false;networkCompletionVerify=false;
+    networkCompletionSent=false;networkCompletionVerify=false;networkCompletionResendPending=false;
     DiagnosticPrintf("[NET] queued completion cancelled after authoritative state override\r\n");
   }
+  if(networkCompletionConfirmed||networkCompletionSuperseded){ networkCompletionResendPending=false; }
 }
 static void NetworkCompletionVerifyResult(const NetworkRequest &request,const Has2BoundedTransport::Result &result,bool cancelled) {
   if(!NetworkCompletionOwns(request)){ return; }
@@ -402,18 +422,49 @@ static void NetworkCompletionVerifyResult(const NetworkRequest &request,const Ha
   // Repair confirmation remains authoritative after card removal/gauge decay.
   NetworkApplySnapshot(result,cancelled,match&&battery);
 }
-static void NetworkCompletionSendResult(const NetworkRequest &request,const Has2BoundedTransport::Result &,bool cancelled) {
+static void NetworkCompletionSendResult(const NetworkRequest &request,const Has2BoundedTransport::Result &result,bool cancelled) {
   if(!NetworkCompletionOwns(request)){ return; }
   if(cancelled&&!request.dispatched) {
     // Definite pre-dispatch cancellation has no server side effect. A fresh
     // gameplay completion check may enqueue again once its prerequisites hold.
-    networkCompletionSent=false;networkCompletionVerify=false;
+    networkCompletionSent=false;networkCompletionVerify=false;networkCompletionResendPending=false;
     portENTER_CRITICAL(&networkMux);++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }portEXIT_CRITICAL(&networkMux);
     return;
   }
-  networkCompletionDispatched=request.dispatched;
+  if(request.dispatched&&networkCompletionAttempts<UINT8_MAX){ ++networkCompletionAttempts; }
+  networkCompletionDispatched=networkCompletionDispatched||request.dispatched;
+  if(!cancelled&&request.dispatched&&NetworkRequestUndelivered(result)) {
+    if(networkCompletionAttempts<kNetworkCompletionMaxAttempts) {
+      networkCompletionResendPending=true;networkCompletionResendAt=millis()+kNetworkCompletionResendDelayMs;
+      DiagnosticPrintf("[NET] completion target=%s undelivered (connect failed before any request byte); resend %u/%u scheduled in %lu ms\r\n",
+        networkCompletion,unsigned(networkCompletionAttempts),unsigned(kNetworkCompletionMaxAttempts-1),(unsigned long)kNetworkCompletionResendDelayMs);
+    } else {
+      DiagnosticPrintf("[NET] completion target=%s undelivered; resend budget exhausted, read-only verification continues\r\n",networkCompletion);
+    }
+  }
   // HTTP 200 alone is not proof of an applied mutation. Always read actual state.
   networkCompletionRetryAt=millis();
+}
+static void NetworkCompletionResendService() {
+  if(!networkCompletionResendPending||int32_t(millis()-networkCompletionResendAt)<0){ return; }
+  // The resend belongs to the same transaction and token. Confirmation,
+  // supersession and queued-cancellation already cleared the flag; a staff
+  // override or any other authoritative state change since the original
+  // enqueue makes the resend obsolete rather than something to repeat.
+  if(strcmp(my["device_state"]|"",networkCompletionStartState)||strcmp(my["game_state"]|"","activate")||
+      strcmp(my["device_name"]|"",networkCompletionDevice)) {
+    networkCompletionResendPending=false;
+    DiagnosticPrintf("[NET] completion target=%s resend dropped: device state changed since the original send\r\n",networkCompletion);
+    return;
+  }
+  String path="/has2.php?request=Send&table=device&key="+NetworkEncode(networkCompletionDevice)+"&column=device_state&value="+NetworkEncode(networkCompletion);
+  if(NetworkSubmit(NetworkKind::Completion,path,true,networkCompletionGeneration,networkCompletionToken,NetworkCompletionSendResult,
+      networkCompletionWireCount,networkCompletionWireGeneration,networkCompletionWireBypass)) {
+    networkCompletionResendPending=false;
+    DiagnosticPrintf("[NET] completion target=%s resend %u enqueued with original wire expectations\r\n",networkCompletion,unsigned(networkCompletionAttempts));
+  } else {
+    networkCompletionResendAt=millis()+250;
+  }
 }
 static void NetworkCompletionService() {
   if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||
@@ -421,9 +472,10 @@ static void NetworkCompletionService() {
   if(uint32_t(millis()-networkCompletionSince)>=30000&&
       uint32_t(millis()-networkCompletionWarningAt)>=30000) {
     networkCompletionWarningAt=millis();
-    DiagnosticPrintf("[NET] completion target=%s unconfirmed for %lu ms; Send will NOT be repeated; staff recovery required if state remains unchanged\r\n",
-      networkCompletion,(unsigned long)(millis()-networkCompletionSince));
+    DiagnosticPrintf("[NET] completion target=%s unconfirmed for %lu ms; Send attempts used %u/%u (repeated only while undelivered at connect); staff recovery required if state remains unchanged\r\n",
+      networkCompletion,(unsigned long)(millis()-networkCompletionSince),unsigned(networkCompletionAttempts),unsigned(kNetworkCompletionMaxAttempts));
   }
+  NetworkCompletionResendService();
   if(networkCompletionVerify||int32_t(millis()-networkCompletionRetryAt)<0){ return; }
   String path="/has2.php?request=ReceiveMine&table=device&mac="+NetworkEncode(has2wifi.GetMacAddress().c_str());
   networkCompletionVerify=NetworkSubmit(NetworkKind::Verify,path,false,networkCompletionGeneration,networkCompletionToken,NetworkCompletionVerifyResult)!=0;
@@ -444,6 +496,7 @@ bool GeneratorNetworkComplete(const char *state) {
     networkCompletionGeneration=generation;
     networkCompletionSent=false;networkCompletionVerify=false;networkCompletionConfirmed=false;networkCompletionSuperseded=false;networkCompletionDispatched=false;
     networkCompletionRetryAt=0;
+    networkCompletionAttempts=0;networkCompletionResendPending=false;networkCompletionResendAt=0;
   }
   if(networkCompletionConfirmed){ return true; }
   if(networkCompletionSuperseded){ return false; }
@@ -454,6 +507,8 @@ bool GeneratorNetworkComplete(const char *state) {
     String path="/has2.php?request=Send&table=device&key="+NetworkEncode(networkCompletionDevice)+"&column=device_state&value="+NetworkEncode(state);
     if(NetworkSubmit(NetworkKind::Completion,path,true,generation,networkCompletionToken,NetworkCompletionSendResult,wire.stable(),wire.generation(),bypass)) {
       snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",my["device_state"]|"");
+      networkCompletionWireCount=wire.stable();networkCompletionWireGeneration=wire.generation();networkCompletionWireBypass=bypass;
+      networkCompletionAttempts=0;networkCompletionResendPending=false;
       networkCompletionSent=true;networkCompletionRetryAt=millis()+2500;
       networkCompletionSince=millis();networkCompletionWarningAt=millis();
     }

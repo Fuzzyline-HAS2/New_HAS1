@@ -11,8 +11,17 @@ error have been removed at the user's request.
 Completion allows one transport attempt per local operation, followed by
 ReceiveMine state checks. Enqueue failure or definite cancellation before
 dispatch can be retried after fresh gameplay checks. After dispatch, a timeout,
-HTTP failure or missing confirmation does not cause an automatic repeat of that Send. HTTP 200 by itself is not completion. Reads
-remain retryable and do not block gameplay input or the network polling loop.
+HTTP failure or missing confirmation does not cause an automatic repeat of that
+Send, with one narrow exception: when the TCP connect itself failed or the
+shared deadline expired while still connecting, no request byte was written and
+the server cannot have applied the mutation. That undelivered Send is re-queued
+after a two-second delay, at most two more times (three attempts per
+transaction), under the same token and with the original wire expectations, so
+the dispatch guard still rejects it if wires, the game generation or the device
+state changed meanwhile. A failure after any request byte (write, header or
+body stage) stays uncertain and is never repeated. HTTP 200 by itself is not
+completion. Reads remain retryable and do not block gameplay input or the
+network polling loop.
 
 Contributions retain a bounded buffer only until queue acceptance; uncertain
 transmission is not retried automatically. This avoids introducing blind
@@ -90,8 +99,10 @@ The existing APIs cannot resolve that case fully on the client. Polling can also
 miss a complete reset/start transition while the device is offline.
 
 If a completion request never applied, the device keeps checking the state but
-does not repeat the mutation automatically. Unconfirmed completion is logged at
-a bounded rate after 30 seconds. Staff may need to confirm/correct the
+does not repeat the mutation automatically once any request byte has been
+written; only a connect-stage failure is resent within the bounded budget above.
+Unconfirmed completion is logged at a bounded rate after 30 seconds together
+with the number of Send attempts used. Staff may need to confirm/correct the
 state in the existing OS. A future server generation/idempotency contract can
 remove this tradeoff; merely appending an unsupported `gen` parameter cannot.
 An ignored/error response, including HTTP 200 with an application-level rejection,
@@ -138,7 +149,13 @@ also fixed operation-result mixups, completion suppression by a prior echo flag,
 queued writes overriding newer server states, and cancellation racing dispatch.
 The host suite verifies normal completion, lost ACK, unchanged/error/ignored
 responses, same-stage re-entry, definite pre-dispatch retry, staff override and
-tagged-stage restoration without introducing automatic mutation retries.
+tagged-stage restoration without introducing automatic mutation retries after a
+request byte was written. It also covers the connect-stage resend (added
+2026-10-23 after a field case where a completion Send was lost to a 2 s connect
+timeout and staff had to force the state): bounded to three attempts, same
+token, deferred while the queue is full, dropped after a staff override or any
+other authoritative state change, rejected at dispatch when wires changed, and
+never issued for a previous game generation.
 
 | Check | Result |
 | --- | --- |

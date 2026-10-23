@@ -157,6 +157,12 @@ void EncoderNeopixelOn(int){}
 '''
 tests=r'''
 static void reply(const char *json,int status=200){nextReply=Has2BoundedTransport::Result{};nextReply.status=status;nextReply.payload=json;nextReply.timings.totalMs=100;}
+// Transport failure at a given stage. Connect means no request byte was written;
+// Header means the GET was written and the response was lost (uncertain).
+static void failAt(Has2BoundedTransport::Phase phase,Has2BoundedTransport::Error error=Has2BoundedTransport::Error::Deadline){
+ nextReply=Has2BoundedTransport::Result{};nextReply.error=error;nextReply.phase=phase;nextReply.timings.totalMs=2000;}
+static int sendCount(){int sends=0;for(const auto &path:paths){if(path.find("request=Send")!=std::string::npos){++sends;}}return sends;}
+static int queuedCompletions(){int n=0;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Completion){++n;}}return n;}
 static void workerTurn(){worker=true;try{NetworkWorker(nullptr);}catch(const Yield&){}worker=false;}
 static void mainTurn(){GeneratorNetworkLoop();}
 static int used(){
@@ -179,6 +185,7 @@ static void reset(){
  networkMaintenance=networkMaintenanceLegacy=false;networkRefreshAt=0;networkIdentity[0]=networkGame[0]=0;
  pendingContributionCount=0;starterContribUser="";
  networkCompletionGeneration=0;networkCompletionToken=1;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
+ networkCompletionAttempts=0;networkCompletionResendPending=false;networkCompletionResendAt=0;networkCompletionWireCount=-1;networkCompletionWireGeneration=0;networkCompletionWireBypass=false;
  duringWireSnapshot=nullptr;
  networkCompletionSince=networkCompletionWarningAt=0;
  GeneratorNetworkForgetTag();wireHttpPending=wireHttpDone=false;wireHttpRequestId=0;
@@ -295,7 +302,7 @@ int main(){
 
  reset();
  assert(!GeneratorNetworkComplete("battery_max"));assert(used()==1);
- nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();
+ failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
  assert(used()==1); // Main loop schedules verification even without another game callback.
  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();
  assert(GeneratorNetworkComplete("battery_max"));assert(requestCalls==2);
@@ -304,7 +311,7 @@ int main(){
  ptrCurrentMode=StarterActivate;exerciseActualDataChanged=true;encoderValue=28;tag["role"]="player";
  assert(!GeneratorNetworkComplete("repaired"));
  // Remove the card and decay the gauge before Send returns. No StartFinish reentry.
- tag.clear();encoderValue=0;nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();assert(used()==1);
+ tag.clear();encoderValue=0;failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();assert(used()==1);
  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");
  workerTurn();mainTurn();assert(ptrCurrentMode==WaitFunc&&gameTimerDeletes>=2&&!receiveMineOn);
  assert(!strcmp(cur["device_state"].as<const char*>(),"repaired"));assert(requestCalls==2);
@@ -323,12 +330,79 @@ int main(){
  assert(GeneratorNetworkComplete("repaired")&&requestCalls==4);
  pass("normal legacy battery then repair each sends once and confirms by fresh snapshot");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));nextReply.error=Has2BoundedTransport::Error::Deadline;workerTurn();mainTurn();
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
  for(int i=0;i<18;++i){reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();now+=2100;mainTurn();}
- int sends=0;for(const auto &path:paths){if(path.find("request=Send")!=std::string::npos){++sends;}}
+ int sends=sendCount();
  bool warning=false;for(const auto &line:diagnostics){if(line.find("staff recovery required")!=std::string::npos){warning=true;}}
  assert(sends==1&&!networkCompletionConfirmed&&warning);
  pass("unapplied uncertain completion is read-only retried with bounded staff-recovery warning");
+ for(auto phase:{Has2BoundedTransport::Phase::Write,Has2BoundedTransport::Phase::Header,Has2BoundedTransport::Phase::Body}) {
+  reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(phase);workerTurn();mainTurn();
+  for(int i=0;i<6;++i){now+=2100;mainTurn();reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();}
+  assert(sendCount()==1&&!networkCompletionResendPending);
+ }
+ pass("a failure after any request byte stays uncertain and is never resent");
+
+ // Connect-phase failure: nothing reached the server, so one bounded resend of the
+ // same transaction is allowed after a delay, and a fresh snapshot confirms it.
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));uint32_t firstToken=networkCompletionToken;
+ failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+ assert(networkCompletionResendPending&&networkCompletionSent&&queuedCompletions()==0);
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn(); // verify: not yet applied
+ now+=1000;mainTurn();assert(queuedCompletions()==0); // delay not elapsed
+ now+=1100;mainTurn();assert(queuedCompletions()==1&&!networkCompletionResendPending);
+ bool sameToken=true;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&slot.request.token!=firstToken){sameToken=false;}}
+ assert(sameToken&&networkCompletionToken==firstToken);
+ reply("{}");workerTurn();mainTurn();workerTurn();mainTurn();assert(sendCount()==2); // resend plus the due verify, either order
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");
+ for(int i=0;i<4&&!networkCompletionConfirmed;++i){now+=2100;mainTurn();workerTurn();mainTurn();}
+ assert(networkCompletionConfirmed&&GeneratorNetworkComplete("battery_max")&&sendCount()==2);
+ pass("connect-phase failure resends the same completion once after a delay and confirms by snapshot");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));
+ for(int round=0;round<6;++round){
+  failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+  for(int i=0;i<3;++i){now+=2100;mainTurn();failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();}
+ }
+ now+=30000;mainTurn();
+ bool exhausted=false,budgetWarning=false;for(const auto &line:diagnostics){if(line.find("resend budget exhausted")!=std::string::npos){exhausted=true;}if(line.find("staff recovery required")!=std::string::npos){budgetWarning=true;}}
+ assert(sendCount()==3&&exhausted&&budgetWarning&&!networkCompletionConfirmed&&!networkCompletionResendPending);
+ pass("connect-phase resends are bounded to three total attempts, then read-only verification continues");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+ assert(networkCompletionResendPending);
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");assert(NetworkApplySnapshot(nextReply,false));
+ assert(networkCompletionConfirmed&&!networkCompletionResendPending);now+=5000;mainTurn();assert(queuedCompletions()==0&&sendCount()==1);
+ assert(GeneratorNetworkComplete("battery_max"));
+ pass("staff override arriving before the resend confirms the stage without a second Send");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\"}");assert(NetworkApplySnapshot(nextReply,false));
+ now+=5000;mainTurn();
+ bool dropped=false;for(const auto &line:diagnostics){if(line.find("resend dropped")!=std::string::npos){dropped=true;}}
+ assert(dropped&&queuedCompletions()==0&&sendCount()==1&&!networkCompletionResendPending);
+ pass("any other authoritative state change since the original send drops the resend");
+
+ reset();assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+ assert(networkCompletionResendPending);for(int i=1;i<=10;++i){wireState.sampleMask(now+i*100,1);}
+ now+=2100;mainTurn();assert(queuedCompletions()==1);
+ reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");
+ workerTurn();mainTurn();workerTurn();mainTurn(); // the earlier verify read plus the resend, which the dispatch guard rejects
+ assert(requestCalls==2&&sendCount()==1&&queuedCompletions()==0&&!networkCompletionSent&&!networkCompletionResendPending);
+ pass("resend keeps the original wire expectations so a wire change is rejected at dispatch");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+ GeneratorNetworkInvalidateGame();now+=2100;mainTurn();workerTurn();mainTurn();
+ for(int i=0;i<10;++i){now+=2100;mainTurn();workerTurn();mainTurn();}
+ assert(requestCalls==1&&sendCount()==1);
+ pass("game change after an undelivered send cannot trigger a resend for the old game");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max")&&networkCompletionSent);
+ failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();assert(networkCompletionResendPending&&used()==1); // verify queued
+ for(int i=0;i<6;++i){assert(NetworkSubmit(NetworkKind::Tag,"/filler",false,0,networkTagToken,nullptr));}
+ assert(used()==7);now+=2100;mainTurn();assert(networkCompletionResendPending&&queuedCompletions()==0); // queue full: resend waits
+ GeneratorNetworkForgetTag();now+=300;mainTurn();assert(!networkCompletionResendPending&&queuedCompletions()==1);
+ pass("a full queue defers the resend instead of dropping or duplicating it");
 
  reset();assert(!GeneratorNetworkComplete("battery_max"));for(int i=1;i<=10;++i){wireState.sampleMask(now+i*100,1);}workerTurn();mainTurn();
  assert(requestCalls==0&&!networkCompletionSent);
