@@ -245,6 +245,25 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual((attempts,state,next_attempt),(0,"pending",160))
         self.assertIsNone(self.claim())
 
+    def test_session_links_feed_the_slack_session_card(self):
+        card, session_page, event_page = "1700000000.000100", "fedcbafe-4321-4321-4321-cba987654321", "abcdefab-1234-1234-1234-123456789abc"
+        self.process(event())
+        self.assertIsNone(self.store.slack_session("unknown"))
+        for _ in range(2):
+            row = self.claim()
+            remote, parent = (event_page, session_page) if row["destination"] == "notion" else (card, card)
+            self.store.finish(row["id"],SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=remote,parent_id=parent),now_epoch=100,channels=["slack","notion"])
+        context = self.store.slack_session("incident-1")
+        self.assertEqual({key: context[key] for key in ("site_id","session_id","ts","notion_page","event_page")},
+                         {"site_id":"store-1","session_id":"game-1","ts":card,"notion_page":session_page,"event_page":event_page})
+        self.assertEqual([(item["device_id"],item["state"]) for item in context["incidents"]],[("glove-1","open")])
+        self.process(event("device_recovered",seq=2))
+        self.assertEqual(self.store.slack_session("incident-1")["incidents"][0]["state"],"recovered")
+        # A failed write that still opened the card keeps it for the retry.
+        row = self.claim()
+        self.store.finish(row["id"],SimpleNamespace(state="retryable",retry_after=0,code="rate_limited",remote_id=None,parent_id="1700000999.000900"),now_epoch=100,channels=["slack","notion"])
+        self.assertEqual(self.store.slack_session("incident-1")["ts" if row["destination"] == "slack" else "notion_page"],"1700000999.000900")
+
     def test_unknown_mac_and_delayed_flash_are_not_certain_correlations(self):
         self.process(event())
         path=Path(self.temp.name)/"telemetry.db"
@@ -393,6 +412,7 @@ class RuntimeTests(unittest.TestCase):
                         time.sleep(.01)
                     self.assertEqual(len(calls),1)
                     self.assertEqual(calls[0][1]["incident_id"],"next-incident")
+                    self.assertEqual(calls[0][1]["slack_session"]["session_id"],"game-2")
                     stopped=runtime.stop()
                     self.assertTrue(stopped)
                 finally:

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications import MAX_BODY, NOTION_EVENT_PROPERTIES, NOTION_SESSION_PROPERTIES, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, slack_message, validate_config
+from notifications import MAX_BODY, NOTION_EVENT_PROPERTIES, NOTION_SESSION_PROPERTIES, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, slack_message, slack_session_card, validate_config
 
 SOURCE = '12345678-1234-1234-1234-123456789abc'
 PAGE = 'abcdefab-1234-1234-1234-123456789abc'
@@ -113,43 +113,80 @@ class NotificationsTests(unittest.TestCase):
     def slack_ok(**extra):
         return {'status': 200, 'body': json.dumps(dict({'ok': True, 'channel': 'C0123456789', 'ts': '1700000000.000100'}, **extra))}
 
-    def test_slack_bot_offline_post_returns_message_ts(self):
-        sender, calls = self.bot_sender([self.slack_ok()])
-        result = sender.send('slack', dict(PAYLOAD, status='offline'))
-        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000000.000100'))
-        self.assertEqual(calls[0]['url'], 'https://slack.com/api/chat.postMessage')
-        self.assertEqual(calls[0]['body']['channel'], 'C0123456789')
-        self.assertNotIn('thread_ts', calls[0]['body'])
-        self.assertNotIn('xoxb', json.dumps(calls[0]['body']))
+    CARD = '1700000000.000100'
 
-    def test_slack_bot_recovery_edits_original_then_threads_reply(self):
-        sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000300.000200')])
-        payload = dict(PAYLOAD, slack_ts='1700000000.000100', opened_at='2026-10-23T23:57:30Z', close_reason='reconnected')
+    @staticmethod
+    def session(ts=None, state='open', **extra):
+        incidents = [{'device_id': 'G1P1', 'state': state, 'opened_utc': '2026-10-24T22:25:29Z', 'updated_utc': '2026-10-24T22:26:04Z'},
+                     {'device_id': 'G1P5', 'state': 'recovered', 'opened_utc': '2026-10-24T22:25:29Z', 'updated_utc': '2026-10-24T22:25:47Z'}]
+        return dict({'site_id': 'store-1', 'session_id': '1657', 'ts': ts, 'notion_page': SESSION_PAGE,
+                     'event_page': PAGE, 'incidents': incidents}, **extra)
+
+    @staticmethod
+    def texts(body):
+        found = []
+        for block in body['blocks']:
+            for item in [block.get('text')] + block.get('fields', []) + block.get('elements', []):
+                if item:
+                    found.append((item['type'], item['text']))
+        return found
+
+    def test_slack_bot_first_event_opens_one_card_for_the_game_session(self):
+        sender, calls = self.bot_sender([self.slack_ok()])
+        result = sender.send('slack', dict(PAYLOAD, device_id='G1P1', status='offline', slack_session=self.session()))
+        self.assertEqual((result.state, result.remote_id, result.parent_id), ('delivered', self.CARD, self.CARD))
+        self.assertEqual(len(calls), 1)  # one card; nothing in its thread yet
+        card = calls[0]['body']
+        self.assertEqual((calls[0]['url'], card['channel']), ('https://slack.com/api/chat.postMessage', 'C0123456789'))
+        self.assertNotIn('thread_ts', card)
+        self.assertNotIn('xoxb', json.dumps(card))
+        self.assertEqual(card['blocks'][0]['text']['text'], '🔴 장애 진행 중 1건 · 세션 1657 · store-1')
+        texts = self.texts(card)
+        self.assertIn(('plain_text', '장애\n2건 (복구 1 · 미복구 0 · 진행 중 1)'), texts)
+        self.assertIn(('plain_text', '심각도\nSEV3 · 자동 판정'), texts)
+        self.assertIn(('plain_text', '🔴 G1P1 · 10/25 07:25:29 끊김 → 장애중\n🟢 G1P5 · 10/25 07:25:29 끊김 → 18초 만에 복구'), texts)
+        link = 'https://www.notion.so/' + SESSION_PAGE.replace('-', '')
+        self.assertIn(('mrkdwn', f'<{link}|📒 노션 장애 페이지>'), texts)
+        # mrkdwn carries only the collector-built link; every payload value stays plain_text.
+        self.assertEqual([kind for kind, _ in texts].count('mrkdwn'), 1)
+
+    def test_slack_bot_recovery_edits_the_card_and_keeps_the_thread_for_people(self):
+        sender, calls = self.bot_sender([self.slack_ok()])
+        payload = dict(PAYLOAD, device_id='G1P1', status='recovered', slack_session=self.session(self.CARD, 'recovered'))
         result = sender.send('slack', payload)
-        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000000.000100'))
-        update, reply = calls
-        self.assertEqual(update['url'], 'https://slack.com/api/chat.update')
-        self.assertEqual(update['body']['ts'], '1700000000.000100')
-        self.assertIn('복구', update['body']['blocks'][0]['text']['text'])
-        self.assertEqual(reply['url'], 'https://slack.com/api/chat.postMessage')
-        self.assertEqual(reply['body']['thread_ts'], '1700000000.000100')
-        self.assertEqual(reply['body']['text'], '🟢 복구됨 · 2분 30초 만에 · 장치 재연결')
-
-    def test_slack_bot_monitoring_end_edits_without_reply(self):
-        sender, calls = self.bot_sender([self.slack_ok()])
-        result = sender.send('slack', dict(PAYLOAD, status='monitoring_ended', slack_ts='1700000000.000100'))
-        self.assertEqual(result.state, 'delivered')
+        self.assertEqual((result.state, result.remote_id), ('delivered', self.CARD))
         self.assertEqual([call['url'] for call in calls], ['https://slack.com/api/chat.update'])
+        self.assertEqual(calls[0]['body']['ts'], self.CARD)
+        self.assertEqual(calls[0]['body']['blocks'][0]['text']['text'], '🟢 모두 복구 · 세션 1657 · store-1')
+        self.assertIn(('plain_text', '🟢 G1P1 · 10/25 07:25:29 끊김 → 35초 만에 복구\n🟢 G1P5 · 10/25 07:25:29 끊김 → 18초 만에 복구'),
+                      self.texts(calls[0]['body']))
 
-    def test_slack_bot_failures_never_duplicate_reply(self):
-        payload = dict(PAYLOAD, slack_ts='1700000000.000100')
+    def test_slack_bot_unrecovered_end_threads_and_broadcasts(self):
+        sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000300.000200')])
+        payload = dict(PAYLOAD, device_id='G1P1', status='monitoring_ended', close_reason='snapshot_no_longer_active',
+                       opened_at='2026-10-24T22:25:29Z', slack_session=self.session(self.CARD, 'closed'))
+        self.assertEqual(sender.send('slack', payload).state, 'delivered')
+        update, reply = calls
+        self.assertEqual(update['body']['blocks'][0]['text']['text'], '🟠 미복구 종료 포함 · 세션 1657 · store-1')
+        self.assertIn(('plain_text', '심각도\nSEV2 · 미복구 있음'), self.texts(update['body']))
+        self.assertEqual((reply['body']['thread_ts'], reply['body']['reply_broadcast']), (self.CARD, True))
+        self.assertEqual(reply['body']['text'], '⚪ G1P1 미복구 종료 · 게임 종료 또는 서버 목록에서 제외 · 끊긴 시각 10/25 07:25:29')
+        self.assertIn(('mrkdwn', f"<https://www.notion.so/{PAGE.replace('-', '')}|📒 노션 이벤트>"), self.texts(reply['body']))
+
+    def test_slack_bot_failures_never_duplicate_and_keep_the_card(self):
+        ended = dict(PAYLOAD, status='monitoring_ended', slack_session=self.session(self.CARD, 'closed'))
         # A failed edit is safely retryable and posts no reply.
         sender, calls = self.bot_sender([{'status': 503}])
-        self.assertEqual(sender.send('slack', payload).state, 'retryable')
+        self.assertEqual(sender.send('slack', ended).state, 'retryable')
         self.assertEqual(len(calls), 1)
-        # An ambiguous reply is not retried automatically.
-        sender, calls = self.bot_sender([self.slack_ok(), {'network_error': True}])
-        self.assertEqual(sender.send('slack', payload).state, 'unknown')
+        # An ambiguous reply is not retried automatically, but the card is remembered.
+        sender, _ = self.bot_sender([self.slack_ok(), {'network_error': True}])
+        result = sender.send('slack', ended)
+        self.assertEqual((result.state, result.parent_id), ('unknown', self.CARD))
+        # A new card whose reply is rate limited: the retry must thread under that card.
+        sender, _ = self.bot_sender([self.slack_ok(ts='1700000500.000500'), {'status': 429, 'retry_after': '5'}])
+        result = sender.send('slack', dict(ended, slack_session=self.session(None, 'closed')))
+        self.assertEqual((result.state, result.parent_id), ('retryable', '1700000500.000500'))
         # Slack API errors are permanent and carry only the fixed error name.
         sender, _ = self.bot_sender([{'status': 200, 'body': '{"ok":false,"error":"not_in_channel"}'}])
         result = sender.send('slack', dict(PAYLOAD, status='offline'))
@@ -160,22 +197,29 @@ class NotificationsTests(unittest.TestCase):
     def test_slack_bot_transient_errors_are_not_dropped(self):
         def error(name):
             return {'status': 200, 'body': json.dumps({'ok': False, 'error': name})}
-        payload = dict(PAYLOAD, slack_ts='1700000000.000100')
-        offline = dict(PAYLOAD, status='offline')
+        edit = dict(PAYLOAD, slack_session=self.session(self.CARD, 'recovered'))
+        new_card = dict(PAYLOAD, status='offline')
         for name in ('internal_error', 'fatal_error', 'request_timeout', 'service_unavailable'):
             sender, _ = self.bot_sender([error(name)])
-            self.assertEqual(sender.send('slack', payload).state, 'retryable')  # edits are idempotent
+            self.assertEqual(sender.send('slack', edit).state, 'retryable')  # edits are idempotent
             sender, _ = self.bot_sender([error(name)])
             expected = 'retryable' if name == 'service_unavailable' else 'unknown'
-            self.assertEqual(sender.send('slack', offline).state, expected)
+            self.assertEqual(sender.send('slack', new_card).state, expected)
 
-    def test_slack_bot_deleted_card_posts_standalone_outcome(self):
+    def test_slack_bot_deleted_card_opens_a_new_one(self):
         gone = {'status': 200, 'body': '{"ok":false,"error":"message_not_found"}'}
         sender, calls = self.bot_sender([gone, self.slack_ok(ts='1700000400.000300')])
-        result = sender.send('slack', dict(PAYLOAD, slack_ts='1700000000.000100'))
-        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000400.000300'))
+        result = sender.send('slack', dict(PAYLOAD, slack_session=self.session(self.CARD, 'recovered')))
+        self.assertEqual((result.state, result.remote_id, result.parent_id), ('delivered', '1700000400.000300', '1700000400.000300'))
         self.assertNotIn('thread_ts', calls[1]['body'])
-        self.assertIn('복구', calls[1]['body']['blocks'][0]['text']['text'])
+        self.assertIn('모두 복구', calls[1]['body']['blocks'][0]['text']['text'])
+
+    def test_slack_session_card_keeps_device_names_inert(self):
+        session = self.session(site_id='<!here>', incidents=[{'device_id': '<!channel>', 'state': 'open', 'opened_utc': 'bad', 'updated_utc': None}])
+        card = slack_session_card(PAYLOAD, session)
+        self.assertNotIn('<!here>', card['text'])
+        self.assertIn('&lt;!here&gt;', card['text'])
+        self.assertIn(('plain_text', '🔴 <!channel> · ? 끊김 → 장애중'), self.texts(card))
 
     def test_slack_webhook_skips_bot_queued_monitoring_end(self):
         sender, calls = self.sender([])

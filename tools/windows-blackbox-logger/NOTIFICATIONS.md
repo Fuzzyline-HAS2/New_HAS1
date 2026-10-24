@@ -5,7 +5,7 @@
 ## 준비
 
 - Slack: 채널 이름은 `#has1-device-alerts`, 앱 이름은 `HAS1 BlackBox`를 권장합니다. 두 방식 중 하나를 사용합니다.
-  - **Bot 토큰(권장)**: 앱의 Bot Token Scopes에 `chat:write`만 추가하고 워크스페이스에 설치한 뒤 `xoxb-`로 시작하는 Bot User OAuth Token을 받습니다. 채널에서 `/invite @HAS1 BlackBox`로 앱을 초대하고, 채널 정보 하단의 **채널 ID**(`C`로 시작)를 확인합니다. 끊김 알림이 카드로 올라오고, 복구되면 같은 카드가 🟢 복구됨으로 바뀌며 그 스레드에 복구 답글이 달립니다. 복구 확인 없이 감시가 끝나면 카드만 ⚪ 모니터링 종료로 바뀌고 답글은 달지 않습니다.
+  - **Bot 토큰(권장)**: 앱의 Bot Token Scopes에 `chat:write`만 추가하고 워크스페이스에 설치한 뒤 `xoxb-`로 시작하는 Bot User OAuth Token을 받습니다. 채널에서 `/invite @HAS1 BlackBox`로 앱을 초대하고, 채널 정보 하단의 **채널 ID**(`C`로 시작)를 확인합니다(1호점 `#has1-device-alerts`는 `C0CBYRUAH6Y`). PagerDuty·Opsgenie처럼 **장애 1건(= 문제가 생긴 게임 세션)에 카드 1개**를 올리고 상태가 바뀔 때마다 그 카드를 고칩니다. 아래 "Slack 장애 카드"를 참고하세요.
   - **Incoming Webhook**: 이 채널에 Webhook을 발급합니다. URL 자체가 암호입니다. 메시지 ID가 돌아오지 않아 복구 알림은 별도 메시지로 올라옵니다.
 - Notion: `HAS1 장애 관리` 페이지 아래 세 DB를 씁니다. 업계 표준(ITIL·Jira Service Management)의 Alert → Incident → Problem 구조이며, 장애 단위는 게임 세션 1판입니다. 내부 연결 이름은 `HAS1 BlackBox Logger`를 권장하고, **`HAS1 장애 관리` 페이지**의 연결 메뉴에서 이 연결을 추가해 아래 DB 전체에 읽기·추가·수정 권한을 줍니다. API 버전 `2025-09-03`의 데이터 소스 API를 사용하므로 database ID와 data source ID를 혼동하면 안 됩니다.
 
@@ -74,6 +74,27 @@
 .\.venv\Scripts\python.exe incidents.py --database "$env:ProgramData\HAS1BlackBox\data\incidents.sqlite3" --telemetry-database "$env:ProgramData\HAS1BlackBox\data\telemetry.sqlite3" --evidence-summary '사건ID'
 ```
 
+### Slack 장애 카드 (bot 토큰 방식)
+
+노션의 장애 단위와 같게, 문제가 생긴 게임 세션마다 카드 하나를 씁니다. 같은 판에서 장갑 여러 개가 함께 끊기면 원인이 같은 경우가 많아서, 장갑마다 글을 따로 올리지 않고 한 카드와 한 스레드에서 대응합니다.
+
+```text
+🔴 장애 진행 중 1건 · 세션 1657 · store-1      ← 첫 끊김 때 올라오고(채널 알림 1번) 이후엔 수정만
+매장 store-1   게임 세션 1657   처음 끊김 10/25 07:25:29
+장애 2건 (복구 1 · 미복구 0 · 진행 중 1)   심각도 SEV3 · 자동 판정
+🔴 G1P1 · 10/25 07:25:29 끊김 → 장애중
+🟢 G1P5 · 10/25 07:25:29 끊김 → 18초 만에 복구
+📒 노션 장애 페이지 · 원인은 아직 확정되지 않았습니다. 장치별 경과는 스레드에 있습니다.
+  └ 스레드: 사람이 원인·조치를 정리하는 곳. 봇은 미복구 종료만 남김
+```
+
+- 카드 제목은 진행 중 장애가 있으면 🔴, 모두 끝났는데 미복구가 있으면 🟠, 모두 복구되면 🟢입니다. 심각도는 노션 장애 DB와 같은 자동 규칙(미복구 있음 SEV2, 그 외 SEV3)이고, SEV1(게임 중단·환불)은 사람이 노션에서 정합니다.
+- 장갑이 끊기거나 복구될 때마다 카드를 고칩니다. 메시지 수정은 알림이 가지 않으므로 채널 알림은 카드가 처음 올라올 때 한 번입니다.
+- 복구 확인 없이 게임이 끝난 장갑(`미복구 종료`)은 사람이 확인해야 하므로 스레드에 답글을 달고 채널에도 함께 보여 줍니다(`reply_broadcast`). 답글에는 노션 장치 이벤트 링크가 붙습니다.
+- 노션 장애 페이지 링크를 붙이기 위해 노션 전달을 Slack보다 먼저 처리합니다. 노션이 늦거나 실패해도 Slack은 기다리지 않고, 링크는 다음 수정 때 붙습니다.
+- 카드의 메시지 ID와 노션 장애 페이지 ID는 사건 DB `session_links`에 게임 세션별로 저장합니다. 카드가 삭제되었으면 새 카드를 올리고 이후에는 그 카드를 씁니다. 새 카드를 올린 응답이 유실되면(결과 불명) 같은 판의 다음 장애 때 카드가 하나 더 생길 수 있습니다.
+- 링크 외의 모든 값(장치 이름 등)은 plain text라 `@channel` 같은 멘션이 되지 않습니다. mrkdwn은 수집기가 UUID로 만든 노션 링크에만 씁니다.
+
 ## Windows에서 활성화
 
 1호점 설치 대상과 순서는 [STORE1-HANDOFF.md](STORE1-HANDOFF.md)에 정리되어 있습니다.
@@ -81,8 +102,8 @@
 수집기를 설치하고 [README의 사건 수집 활성화 절차](README.md#서버-로그사건-수집-활성화)에 따라 실제 `%ProgramData%\HAS1BlackBox\config.json`의 서버 로그 입력과 사건 기능을 먼저 활성화합니다. `telemetry.incidents.database`는 `data/incidents.sqlite3` 또는 해당 ProgramData 폴더의 절대 경로로 지정해야 LocalService가 쓰기 가능한 데이터 폴더를 사용합니다. 관리자 PowerShell에서 설치 폴더의 다음 스크립트를 실행합니다.
 
 ```powershell
-# Slack bot 토큰 방식(복구가 끊김 카드의 스레드로 이어짐). 채널 ID는 비밀이 아닙니다.
-.\configure-notifications.ps1 -EnableSlack -SlackChannelId 'C0123456789'
+# Slack bot 토큰 방식(게임 세션별 장애 카드). 채널 ID는 비밀이 아닙니다.
+.\configure-notifications.ps1 -EnableSlack -SlackChannelId 'C0CBYRUAH6Y'
 # Slack Incoming Webhook 방식:
 .\configure-notifications.ps1 -EnableSlack
 # 또는 Slack과 Notion을 함께 사용(DB 페이지의 복사한 링크):
@@ -118,7 +139,7 @@ Slack bot 토큰·Webhook URL과 Notion 토큰은 숨김 입력창에서 입력�
 ## 전달 보장과 실패 처리
 
 - Slack 알림은 매장·장치·MAC·한국 시각·무응답/장애 지속 시간을 담은 카드입니다. 값이 없거나 `unknown`인 항목은 표시하지 않습니다. 본문은 plain text라 장치/서버 문자열이 `@channel` 같은 멘션 명령이 되지 않습니다.
-- Bot 토큰 방식은 끊김 카드의 메시지 ID(`ts`)를 대기열 `remote_id`에 저장합니다. 복구 시 먼저 원본 카드를 수정하고(`chat.update`, 재시도 안전), 성공한 뒤에만 스레드 답글을 보냅니다(`chat.postMessage`). 그래서 수정 실패는 중복 답글 없이 재시도하고, 답글 전송 결과를 알 수 없으면 manual_review로 남깁니다. `not_in_channel`·`channel_not_found`·`invalid_auth` 같은 설정 오류는 `slack_<오류명>` 코드의 영구 오류로 기록합니다. Slack이 일시 오류로 안내하는 `internal_error`·`fatal_error`·`request_timeout`은 카드 수정이면 재시도하고, 새 메시지 전송이면 이미 올라갔을 수 있어 manual_review로 남깁니다. `service_unavailable`은 처리되지 않은 요청이라 둘 다 재시도합니다. 원본 카드가 삭제되어 수정할 수 없으면 복구 카드를 새 메시지로 올립니다. 수정과 답글은 한 번의 약 10초 HTTP 예산을 나눠 쓰므로, 수정이 느리면 답글 결과가 불확실해져 manual_review로 남을 수 있습니다(중복 전송은 없음). Webhook 방식은 복구만 별도 메시지로 알립니다.
+- Bot 토큰 방식은 게임 세션 카드를 먼저 수정하고(`chat.update`, 재시도 안전), 미복구 종료일 때만 그 뒤에 스레드 답글을 보냅니다(`chat.postMessage`). 그래서 수정 실패는 중복 답글 없이 재시도하고, 답글 전송 결과를 알 수 없으면 manual_review로 남깁니다. 새 카드를 올린 뒤 답글만 실패해도 카드 ID는 저장하므로 재시도는 그 카드에 답글을 답니다. `not_in_channel`·`channel_not_found`·`invalid_auth` 같은 설정 오류는 `slack_<오류명>` 코드의 영구 오류로 기록합니다. Slack이 일시 오류로 안내하는 `internal_error`·`fatal_error`·`request_timeout`은 카드 수정이면 재시도하고, 새 메시지 전송이면 이미 올라갔을 수 있어 manual_review로 남깁니다. `service_unavailable`은 처리되지 않은 요청이라 둘 다 재시도합니다. 원본 카드가 삭제되어 수정할 수 없으면 새 카드를 올립니다. 수정과 답글은 한 번의 약 10초 HTTP 예산을 나눠 쓰므로, 수정이 느리면 답글 결과가 불확실해져 manual_review로 남을 수 있습니다(중복 전송은 없음). Webhook 방식은 복구만 별도 메시지로 알립니다.
 - Notion에는 같은 사건 ID로 상태·종료 시각·요약을 갱신하고, 끝난 이벤트에는 블랙박스 증거 요약 표를 붙입니다. 상세 원본 로그는 PC SQLite에 유지하고 외부에는 선택된 사건 필드와 위 요약만 전송합니다. 요약에는 장치 MAC 기반으로 고른 기록과 AP BSSID가 들어갈 수 있습니다. Notion은 원본 로그의 영구 백업이 아닙니다.
 - HTTP는 허용된 HTTPS 호스트에만 연결하고 리디렉션을 따르지 않습니다. 한 전달 작업은 DNS·응답 읽기를 포함해 최대 약 10초의 HTTP 예산을 사용하며, 응답은 64KiB로 제한합니다.
 - 429/529는 `Retry-After`를 적용합니다(최대 24시간). 대부분의 4xx는 설정 오류로 분류하고 무한 재시도하지 않습니다. 외부 오류 본문·URL·토큰은 오류 기록에 넣지 않습니다.

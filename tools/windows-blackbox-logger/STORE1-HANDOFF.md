@@ -17,7 +17,7 @@ Restart-Service HAS1BlackBoxCollector
 
 설치 위치를 바꿨다면 실제 경로에서 실행합니다. 설정 도구는 이벤트 DB와 연결된 장애 DB의 읽기 권한·속성·상태 옵션을 조회한 뒤에만 설정을 저장하며, 시험 메시지나 페이지는 만들지 않습니다. DB 링크를 쓰려면 위 ID 인수 대신 `-NotionDatabaseUrl 'https://app.notion.com/p/7ecbcc994d4d4287a2fbdb5664db5486'`를 사용할 수 있습니다. 예전 `HAS1 장치 장애 이력` DB(`4030bd38-10bf-8090-aa3f-000b6435ed61`)는 이 버전의 수집기와 호환되지 않습니다. 새 수집기 배포와 위 재설정을 같은 작업 시간에 함께 진행합니다.
 
-끊김과 복구를 한 Slack 스레드로 묶으려면 `-SlackChannelId '<#has1-device-alerts 채널 ID>'`를 추가하고 Webhook 대신 `xoxb-` bot 토큰을 입력합니다. 앱 준비는 [NOTIFICATIONS.md](NOTIFICATIONS.md#준비)를 따릅니다.
+Slack을 게임 세션별 장애 카드로 받으려면 `-SlackChannelId 'C0CBYRUAH6Y'`(`#has1-device-alerts`)를 추가하고 Webhook 대신 `xoxb-` bot 토큰을 입력합니다. 앱 준비는 [NOTIFICATIONS.md](NOTIFICATIONS.md#준비)를 따릅니다.
 
 ## Notion 표시
 

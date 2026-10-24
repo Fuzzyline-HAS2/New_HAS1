@@ -118,6 +118,10 @@ class IncidentStore:
             PRIMARY KEY(site_id,source_id)
           );
           CREATE TABLE IF NOT EXISTS incident_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS session_links (
+            site_id TEXT NOT NULL, session_id TEXT NOT NULL, destination TEXT NOT NULL,
+            remote_id TEXT NOT NULL, PRIMARY KEY(site_id,session_id,destination)
+          );
           PRAGMA application_id=1212303665;
           PRAGMA user_version=1;
           COMMIT;
@@ -343,11 +347,30 @@ class IncidentStore:
             delay = max(min(3600, 2 ** min(row["attempts"], 10)), min(86400, max(0, result.retry_after)))
             self.db.execute("UPDATE incident_outbox SET state=?,next_attempt=?,error_code=?,remote_id=? WHERE id=?", (state,now_epoch+delay,result.code,result.remote_id,delivery_id))
             incident = self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (row["incident_id"],)).fetchone()
+            parent = getattr(result, "parent_id", None)
+            if parent:
+                # The game session's Slack card / Notion page, kept even when this delivery's
+                # own write failed so its retry and later events reuse it.
+                self.db.execute("INSERT OR REPLACE INTO session_links VALUES (?,?,?,?)", (incident["site_id"], incident["session_id"], row["destination"], parent))
             if row["version"] == 1 and incident["state"] != "open":
                 if state == "retryable":
                     self.db.execute("UPDATE incident_outbox SET state='canceled' WHERE id=?", (delivery_id,))
                 elif state == "delivered":
                     self._queue(incident, channels, 2, "recovered" if incident["state"] == "recovered" else "monitoring_ended")
+
+    def slack_session(self, incident_id):
+        """Context for the game session's Slack card: its ts, Notion links and every notified device."""
+        row = self.db.execute("SELECT site_id,session_id FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
+        if not row:
+            return None
+        links = dict(self.db.execute("SELECT destination,remote_id FROM session_links WHERE site_id=? AND session_id=?", (row["site_id"], row["session_id"])).fetchall())
+        event = self.db.execute("SELECT remote_id FROM incident_outbox WHERE incident_id=? AND destination='notion' AND version=1 AND state='delivered'", (incident_id,)).fetchone()
+        incidents = [dict(item) for item in self.db.execute(
+            "SELECT device_id,state,opened_utc,updated_utc FROM incident_state i WHERE site_id=? AND session_id=? "
+            "AND EXISTS(SELECT 1 FROM incident_outbox o WHERE o.incident_id=i.incident_id AND o.destination='slack') "
+            "ORDER BY opened_utc,incident_id LIMIT 64", (row["site_id"], row["session_id"]))]
+        return {"site_id": row["site_id"], "session_id": row["session_id"], "ts": links.get("slack"),
+                "notion_page": links.get("notion"), "event_page": event[0] if event else None, "incidents": incidents}
 
     def defer(self, delivery_id, *, now_epoch, delay):
         # Waiting for late device uploads sends nothing, so it is not a delivery attempt.
@@ -416,7 +439,8 @@ class IncidentRuntime:
         self.counts = {"process_errors":0,"notification_errors":0}
         self.health = "awaiting_snapshot"
         notification = config.get("notifications", {})
-        self.channels = [name for name in ("slack","notion") if notification.get("enabled") and notification.get(name,{}).get("enabled")]
+        # Notion first: its session page is then known when the Slack card links to it.
+        self.channels = [name for name in ("notion","slack") if notification.get("enabled") and notification.get(name,{}).get("enabled")]
 
     def start(self):
         for target,name in ((self._process_loop,"incident-state"),(self._notification_loop,"incident-delivery")):
@@ -532,6 +556,9 @@ class IncidentRuntime:
                             if delay:
                                 state.defer(row["id"], now_epoch=time.time(), delay=delay)
                                 continue
+                        if row["destination"] == "slack":
+                            # Bot mode edits one card per game session; webhook mode ignores this.
+                            payload = dict(payload, slack_session=state.slack_session(row["incident_id"]))
                         result = sender.send(row["destination"],payload)
                         state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels)
                 except Exception:
