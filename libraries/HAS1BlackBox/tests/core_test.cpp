@@ -426,6 +426,77 @@ void invalid() {
   assert(end.begin(0));
   assert(end.append(e) == AppendResult::Unavailable);
 }
+// Empty SPIFFS formatted over the ring range: only per-block magic remains.
+void formatSpiffs(Memory &f, uint32_t blockCount) {
+  for (size_t s = 0; s < Ring::Size / Ring::Sector; ++s) {
+    const uint16_t magic = uint16_t(0x20140529u ^ 256u ^ (blockCount - s));
+    f.data[s * Ring::Sector + 252] = uint8_t(magic);
+    f.data[s * Ring::Sector + 253] = uint8_t(magic >> 8);
+  }
+}
+void emptySpiffs() {
+  Memory f;
+  formatSpiffs(f, 48);
+  // Same bytes a field TTGO held after the older 192 KiB min_spiffs layout.
+  assert(f.data[252] == 0x19 && f.data[253] == 0x04);
+  assert(f.data[Ring::Sector + 252] == 0x06);
+  auto before = f.data;
+  Ring retry(f);
+  assert(!retry.begin(0)); // periodic retries without a new identity never erase
+  assert(f.data == before && f.erases == 0);
+  Ring r(f);
+  assert(r.begin(0x77));
+  assert(f.erases == Ring::Size / Ring::Sector);
+  auto e = event();
+  assert(r.append(e) == AppendResult::Persisted);
+  Ring reboot(f);
+  assert(reboot.begin(0) && reboot.id() == 0x77);
+
+  Memory interrupted; // power cut after the first sectors were erased
+  formatSpiffs(interrupted, 48);
+  std::fill(interrupted.data.begin(), interrupted.data.begin() + 5 * Ring::Sector, 255);
+  Ring resumed(interrupted);
+  assert(resumed.begin(1));
+  Memory counted; // erase count stored after the magic in every block
+  formatSpiffs(counted, 32);
+  for (size_t s = 0; s < Ring::Size / Ring::Sector; ++s) {
+    counted.data[s * Ring::Sector + 254] = 0;
+    counted.data[s * Ring::Sector + 255] = 0;
+  }
+  Ring withCount(counted);
+  assert(withCount.begin(1));
+
+  const size_t lookupEntry = 2 * Ring::Sector, secondPage = 7 * Ring::Sector + 256 + 252;
+  for (int mutation = 0; mutation < 4; ++mutation) {
+    Memory used;
+    formatSpiffs(used, 48);
+    if (mutation == 0)
+      used.data[lookupEntry] = 1; // a file's lookup entry
+    if (mutation == 1)
+      used.data[secondPage] = 0; // data outside the lookup tail
+    if (mutation == 2) {
+      const uint16_t other = uint16_t(0x20140529u ^ 256u ^ (47u - 5u));
+      used.data[5 * Ring::Sector + 252] = uint8_t(other);
+      used.data[5 * Ring::Sector + 253] = uint8_t(other >> 8);
+    }
+    if (mutation == 3) {
+      used.data[3 * Ring::Sector + 252] = 255; // erase count without magic
+      used.data[3 * Ring::Sector + 253] = 255;
+      used.data[3 * Ring::Sector + 254] = 0;
+    }
+    auto snapshot = used.data;
+    Ring rejected(used);
+    assert(!rejected.begin(1));
+    assert(used.data == snapshot && used.erases == 0);
+  }
+  Memory failing;
+  formatSpiffs(failing, 48);
+  failing.eraseLimit = 0;
+  auto unchanged = failing.data;
+  Ring broken(failing);
+  assert(!broken.begin(1));
+  assert(failing.data == unchanged);
+}
 void protocol() {
   Batch b;
   b.ring = 0x1234;
@@ -539,6 +610,7 @@ int main() {
   rollingPowerCuts();
   metadataJournal();
   invalid();
+  emptySpiffs();
   protocol();
   std::cout << "blackbox core: all fault and protocol tests passed\n";
 }

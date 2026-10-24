@@ -20,7 +20,9 @@ collector configuration. `--blackbox-mode off|flash|mqtt` supports build checks;
 a compile check does not configure a field broker or deploy a device.
 
 An empty/unknown partition is handled by the library's documented initialization
-rules. Never erase a used filesystem automatically to make logging work.
+rules. Never erase a used filesystem automatically to make logging work. Field
+TTGOs can carry an empty SPIFFS from the older 192 KiB `min_spiffs` layout; it
+holds no file and the library erases it once before initializing.
 
 ## Device records
 

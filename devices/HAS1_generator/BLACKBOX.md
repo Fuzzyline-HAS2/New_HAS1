@@ -25,7 +25,8 @@ storage/network tasks; small device observation hooks remain in the binary.
 
 Boot starts the logger before potentially blocking peripheral initialization.
 Initialization errors disable only logging; unknown partition contents are not
-automatically formatted. Up to eight valid prior RTC events are queued as paired event/time records before
+automatically formatted. An empty SPIFFS left by an older `min_spiffs` layout
+(format markers only, no file) is erased once and initialized, per the library README. Up to eight valid prior RTC events are queued as paired event/time records before
 RTC initialization: earliest retained negative-code fault plus the newest seven
 when that fault is outside the tail, otherwise the newest eight. This copy is best effort and
 not evidence preserved through power removal.

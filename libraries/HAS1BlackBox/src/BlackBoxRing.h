@@ -47,15 +47,15 @@ public:
       }
     }
     if (!found) {
-      uint8_t page[256];
-      for (size_t off = 0; off < Size; off += sizeof(page)) {
-        if (!f_.read(off, page, sizeof(page)))
+      bool spiffs = false;
+      if (!unused(spiffs) || !newId)
+        return false;
+      // Holds no file, so erasing it cannot lose data; see unused(). Sector
+      // erases keep each flash-cache stall short for the other core.
+      for (size_t off = 0; spiffs && off < Size; off += Sector)
+        if (!f_.erase(off, Sector))
           return false;
-        for (auto x : page)
-          if (x != 255)
-            return false;
-      }
-      if (!newId)
+      if (spiffs && (!unused(spiffs) || spiffs))
         return false;
       ringId_ = newId;
       generation_ = 0;
@@ -258,6 +258,43 @@ private:
            durableAck_ = 0, max_ = 0, lost_ = 0;
   size_t active_ = 1, cursor_ = 0;
   bool read(size_t i, Record &r) { return f_.read(Data + i * 64, r.bytes, 64); }
+  // True for an entirely 0xff partition, or one Arduino formatted as an
+  // empty SPIFFS (e.g. under the older 192 KiB min_spiffs layout): each 4 KiB
+  // block then holds only its lookup-page magic, SPIFFS_MAGIC = 0x20140529 ^
+  // 256-byte page ^ (blockCount - block) as uint16 at byte 252, plus the
+  // erase count after it. Any other byte may belong to a file.
+  bool unused(bool &spiffs) {
+    spiffs = false;
+    uint32_t blockCount = 0;
+    for (size_t sector = 0; sector < Size / Sector; ++sector) {
+      uint8_t page[256], tail[4] = {255, 255, 255, 255};
+      for (size_t off = 0; off < Sector; off += sizeof(page)) {
+        if (!f_.read(sector * Sector + off, page, sizeof(page)))
+          return false;
+        for (size_t i = 0; i < sizeof(page); ++i) {
+          if (page[i] == 255)
+            continue;
+          if (off != 0 || i < 252)
+            return false;
+          tail[i - 252] = page[i];
+        }
+      }
+      const uint16_t magic = uint16_t(tail[0] | (tail[1] << 8));
+      if (magic == 0xffff) {
+        if (tail[2] != 255 || tail[3] != 255)
+          return false;
+        continue;
+      }
+      // magic ^ (0x20140529 ^ 256) truncated = blockCount - block, nonzero.
+      const uint16_t remaining = uint16_t(magic ^ 0x0429);
+      const uint32_t count = uint32_t(remaining + sector);
+      if (!remaining || (blockCount && blockCount != count))
+        return false;
+      blockCount = count;
+      spiffs = true;
+    }
+    return true;
+  }
   static uint64_t id(const uint8_t *p) {
     return uint64_t(get32(p + 12)) | (uint64_t(get32(p + 16)) << 32);
   }
