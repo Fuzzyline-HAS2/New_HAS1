@@ -21,7 +21,14 @@ $helperPath = Join-Path $AppDirectory 'notifications.py'
 $originalHelper = [IO.File]::ReadAllBytes($helperPath)
 $helperModePath = Join-Path $AppDirectory 'notifications.smoke-mode'
 $helperCalledPath = Join-Path $AppDirectory 'notifications.smoke-called'
-if ((Test-Path -LiteralPath $helperModePath) -or (Test-Path -LiteralPath $helperCalledPath)) { throw 'Unexpected Notion smoke helper files already exist.' }
+$helperStagePath = Join-Path $AppDirectory 'notifications.smoke-stage'
+if ((Test-Path -LiteralPath $helperModePath) -or (Test-Path -LiteralPath $helperCalledPath) -or (Test-Path -LiteralPath $helperStagePath)) { throw 'Unexpected Notion smoke helper files already exist.' }
+function Get-HelperSmokeStage {
+    if (-not (Test-Path -LiteralPath $helperStagePath)) { return 'not_started' }
+    $stage = [IO.File]::ReadAllText($helperStagePath)
+    if ($stage -cnotmatch '^[a-z_0-9\r\n]+$') { return 'invalid_stage_marker' }
+    return $stage.Trim().Replace("`n", ',').Replace("`r", '')
+}
 $readHostBefore = Get-Item Function:\Read-Host -ErrorAction SilentlyContinue
 if ($null -ne $readHostBefore) { throw 'Unexpected Read-Host override in smoke environment.' }
 try {
@@ -81,12 +88,25 @@ print("Notification configuration DPAPI and schema PASS")
 import json
 from pathlib import Path
 import sys
+stage_path = Path(__file__).with_suffix(".smoke-stage")
+def mark(stage):
+    with stage_path.open("a", encoding="utf-8") as stream:
+        stream.write(stage + "\n")
+mark("started")
 assert sys.argv[1:] == ["--check-notion-schema"], "unexpected CLI arguments"
-assert json.load(sys.stdin) == {
+mark("argv_ok")
+raw_input = sys.stdin.read()
+mark("stdin_chars_" + str(len(raw_input)))
+request = json.loads(raw_input)
+mark("json_parsed")
+assert request == {
     "data_source_id": "4030bd38-10bf-8090-aa3f-000b6435ed61",
     "token": "ntn_has1_windows_smoke_test_only",
 }, "unexpected preflight stdin"
+mark("stdin_match")
+mark("mode_read")
 mode = Path(__file__).with_suffix(".smoke-mode").read_text(encoding="utf-8").strip()
+mark("mode_loaded")
 Path(__file__).with_suffix(".smoke-called").write_text(mode, encoding="utf-8")
 if mode == "reject":
     print(json.dumps({"state": "permanent", "code": "notion_schema_mismatch"}))
@@ -117,16 +137,17 @@ else:
         } catch { $failure = $_.Exception.Message }
         if ($null -eq $failure -or -not $failure.Contains('Previous config is retained.')) { throw 'Rejected Notion schema did not fail safely.' }
         if ($failure.Contains($mockNotionToken) -or $failure.Contains($mockWebhook)) { throw 'Preflight failure exposed a credential.' }
-        if (-not (Test-Path -LiteralPath $helperCalledPath) -or [IO.File]::ReadAllText($helperCalledPath) -ne 'reject') { throw 'Direct-ID setup skipped the schema preflight.' }
+        if (-not (Test-Path -LiteralPath $helperCalledPath) -or [IO.File]::ReadAllText($helperCalledPath) -ne 'reject') { throw ('Direct-ID schema preflight failed; synthetic helper stages: ' + (Get-HelperSmokeStage)) }
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($configPath)) -cne $beforeNotion) { throw 'Rejected Notion schema changed config.' }
         $credentialsAfter = @((Get-ChildItem -LiteralPath $StateDirectory -Filter 'notifications-*.dpapi').Name | Sort-Object) -join '|'
         if ($credentialsAfter -cne $credentialsBefore) { throw 'Rejected Notion schema left an extra DPAPI file.' }
 
         Remove-Item -LiteralPath $helperCalledPath -Force
+        Remove-Item -LiteralPath $helperStagePath -Force -ErrorAction SilentlyContinue
         [IO.File]::WriteAllText($helperModePath, 'accept', $utf8)
         $setupOutput = (& (Join-Path $AppDirectory 'configure-notifications.ps1') -StateDirectory $StateDirectory -EnableSlack -EnableNotion -NotionDataSourceId $mockNotionSource 6>&1 | Out-String)
         if ($setupOutput.Contains($mockNotionToken) -or $setupOutput.Contains($mockWebhook)) { throw 'Notification setup exposed a credential.' }
-        if (-not (Test-Path -LiteralPath $helperCalledPath) -or [IO.File]::ReadAllText($helperCalledPath) -ne 'accept') { throw 'Successful direct-ID setup skipped the schema preflight.' }
+        if (-not (Test-Path -LiteralPath $helperCalledPath) -or [IO.File]::ReadAllText($helperCalledPath) -ne 'accept') { throw ('Successful direct-ID preflight failed; synthetic helper stages: ' + (Get-HelperSmokeStage)) }
         $configuredRaw = Get-Content -LiteralPath $configPath -Raw
         if ($configuredRaw.Contains($mockNotionToken) -or $configuredRaw.Contains($mockWebhook) -or $configuredRaw.Contains('notion_token')) { throw 'Plaintext credential appeared in Notion config.' }
         $configured = $configuredRaw | ConvertFrom-Json
@@ -137,7 +158,7 @@ else:
         # Restore before importing notifications in the runtime verification.
         [IO.File]::WriteAllBytes($helperPath, $originalHelper)
         Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $helperModePath, $helperCalledPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $helperModePath, $helperCalledPath, $helperStagePath -Force -ErrorAction SilentlyContinue
     }
     @'
 import json
@@ -162,7 +183,7 @@ print("Notification direct-ID preflight and DPAPI roundtrip PASS")
     Write-Host 'Notification configuration ACL and config preservation PASS; no network requests sent.'
 } finally {
     [IO.File]::WriteAllBytes($helperPath, $originalHelper)
-    Remove-Item -LiteralPath $helperModePath, $helperCalledPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $helperModePath, $helperCalledPath, $helperStagePath -Force -ErrorAction SilentlyContinue
     Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue
     [IO.File]::WriteAllBytes($configPath, $originalConfig)
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
