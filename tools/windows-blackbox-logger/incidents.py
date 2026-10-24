@@ -434,13 +434,15 @@ class IncidentRuntime:
                     self.health = source[0] if source else "awaiting_snapshot"
                 except Exception:
                     self.authorized.clear()
-                    self.health = "processing_error"
                     if state:
                         try:
                             state.db.execute("INSERT OR REPLACE INTO incident_meta VALUES ('delivery_run','')")
                             state.invalidate("processing_error")
                         except sqlite3.Error:
                             pass  # The shared Event also denies the delivery worker.
+                    # Publish completion only after the durable revocation was
+                    # attempted. The in-memory gate closes immediately above.
+                    self.health = "processing_error"
                     self.counts["process_errors"] += 1
                     if self.counts["process_errors"] % 120 == 1:
                         LOG.warning("Incident processing unavailable; raw collection remains active", exc_info=True)

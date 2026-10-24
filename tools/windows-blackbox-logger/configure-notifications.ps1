@@ -62,8 +62,10 @@ $credentialName = 'notifications-' + [Guid]::NewGuid().ToString('N') + '.dpapi'
 $credentialPath = Join-Path $StateDirectory $credentialName
 $configTemporary = Join-Path $StateDirectory ('config-' + [Guid]::NewGuid().ToString('N') + '.tmp')
 $configCommitted = $false
+$setupStage = 'credential_write'
 try {
     [IO.File]::WriteAllBytes($credentialPath, $encrypted)
+    $setupStage = 'credential_acl'
     $acl = New-Object Security.AccessControl.FileSecurity
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
@@ -73,6 +75,7 @@ try {
     $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-19')), 'Read', 'Allow')
     $acl.AddAccessRule($rule)
     Set-Acl -LiteralPath $credentialPath -AclObject $acl
+    $setupStage = 'config_read'
     $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     if ($null -eq $config.telemetry) { throw 'telemetry configuration is required.' }
     if ($null -eq $config.telemetry.incidents -or -not $config.telemetry.incidents.enabled) { throw 'Configure and verify incident collection before enabling notifications.' }
@@ -85,16 +88,23 @@ try {
     if ($EnableNotion) { $settings.notion.data_source_id = $NotionDataSourceId }
     $config.telemetry.incidents | Add-Member -NotePropertyName notifications -NotePropertyValue $settings -Force
     $utf8 = New-Object Text.UTF8Encoding($false)
+    $setupStage = 'config_write'
     [IO.File]::WriteAllText($configTemporary, ($config | ConvertTo-Json -Depth 30), $utf8)
     # Preserve installed config ACL (LocalService read, administrators write).
+    $setupStage = 'config_acl'
     Set-Acl -LiteralPath $configTemporary -AclObject (Get-Acl -LiteralPath $configPath)
-    [IO.File]::Replace($configTemporary, $configPath, $null)
+    $setupStage = 'config_replace'
+    # PowerShell coerces $null to an empty string for this string parameter;
+    # File.Replace rejects an empty backup path. NullString passes a CLR null.
+    [IO.File]::Replace($configTemporary, $configPath, [NullString]::Value)
     $configCommitted = $true
     Write-Host 'Notification settings saved. Restart HAS1BlackBoxCollector to load them. No test message was sent.'
     Write-Host 'Previously created notifications-*.dpapi files can be removed after checking the active credential_file.'
 } catch {
     if (-not $configCommitted) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
-    throw 'Notification setup failed. Previous config is retained; check incident setup and Windows permissions.'
+    # Only fixed stage identifiers are reported; exception text may contain secrets.
+    $retention = if ($configCommitted) { 'New config is saved.' } else { 'Previous config is retained.' }
+    throw "Notification setup failed [stage=$setupStage]. $retention Check incident setup and Windows permissions."
 } finally {
     Remove-Item -LiteralPath $configTemporary -Force -ErrorAction SilentlyContinue
 }

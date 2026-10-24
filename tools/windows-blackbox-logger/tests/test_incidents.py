@@ -277,29 +277,51 @@ class RuntimeTests(unittest.TestCase):
             raw=TelemetryStore(telemetry_path)
             raw.save(event(when=utc_now()))
             fail=threading.Event()
+            revocation_started=threading.Event()
+            release_revocation=threading.Event()
+            original_invalidate=IncidentStore.invalidate
+            def delayed_invalidate(store, reason="server_stale"):
+                if reason == "processing_error":
+                    revocation_started.set()
+                    if not release_revocation.wait(4):
+                        raise AssertionError("test did not release durable revocation")
+                return original_invalidate(store, reason)
             def disk_check():
                 if fail.is_set():
                     raise OSError("injected disk failure")
             runtime=IncidentRuntime({"database":str(folder/"incidents.db"),"notifications":{"enabled":False}},telemetry_database=telemetry_path,site_id="store-1",source_id="server-1",check_disk=disk_check)
-            runtime.start()
-            try:
-                end=time.monotonic()+4
-                while time.monotonic()<end and runtime.health!="healthy":
-                    time.sleep(.01)
-                self.assertEqual(runtime.health,"healthy")
-                fail.set()
-                end=time.monotonic()+4
-                while time.monotonic()<end and runtime.health!="processing_error":
-                    time.sleep(.01)
-                self.assertEqual(runtime.health,"processing_error")
-                self.assertFalse(runtime.authorized.is_set())
-                reader=IncidentStore(folder/"incidents.db",readonly=True)
-                self.assertEqual(reader.db.execute("SELECT value FROM incident_meta WHERE key='delivery_run'").fetchone()[0],"")
-                self.assertIsNone(reader.db.execute("SELECT validated_run FROM incident_sources").fetchone()[0])
-                reader.close()
-            finally:
-                self.assertTrue(runtime.stop())
-                raw.close()
+            with patch.object(IncidentStore,"invalidate",delayed_invalidate):
+                runtime.start()
+                try:
+                    end=time.monotonic()+4
+                    while time.monotonic()<end and runtime.health!="healthy":
+                        time.sleep(.01)
+                    self.assertEqual(runtime.health,"healthy")
+                    errors_before=runtime.counts["process_errors"]
+                    fail.set()
+                    self.assertTrue(revocation_started.wait(4))
+                    # Force a slow durable write, reproducing the Windows race.
+                    # Fail-closed memory authorization must already be revoked.
+                    self.assertFalse(runtime.authorized.is_set())
+                    self.assertEqual(runtime.counts["process_errors"],errors_before)
+                    release_revocation.set()
+                    end=time.monotonic()+4
+                    while time.monotonic()<end and runtime.counts["process_errors"]==errors_before:
+                        time.sleep(.01)
+                    self.assertGreater(runtime.counts["process_errors"],errors_before)
+                    self.assertEqual(runtime.health,"processing_error")
+                    self.assertFalse(runtime.authorized.is_set())
+                    reader=IncidentStore(folder/"incidents.db",readonly=True)
+                    try:
+                        self.assertEqual(reader.db.execute("SELECT value FROM incident_meta WHERE key='delivery_run'").fetchone()[0],"")
+                        self.assertIsNone(reader.db.execute("SELECT validated_run FROM incident_sources").fetchone()[0])
+                    finally:
+                        reader.close()
+                finally:
+                    release_revocation.set()
+                    stopped=runtime.stop()
+                    raw.close()
+                    self.assertTrue(stopped)
 
     def test_caughtup_replay_and_workers_keep_notification_outside_ingest(self):
         with tempfile.TemporaryDirectory() as folder:
