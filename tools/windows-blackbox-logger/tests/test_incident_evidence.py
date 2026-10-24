@@ -172,6 +172,21 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(kept[0].startswith("와이파이 요약"))
         self.assertIn("복구 동작", kept[-1])
 
+    def test_reset_reason_comes_from_the_evidence_boot_record_too(self):
+        # Game 1659 G2P7: the table was built before device.boot arrived; evidence.* already had the reason.
+        path = Path(self.temp.name) / "evidence-boot.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -78, 0, 0)))
+        new_boot = dict(boot=2994054713, uptime=0)
+        store.save(device(2, "2026-10-24T03:03:30.000000+00:00", "Logger", "rtc.replay.end", (0, 0, 1, 0), **new_boot))
+        store.save(device(3, "2026-10-24T03:03:30.000000+00:00", "Boot", "evidence.20261024.2", (1, 2, 0, 0), **new_boot))
+        store.save(device(4, "2026-10-24T03:03:30.000000+00:00", "Boot", "23", (1, -2147483648, -2147483648, -2147483648), **new_boot))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            result = summarize(raw, INCIDENT, CLOSED)
+        self.assertIn("🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐", [row[2] for row in result["rows"]])
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)"])
+
     def test_unmapped_wifi_reasons_still_summarize(self):
         # ESP-IDF has many disconnect codes beyond WIFI_REASONS; they must not break the table.
         path = Path(self.temp.name) / "unmapped.db"

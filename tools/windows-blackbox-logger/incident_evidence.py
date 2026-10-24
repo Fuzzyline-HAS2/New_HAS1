@@ -111,11 +111,20 @@ def _rows(raw, sql, params):
 
 
 def _reset_reason(event):
-    values = (event.get("fields") or {}).get("values")
-    if event.get("event_type") == "Boot" and (event.get("fields") or {}).get("text") == "device.boot" \
-            and isinstance(values, list) and values and type(values[0]) is int:
-        return f"{values[0]} {RESET_REASONS[values[0]]}" if values[0] in RESET_REASONS else str(values[0])
-    return None
+    """The boot's reset reason from any Boot record that logs actual_reset_reason.
+
+    device.boot can upload later than the evidence boot record (evidence.*), so either one counts.
+    """
+    fields = event.get("fields") or {}
+    text, values = fields.get("text"), fields.get("values")
+    if event.get("event_type") != "Boot" or not isinstance(text, str) or not isinstance(values, list) \
+            or len(values) != 4 or not all(type(v) is int for v in values):
+        return None
+    item = named_values(SimpleNamespace(kind=EVENT_KINDS["Boot"], text=text, values=tuple(values))).get("fields", {}).get("actual_reset_reason")
+    value = item.get("value") if item else None
+    if type(value) is not int:
+        return None
+    return f"{value} {RESET_REASONS[value]}" if value in RESET_REASONS else str(value)
 
 
 def _device_rows(events):
