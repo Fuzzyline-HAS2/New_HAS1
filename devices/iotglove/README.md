@@ -107,7 +107,7 @@ Beetle의 [beacon_map.h](iotglove_beetle/beacon_map.h)는 `HAS3:장치ID`의 대
 - `IOTGLOVE_BATTERY_CALIBRATION`: 멀티미터 비교 보정값.
 - `IOTGLOVE_BATTERY_MIN_MV`, `IOTGLOVE_BATTERY_MAX_MV`: 배터리 구성에 맞는 측정 허용 범위.
 
-보정 상수가 없어도 핀의 raw ADC mV는 1초마다 읽어 `s` 상태 `[battery] adc_mv=`와 링크 손실 기록에 남기므로, 멀티미터 실측값과 비교해 분압비를 정할 수 있다. 미설정·0/포화 등 무효 ADC 값·범위 이탈은 전압 보고를 생략한다. 보고는 기존 계약대로 `battery_remaining`에 **V, 소수 2자리**, 최소 60초 간격으로 수행한다. 떠 있는 ADC의 모든 단선을 소프트웨어만으로 판별할 수는 없다. 잔량 %로 변환하지 않는다. ADC 범위/보정 API 근거: [Espressif Arduino ADC](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/adc.html).
+미설정·0/포화 등 무효 ADC 값·범위 이탈은 전압 보고를 생략한다. 보고는 기존 계약대로 `battery_remaining`에 **V, 소수 2자리**, 최소 60초 간격으로 수행한다. 떠 있는 ADC의 모든 단선을 소프트웨어만으로 판별할 수는 없다. 잔량 %로 변환하지 않는다. ADC 범위/보정 API 근거: [Espressif Arduino ADC](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/adc.html).
 
 ## 관리·OTA
 

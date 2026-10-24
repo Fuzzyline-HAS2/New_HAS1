@@ -13,17 +13,12 @@ int main() {
   assert(history.attempts == 1 && !history.requested);
   assert(NetworkRestartPolicy::request(history));
   NetworkRestartPolicy::boot(history, true, false);
-  assert(history.attempts == 2 && NetworkRestartPolicy::allowed(history));
-  assert(NetworkRestartPolicy::request(history));
-  NetworkRestartPolicy::boot(history, true, false);
   assert(!NetworkRestartPolicy::allowed(history));
   assert(!NetworkRestartPolicy::request(history));
   NetworkRestartPolicy::boot(history, false, false);  // Power cycle.
   assert(history.attempts == 0);
   NetworkRestartPolicy::boot(history, false, true);   // Main watchdog panic.
   assert(history.attempts == 1);
-  NetworkRestartPolicy::boot(history, false, true);
-  assert(history.attempts == 2 && NetworkRestartPolicy::allowed(history));
   NetworkRestartPolicy::boot(history, false, true);
   assert(!NetworkRestartPolicy::allowed(history));
 

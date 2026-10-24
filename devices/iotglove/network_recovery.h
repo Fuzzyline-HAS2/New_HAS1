@@ -13,30 +13,7 @@ struct NetworkDiagnostics {
   int lastHttpStatus = 0;
   uint8_t lastHttpError = 0, lastHttpPhase = 0;
   uint16_t wifiDisconnectReason = 0;
-  // STA link itself, distinct from HTTP. The worker owns every field.
-  bool wifiConnected = false;        // associated to the fixed SSID
-  bool wifiWasUp = false;            // associated at least once since boot
-  uint32_t wifiDownSinceMs = 0;      // start of the current outage; boot time until first association
-  uint32_t wifiConnectFailures = 0;  // consecutive failed fixed-SSID attempts in this outage
-  uint32_t wifiLossCount = 0;        // disconnects of an established link since boot
-  uint32_t wifiLastLossAtMs = 0;     // uptime of the latest such disconnect event
-  uint16_t wifiLastLossReason = 0;   // its STA disconnect reason
-  int8_t wifiLastLossRssi = 0;       // RSSI sampled shortly before it
-  int8_t rssi = 0;                   // latest sample while connected
 };
-
-// A STA that cannot reassociate is restarted as a last resort: after some drops
-// the radio/driver only recovers through a reboot, and the retry loop alone
-// never ends. A boot that has not associated yet keeps the longer limit, since
-// the AP may simply be off. OTA keeps the exemption of the worker watchdog.
-constexpr uint32_t kWifiLostRestartMs = 30000;
-constexpr uint32_t kWifiNeverUpRestartMs = 180000;
-
-inline bool wifiLinkDownTooLong(const NetworkDiagnostics& d, uint32_t now) {
-  if (d.wifiConnected || d.phase == NetworkPhase::Ota) return false;
-  const uint32_t limit = d.wifiWasUp ? kWifiLostRestartMs : kWifiNeverUpRestartMs;
-  return uint32_t(now - d.wifiDownSinceMs) >= limit;
-}
 
 inline bool networkWorkerStalled(const NetworkDiagnostics& d, uint32_t now) {
   // Legacy OTA owns its timeouts. Without a progress hook, the worker watchdog
