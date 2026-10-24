@@ -94,6 +94,8 @@ try {
     & $serviceScript install -PythonExe $python -Config $config -MqttPassword $secret
     if ($LASTEXITCODE -ne 0) { throw 'Install failed.' }
     if ((Get-Service $id).Status -ne 'Stopped') { throw 'Install unexpectedly started collector.' }
+    & (Join-Path $PSScriptRoot 'windows_notifications_smoke.ps1') -AppDirectory $app -StateDirectory $state -PythonExe $python
+    # Notification smoke restores the original disabled config before any service start.
     $scm = Get-CimInstance Win32_Service -Filter "Name='$id'"
     if ($scm.StartName -ne 'NT AUTHORITY\LocalService') { throw 'Unexpected service identity.' }
     $reg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$id"

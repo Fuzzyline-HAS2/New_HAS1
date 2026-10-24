@@ -105,7 +105,8 @@ class Event:
                 raise ValueError("uncertainty_ms must be finite and between 0 and one day")
         if not isinstance(self.fields, dict):
             raise ValueError("fields must be an object")
-        if len(canonical_json(self.fields).encode("utf-8")) > MAX_FIELDS_BYTES:
+        field_limit = 32768 if self.source == "game_server" and self.event_type == "game_monitor_snapshot" else MAX_FIELDS_BYTES
+        if len(canonical_json(self.fields).encode("utf-8")) > field_limit:
             raise ValueError("fields exceed bounded size")
         bounded_text(self.raw, "raw", MAX_RAW_BYTES, allow_empty=True)
         if len(canonical_json(asdict(self)).encode("utf-8")) > MAX_EVENT_BYTES:
@@ -155,7 +156,7 @@ class TelemetryStore:
             if mode.lower() != "wal" or self.db.execute("PRAGMA synchronous").fetchone()[0] != 2:
                 raise sqlite3.DatabaseError("required WAL/FULL durability unavailable")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise sqlite3.DatabaseError("unsupported telemetry schema")
             # A distinct application_id prevents accidentally treating device ACK
             # storage (or another application's database) as this journal.
@@ -203,6 +204,22 @@ class TelemetryStore:
                 except Exception:
                     self.db.execute("ROLLBACK")
                     raise
+            # Ingestion order is independent of occurrence time (flash replay and
+            # rotating JSONL can arrive late). Backfill once, entirely in SQLite.
+            if version < 3:
+                self.db.executescript("""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS telemetry_ingest (
+                      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                      site_id TEXT NOT NULL, source TEXT NOT NULL,
+                      source_id TEXT NOT NULL, event_id TEXT NOT NULL,
+                      UNIQUE(site_id,source,source_id,event_id)
+                    );
+                    INSERT OR IGNORE INTO telemetry_ingest(site_id,source,source_id,event_id)
+                      SELECT site_id,source,source_id,event_id FROM telemetry_events;
+                    PRAGMA user_version=3;
+                    COMMIT;
+                """)
         except Exception:
             self.db.close()
             raise
@@ -248,6 +265,7 @@ class TelemetryStore:
                             (*key, event.occurred_utc, event.observed_utc,
                              canonical_json(payload), stable))
             self._index_event(event)
+            self.db.execute("INSERT INTO telemetry_ingest(site_id,source,source_id,event_id) VALUES (?,?,?,?)", key)
             self.db.execute("COMMIT")
             return True
         except Exception:

@@ -40,7 +40,7 @@ def validate_config(config, base_path):
     value = config.get("telemetry")
     if value is None:
         return None
-    _keys(value, ("site_id", "database", "omada", "server_jsonl", "min_free_bytes", "device_import", "clock_probe", "gateway_udp"), "telemetry")
+    _keys(value, ("site_id", "database", "omada", "server_jsonl", "min_free_bytes", "device_import", "clock_probe", "gateway_udp", "incidents"), "telemetry")
     site = value.get("site_id")
     if not isinstance(site, str) or not site.strip() or len(site) > 128 or "\x00" in site:
         raise ValueError("telemetry requires site_id")
@@ -112,6 +112,9 @@ def validate_config(config, base_path):
         if type(port) is not int or not 1 <= port <= 65535 or not isinstance(source,str) or not 1 <= len(source) <= 256 or "\x00" in source:
             raise ValueError("gateway_udp requires port and explicit source_id")
         result["gateway_udp"].update(host="127.0.0.1",port=port,source_id=source)
+    if "incidents" in value:
+        from incidents import validate_config as validate_incidents
+        result["incidents"] = validate_incidents(value["incidents"], base_path, database, config["database"], result["server_jsonl"])
     return result
 
 
@@ -230,6 +233,7 @@ class TelemetryRuntime:
         self._gateway_checked = 0
         self._gateway_store = None
         self._evidence_thread = None
+        self.incidents = None
         self._anchors = queue.Queue(maxsize=64)
         self._run_id = uuid.uuid4().hex
         self.importer = None
@@ -324,6 +328,11 @@ class TelemetryRuntime:
             self._start_gateway()
         self._evidence_thread = threading.Thread(target=self._evidence_run, name="evidence-maintenance", daemon=True)
         self._evidence_thread.start()
+        if self.config.get("incidents", {}).get("enabled"):
+            from incidents import IncidentRuntime
+            self.incidents = IncidentRuntime(self.config["incidents"], telemetry_database=self.config["database"],
+                site_id=self.config["site_id"], source_id=self.config["server_jsonl"]["source_id"], check_disk=self._check_disk)
+            self.incidents.start()
         if self.config["omada"]["enabled"]:
             self._start_omada()
             self._omada_monitor = threading.Thread(target=self._monitor_omada, name="omada-monitor", daemon=True)
@@ -460,6 +469,8 @@ class TelemetryRuntime:
 
     def stats(self):
         result = dict(self.counts)
+        if self.incidents:
+            result["incidents"] = self.incidents.stats()
         result["workers"] = {"evidence": bool(self._evidence_thread and self._evidence_thread.is_alive()),
                              "server_jsonl": bool(self._tail_thread and self._tail_thread.is_alive()),
                              "omada": bool(self.receiver and self.receiver.is_receiving()),
@@ -481,9 +492,11 @@ class TelemetryRuntime:
         deadline = time.monotonic() + timeout
         self._stop.set()
         finished = True
+        if self.incidents:
+            finished = self.incidents.stop(max(0, deadline-time.monotonic())) and finished
         if self._omada_monitor:
             self._omada_monitor.join(max(0, deadline - time.monotonic()))
-            finished = not self._omada_monitor.is_alive()
+            finished = not self._omada_monitor.is_alive() and finished
         if self.receiver:
             receiver_finished = self.receiver.stop(max(0, deadline - time.monotonic()))
             finished = finished and receiver_finished

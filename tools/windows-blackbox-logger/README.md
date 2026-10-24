@@ -1,7 +1,8 @@
 # HAS1 blackbox Windows collector
 
-글러브와 발전기의 별도 `HAS1BlackBox` 로그만 수집합니다. 게임 HTTP, 기존 OTA,
-공용 Wi-Fi 라이브러리와 `windows-telnet-logger`에는 연결하지 않습니다.
+글러브와 발전기의 별도 `HAS1BlackBox` 로그를 수집하며, 선택적으로 게임 서버·Omada 기록과 사건 알림을 함께 처리합니다. 게임 HTTP와 기존 OTA, 공용 Wi-Fi 라이브러리는 변경하지 않고 `windows-telnet-logger`에는 연결하지 않습니다.
+
+1호점 최초 설치는 [FIRST-INSTALL.md](FIRST-INSTALL.md), 게임 상황에 따른 사건 판단은 [서버 로그·사건 수집 활성화](#서버-로그사건-수집-활성화), Slack·Notion 연결은 [NOTIFICATIONS.md](NOTIFICATIONS.md)를 순서대로 참고하세요.
 
 ```
 장치 flash → MQTT QoS 1 → Mosquitto → bounded queue → SQLite COMMIT → ACK1
@@ -57,8 +58,7 @@ start.cmd
 
 ## Windows 서비스 등록
 
-서비스 등록은 **수집기를 백그라운드에서 자동 실행**하는 기능입니다. Slack/Notion
-연동이나 설정 GUI는 포함하지 않습니다. Claude/Codex 실행은 필요하지 않습니다.
+서비스 등록은 **수집기를 백그라운드에서 자동 실행**하는 기능입니다. Slack·Notion 알림은 별도 설정으로 활성화하며 기본적으로 꺼져 있습니다. 설정 GUI는 제공하지 않습니다. Claude/Codex 실행은 필요하지 않습니다.
 Mosquitto 설치·서비스 등록·방화벽 설정도 이 도구가 변경하지 않습니다.
 
 지원 대상은 **64비트 Windows 10/11, .NET Framework 4.8 이상, 모든 사용자용
@@ -133,7 +133,7 @@ service.cmd uninstall
   종료합니다. 정상 중지 로그는 `Collector stopped cleanly after draining accepted batches`입니다.
 - 디스크/라이브러리가 멈춰 정상 종료하지 못하면 WinSW가 **프로세스마다 최대 30초
   대기 후 강제 종료**합니다. Windows venv 실행기가 추가 프로세스를 만들 수 있으므로
-  전체 종료가 정확히 30초 이내라는 보장은 아닙니다. 자식부터 종료하고 관리 명령은
+  전체 종료가 정확히 30초 이내라는 보장은 아닙니다. 부모 프로세스부터 종료 신호를 전달해 Python이 Ctrl+C를 받고 저장 작업을 마칠 수 있게 하며, 관리 명령은
   SCM 중지 상태를 최대 90초 확인한 뒤 성공 또는 오류를 반환합니다.
   그 시점의 미커밋 배치는 ACK하지 않습니다. 장치 플래시에 남아 있는 기록은 재전송으로
   복구하지만, 순환 덮어쓰기로 사라진 기록까지 보장하지는 않습니다.
@@ -328,3 +328,63 @@ Omada의 명시적인 `[site:...]`가 `HAS1`과 다르면 저장하지 않고 `s
 자동 장치 DB 반영, 선택적 MQTT 시간 기준점, PHP loopback UDP 수집, 영속 수집 상태,
 원본 조회 페이지·시각 필드·명명된 값, 명시적 컬럼 매핑의 Omada CSV 가져오기는
 [EVIDENCE.md](EVIDENCE.md)를 참조한다. 새 선택 기능은 기본값이 꺼져 있으며 현장 활성화가 필요하다.
+
+
+## 서버 로그·사건 수집 활성화
+
+새 사건 기능은 최신 서버 코드와 Windows 수집기를 모두 적용해야 사용할 수 있습니다. 장치 OTA를 추가로 변경할 필요는 없습니다. 설치 예시의 `incidents`와 `notifications`는 모두 꺼져 있으므로, 서버 기록 수집부터 확인하고 알림을 활성화합니다.
+
+업데이트 전에 수집 서비스를 정상 중지하고 `data` 폴더를 백업합니다. 통합 원본 `telemetry.sqlite3`는 새 수집기에서 스키마 v3로 자동 이관되며 구형 수집기는 이 DB를 읽지 못합니다. 구형 프로그램으로 되돌릴 때는 중지 상태에서 업데이트 전 백업도 함께 복원해야 하며, 백업 이후 수집된 기록은 별도로 보존합니다. 장치 ACK 저장용 `blackbox.sqlite3`의 스키마는 이번에 바꾸지 않습니다.
+
+1. 게임 서버의 진단 출력을 켭니다. 서버 저장소의 `docs/BLACKBOX-TELEMETRY.md`에 따라 환경 변수 `HAS1_TELEMETRY_ENABLED=1`, `HAS1_TELEMETRY_SITE_ID=store-1`, `HAS1_TELEMETRY_SOURCE_ID=store-1-game-server`, `HAS1_TELEMETRY_EXPECTED_THEME=실제_서버_테마`, `HAS1_TELEMETRY_DIR=실제_절대_로그_폴더`를 설정합니다. 실제 테마를 추측하지 말고 실행 중인 서버와 맞춥니다. 환경 변경은 서버 재시작이 필요하므로 게임이 없는 시간에 적용합니다.
+2. `server-*.jsonl` 파일이 생성되고 `game_monitor_snapshot`이 기록되는지 확인합니다. LocalService 계정에 이 폴더를 읽을 권한이 있어야 합니다.
+3. 수집 서비스를 중지하고 `%ProgramData%\HAS1BlackBox\config.json`의 기존 `telemetry` 안에 다음 설정을 병합합니다. 전체 파일을 아래 내용으로 덮어쓰지 않습니다. 경로 예시는 실제 서버 출력 위치와 맞춥니다.
+
+```json
+{
+  "server_jsonl": {
+    "enabled": true,
+    "directory": "C:/ProgramData/HAS1BlackBox/server-telemetry",
+    "source_id": "store-1-game-server",
+    "poll_seconds": 0.5
+  },
+  "incidents": {
+    "enabled": true,
+    "database": "C:/ProgramData/HAS1BlackBox/data/incidents.sqlite3",
+    "notifications": {"enabled": false}
+  }
+}
+```
+
+서비스 코드 기본 위치는 `%ProgramFiles%\HAS1 BlackBox`, 실제 설정·암호·데이터 기본 위치는 `%ProgramData%\HAS1BlackBox`입니다. 사건 DB는 원본 `blackbox.sqlite3`, 통합 원본 `telemetry.sqlite3`와 **다른 파일**이어야 합니다. 콘솔용 예시의 상대 경로는 config.json 위치 기준입니다. 서비스 재설치는 기존 설정을 보존하므로 새 예시를 복사해도 자동으로 기능이 켜지지 않습니다.
+
+관리자 PowerShell에서 설정을 검사하고 다시 시작합니다.
+
+```powershell
+Set-Location "$env:ProgramFiles\HAS1 BlackBox"
+.\.venv\Scripts\python.exe collector.py --config "$env:ProgramData\HAS1BlackBox\config.json" --check-config
+# 위 검사가 성공한 뒤:
+Start-Service HAS1BlackBoxCollector
+Get-Content "$env:ProgramData\HAS1BlackBox\data\collector.log" -Tail 40
+```
+
+`--check-config`는 구문 검증이며 실제 서버 파일 권한·로그 생성·외부 전송을 확인하지 않습니다. 실행 로그의 `Telemetry counters` 안 `incidents.source_health`와 작업자 상태를 확인합니다. `awaiting_snapshot`은 상태 대기, `healthy`는 최근 확인 성공, `server_stale`·`invalid_snapshot`·`clock_step`은 새 장치 알림을 보류해야 하는 상태입니다. 저장된 과거 `healthy`만 보고 현재 프로세스가 살아 있다고 판단하지 않습니다.
+
+게임 중 참가자의 서버 통신 단절 사건만 처리합니다. 정상적인 게임 종료 후 배터리 분리는 경보가 아니며, 게임 종료·참가 해제·장치 교체에 따른 감시 종료를 실제 재접속 복구와 구분합니다. 생존자·술래·유령 모두 대상이고 `neutral`과 운영자가 음소거한 장치는 제외합니다. 원본 MQTT 로그가 안 들어오는 것만으로 사건을 만들지 않습니다.
+
+### 사건 목록·상태·관련 증거 조회
+
+다음 명령은 기존 사건 DB를 읽기 전용으로 조회합니다. 사건 기능을 켠 뒤 생성된 DB에 사용하며, 조회 명령이 없는 DB를 새로 만들지는 않습니다.
+
+```powershell
+Set-Location "$env:ProgramFiles\HAS1 BlackBox"
+.\.venv\Scripts\python.exe incidents.py --database "$env:ProgramData\HAS1BlackBox\data\incidents.sqlite3" --stats
+.\.venv\Scripts\python.exe incidents.py --database "$env:ProgramData\HAS1BlackBox\data\incidents.sqlite3" --list --limit 20
+.\.venv\Scripts\python.exe incidents.py --database "$env:ProgramData\HAS1BlackBox\data\incidents.sqlite3" --telemetry-database "$env:ProgramData\HAS1BlackBox\data\telemetry.sqlite3" --incident-id '목록에서_확인한_사건ID' --limit 200 > "$env:TEMP\has1-incident.json"
+```
+
+`--stats`는 사건·발송 상태별 수량과 마지막 기록된 서버 상태를 보여 줍니다. `--list`로 사건 ID를 찾은 뒤 상세 내보내기를 실행합니다. 결과는 원인 확정 보고서가 아니라 사건 상태·전송 이력·관련 로그 후보입니다. 같은 사건 ID는 직접 연결하고, 같은 MAC과 시간 범위는 관련 후보로 구분합니다. 시간 기준이 없는 장치 로그를 업로드 시각으로 사고 시각에 맞추지 않습니다. 기본 최대 200건, `--limit`은 1~1000이며 잘린 결과는 표시합니다.
+
+알림 대기열의 `manual_review`는 외부 전송 후 응답 유실 등으로 실제 전달 여부가 불명확한 상태입니다. Slack/Notion에서 사건 ID를 확인해야 하며 이 항목을 삭제하거나 무조건 재전송하면 중복될 수 있습니다. `permanent`는 인증·설정 등 수정이 필요한 실패입니다. SQLite 사건 기록만으로 외부 API의 정확히 한 번 전달을 보장하지 않습니다.
+
+서버 수집과 정상 배터리 교체 시험을 확인한 뒤 [NOTIFICATIONS.md](NOTIFICATIONS.md)에 따라 Slack·Notion 계정을 설정합니다. 기본 설정 경로가 같으므로 설치된 코드 폴더에서 `configure-notifications.ps1`을 실행하면 됩니다. 이 단계에서 암호는 Windows 숨김 입력창으로 받고, 코드나 채팅에 넣지 않습니다.
