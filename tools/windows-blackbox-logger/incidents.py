@@ -12,14 +12,17 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
+from incident_evidence import GIVE_UP_SECONDS, summarize, wait_seconds
 from telemetry import Event, canonical_json, normalize_mac, parse_utc, utc_now
 
 LOG = logging.getLogger("blackbox")
 APP_ID = 0x48424931
 FRESH_SECONDS = 30
 BATCH = 128
+EVIDENCE_DEADLINE = GIVE_UP_SECONDS + 3600  # stop rebuilding a summary that keeps failing
 
 
 def validate_config(value, base_path, telemetry_database, device_database, server):
@@ -43,6 +46,14 @@ def validate_config(value, base_path, telemetry_database, device_database, serve
 
 def _text(value):
     return value if isinstance(value, str) and 0 < len(value) <= 256 and "\x00" not in value else None
+
+
+def _open_telemetry(path):
+    raw = sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro", uri=True, timeout=2)
+    if raw.execute("PRAGMA application_id").fetchone()[0] != 0x48425431:
+        raw.close()
+        raise ValueError("not a telemetry database")
+    return raw
 
 
 def _fresh(event, now):
@@ -167,6 +178,9 @@ class IncidentStore:
                 if not delivered or (status != "recovered" and channel != "notion" and not linked):
                     continue
             self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)", (row["incident_id"], channel, version, canonical_json(dict(payload, **linked))))
+            if version == 2 and channel == "notion" and linked:
+                # Blackbox summary for the event page; built at delivery, once the device backlog has arrived.
+                self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,3,?)", (row["incident_id"], channel, canonical_json({"incident_id": row["incident_id"], "evidence": True, **linked})))
 
     def _close(self, incident_id, state, reason, when, channels):
         previous = self.db.execute("SELECT state FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
@@ -335,6 +349,17 @@ class IncidentStore:
                 elif state == "delivered":
                     self._queue(incident, channels, 2, "recovered" if incident["state"] == "recovered" else "monitoring_ended")
 
+    def defer(self, delivery_id, *, now_epoch, delay):
+        # Waiting for late device uploads sends nothing, so it is not a delivery attempt.
+        self.db.execute("UPDATE incident_outbox SET state='pending',attempts=attempts-1,next_attempt=? WHERE id=? AND state='sending'", (now_epoch+delay, delivery_id))
+
+    def evidence(self, incident_id, telemetry_database):
+        with closing(_open_telemetry(telemetry_database)) as raw:
+            row = self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
+            if not row:
+                raise ValueError("unknown incident")
+            return summarize(raw, row, utc_now())
+
     def export(self, incident_id, telemetry_database=None, limit=200):
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be 1..1000")
@@ -345,9 +370,7 @@ class IncidentStore:
         result = {"incident": dict(row), "source_health":dict(source) if source else {"health":"unknown"}, "notifications": [dict(item) for item in self.db.execute("SELECT id,destination,version,state,attempts,error_code,remote_id FROM incident_outbox WHERE incident_id=? ORDER BY id", (incident_id,))], "related_events": [], "root_cause": "not_determined"}
         result["incident"]["details"] = json.loads(result["incident"]["details"])
         if telemetry_database:
-            with closing(sqlite3.connect(Path(telemetry_database).resolve().as_uri()+"?mode=ro", uri=True)) as raw:
-                if raw.execute("PRAGMA application_id").fetchone()[0] != 0x48425431:
-                    raise ValueError("not a telemetry database")
+            with closing(_open_telemetry(telemetry_database)) as raw:
                 start = (parse_utc(row["opened_utc"])-timedelta(seconds=60)).isoformat(timespec="microseconds")
                 end = (parse_utc(row["updated_utc"])+timedelta(seconds=60)).isoformat(timespec="microseconds")
                 result["evidence_window"] = {"start_utc":start,"end_utc":end,"padding_seconds":60,
@@ -413,11 +436,7 @@ class IncidentRuntime:
                         state = IncidentStore(self.config["database"])
                         state.start_run(self.run_id)
                     if raw is None:
-                        raw = sqlite3.connect(Path(self.telemetry_database).resolve().as_uri()+"?mode=ro", uri=True, timeout=2)
-                        if raw.execute("PRAGMA application_id").fetchone()[0] != 0x48425431:
-                            raw.close()
-                            raw = None
-                            raise ValueError("not a telemetry database")
+                        raw = _open_telemetry(self.telemetry_database)
                     self.ready.set()
                     now, mono = utc_now(), time.monotonic()
                     highwater = raw.execute("SELECT coalesce(max(seq),0) FROM telemetry_ingest").fetchone()[0]
@@ -467,7 +486,7 @@ class IncidentRuntime:
                 raw.close()
 
     def _notification_loop(self):
-        state = sender = None
+        state = sender = raw = None
         try:
             while not self.stop_event.is_set():
                 if not self.ready.wait(0.5):
@@ -487,7 +506,33 @@ class IncidentRuntime:
                         if not self.authorized.is_set():
                             state.db.execute("UPDATE incident_outbox SET state='pending',attempts=attempts-1 WHERE id=? AND state='sending'", (row["id"],))
                             continue
-                        result = sender.send(row["destination"],row["payload"])
+                        payload = row["payload"]
+                        if payload.get("evidence") is True:
+                            incident = None
+                            try:
+                                if raw is None:
+                                    raw = _open_telemetry(self.telemetry_database)
+                                incident = state.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (row["incident_id"],)).fetchone()
+                                now = utc_now()
+                                delay = wait_seconds(raw, incident, now)
+                                if not delay:
+                                    payload = dict(payload, evidence=summarize(raw, incident, now))
+                            except Exception:
+                                # Nothing has been sent, so this is not an ambiguous delivery: rebuild later.
+                                delay = 60
+                                self.counts["notification_errors"] += 1
+                                if self.counts["notification_errors"] % 120 == 1:
+                                    LOG.warning("Blackbox evidence summary unavailable; will retry")
+                                if raw:
+                                    raw.close()
+                                    raw = None
+                                if incident and (parse_utc(utc_now())-parse_utc(incident["updated_utc"])).total_seconds() > EVIDENCE_DEADLINE:
+                                    state.finish(row["id"],SimpleNamespace(state="permanent",retry_after=0,code="evidence_build_failed",remote_id=None),now_epoch=time.time(),channels=self.channels)
+                                    continue
+                            if delay:
+                                state.defer(row["id"], now_epoch=time.time(), delay=delay)
+                                continue
+                        result = sender.send(row["destination"],payload)
                         state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels)
                 except Exception:
                     # An unexpected exception after claim is ambiguous; never
@@ -504,6 +549,8 @@ class IncidentRuntime:
         finally:
             if state:
                 state.close()
+            if raw:
+                raw.close()
 
     def stats(self):
         return {**self.counts,"source_health":self.health,"workers":{thread.name:thread.is_alive() for thread in self.threads}}
@@ -524,11 +571,17 @@ def main():
     mode.add_argument("--incident-id")
     mode.add_argument("--list", action="store_true")
     mode.add_argument("--stats", action="store_true")
+    mode.add_argument("--evidence-summary", metavar="INCIDENT_ID", help="preview the blackbox table a Notion event page receives")
     parser.add_argument("--limit", type=int, default=200)
     args = parser.parse_args()
+    if args.evidence_summary and not args.telemetry_database:
+        parser.error("--evidence-summary requires --telemetry-database")
     store = IncidentStore(args.database, readonly=True)
     try:
-        result = store.statistics() if args.stats else store.list_incidents(args.limit) if args.list else store.export(args.incident_id,args.telemetry_database,args.limit)
+        if args.evidence_summary:
+            result = store.evidence(args.evidence_summary, args.telemetry_database)
+        else:
+            result = store.statistics() if args.stats else store.list_incidents(args.limit) if args.list else store.export(args.incident_id,args.telemetry_database,args.limit)
         print(json.dumps(result,ensure_ascii=False,indent=2))
     finally:
         store.close()

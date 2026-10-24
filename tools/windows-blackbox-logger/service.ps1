@@ -199,7 +199,7 @@ try {
                 'service_definition.py','requirements.txt','export.py','decode_flash.py',
                 'omada.py','telemetry.py','telemetry_runtime.py','timeline.py',
                 'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py',
-                'incidents.py','notifications.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')) {
+                'incidents.py','incident_evidence.py','notifications.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')) {
                 Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $AppDir $file) -Force
             }
             Copy-Item -LiteralPath $candidate -Destination $Wrapper -Force

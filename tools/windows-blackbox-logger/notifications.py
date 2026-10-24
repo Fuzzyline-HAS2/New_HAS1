@@ -29,6 +29,7 @@ NOTION_EVENT_PROPERTIES = {"이벤트": "title", "사건 ID": "rich_text", "상�
 NOTION_SESSION_PROPERTIES = {"장애": "title", "세션 키": "rich_text", "매장": "select",
                              "게임 세션 ID": "rich_text", "처음 발생": "date"}
 NOTION_CREATE_RESERVE = 5.0  # seconds left in the budget before an event create is attempted
+EVIDENCE_HEADING = "📦 블랙박스 증거"
 NOTION_SESSION_CACHE = 256
 SLACK_TOKEN = re.compile(r"xoxb-[A-Za-z0-9-]{10,250}")
 SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,20}")
@@ -97,8 +98,8 @@ def _allowed_url(url, method):
         elif parsed.hostname == "api.notion.com":
             valid = ((method == "POST" and (parsed.path == "/v1/pages" or
                      re.fullmatch(r"/v1/data_sources/[0-9a-f-]{36}/query", parsed.path))) or
-                     (method == "PATCH" and re.fullmatch(r"/v1/pages/[0-9a-f-]{36}", parsed.path)) or
-                     (method == "GET" and re.fullmatch(r"/v1/(?:databases|data_sources)/[0-9a-f-]{36}", parsed.path)))
+                     (method == "PATCH" and re.fullmatch(r"/v1/(?:pages/[0-9a-f-]{36}|blocks/[0-9a-f-]{36}/children)", parsed.path)) or
+                     (method == "GET" and re.fullmatch(r"/v1/(?:databases/[0-9a-f-]{36}|data_sources/[0-9a-f-]{36}|blocks/[0-9a-f-]{36}/children)", parsed.path)))
         else:
             valid = False
         if not valid:
@@ -537,6 +538,53 @@ def _notion_session(call, token, source_id, site, session, payload, cache):
     return page_id, None
 
 
+def _evidence_blocks(evidence):
+    rows = evidence["rows"]
+    if not isinstance(rows, list) or len(rows) > 98 or any(not isinstance(row, list) or len(row) != 3 for row in rows):
+        raise ValueError("Invalid evidence rows")
+    note = ["후보 기록이며 원인은 확정되지 않았습니다.",
+            "장치 시각은 실제 시각이 아니라 부팅 회차와 켜진 뒤 경과 시간입니다.",
+            f"수집 {_kst(evidence.get('collected_utc')) or '-'} · 원본은 매장 PC에서 "
+            f"incidents.py --incident-id {_text(evidence.get('incident_id'), 160)}로 확인합니다."]
+    if evidence.get("truncated"):
+        note.append("일부만 표시했습니다.")
+    if evidence.get("device_pending"):
+        note.append("장치 기록이 아직 올라오지 않았습니다.")
+    table = [["출처", "시각", "내용"]] + (rows or [["-", "-", "관련 기록 없음"]])
+    return [{"type": "heading_3", "heading_3": {"rich_text": _rich(EVIDENCE_HEADING + " (후보 · 원인 미확정)")}},
+            {"type": "paragraph", "paragraph": {"rich_text": _rich(" ".join(note))}},
+            {"type": "table", "table": {"table_width": 3, "has_column_header": True, "has_row_header": False,
+             "children": [{"type": "table_row", "table_row": {"cells": [_rich(_text(cell, 300) or "-") for cell in row]}}
+                          for row in table]}}]
+
+
+def _append_evidence(call, token, payload):
+    """Append the blackbox table to the device-event page body exactly once."""
+    page_id = _uuid(payload.get("notion_page_id"))
+    blocks = _evidence_blocks(payload["evidence"])
+    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    # Appending is not idempotent, so every attempt first looks for an earlier append.
+    response = call(url, "GET", None, token)
+    failure = _classify(response, safe_retry=True)
+    if failure:
+        return failure
+    if response.get("oversized"):
+        return DeliveryResult("permanent", "oversized_page_response")
+    try:
+        children = json.loads(response.get("body", ""))["results"]
+        if not isinstance(children, list):
+            raise ValueError()
+        # Only the first 100 blocks are checked; the summary is the collector's first append.
+        if any(block.get("type") == "heading_3" and "".join(part.get("plain_text", "") for part in
+               block["heading_3"].get("rich_text", [])).startswith(EVIDENCE_HEADING) for block in children):
+            return DeliveryResult("delivered", "already_attached", remote_id=page_id)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return DeliveryResult("retryable", "invalid_children_response", 30)
+    response = call(url, "PATCH", {"children": blocks}, token)
+    failure = _classify(response, safe_retry=True)
+    return failure or DeliveryResult("delivered", "ok", remote_id=page_id)
+
+
 class NotificationSender:
     def __init__(self, config, *, credential_reader=read_machine_password, transport=_transport):
         self.config = config
@@ -582,6 +630,10 @@ class NotificationSender:
             token = credentials.get("notion_token")
             if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
                 return DeliveryResult("permanent", "invalid_credentials")
+            if "evidence" in payload:
+                if not isinstance(payload["evidence"], dict):
+                    return DeliveryResult("permanent", "evidence_not_built")
+                return _append_evidence(call, token, payload)
             source_id = _uuid(self.config["notion"]["data_source_id"])
             status = payload.get("status")
             if not isinstance(status, str) or status not in NOTION_STATUS_NAMES:

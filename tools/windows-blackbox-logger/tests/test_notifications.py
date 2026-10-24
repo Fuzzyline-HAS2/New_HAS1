@@ -190,6 +190,47 @@ class NotificationsTests(unittest.TestCase):
         self.assertIn('&lt;!channel&gt;', message['text'])
         self.assertIn('<!channel>', message['blocks'][0]['text']['text'])  # plain_text renders it inert
 
+    EVIDENCE = {'incident_id': 'incident-1', 'notion_page_id': PAGE, 'evidence': {
+        'rows': [['장치', '부팅 12 · 켜진 뒤 0:01:07 (수신 12:03:30)', '와이파이 이벤트 · 끊김 원인 200 BEACON_TIMEOUT']],
+        'truncated': False, 'device_pending': True, 'collected_utc': '2026-10-24T03:10:00+00:00', 'incident_id': 'incident-1'}}
+
+    @staticmethod
+    def children(*headings):
+        blocks = [{'type': 'heading_3', 'heading_3': {'rich_text': [{'plain_text': text}]}} for text in headings]
+        return {'status': 200, 'body': json.dumps({'results': blocks, 'has_more': False})}
+
+    def test_notion_evidence_appends_table_to_event_page_once(self):
+        sender, calls = self.sender([self.children('사람이 쓴 메모'), {'status': 200, 'body': '{"results":[]}'}])
+        result = sender.send('notion', self.EVIDENCE)
+        self.assertEqual((result.state, result.code, result.remote_id), ('delivered', 'ok', PAGE))
+        get, patch = calls
+        self.assertEqual((get['method'], get['url']), ('GET', f'https://api.notion.com/v1/blocks/{PAGE}/children'))
+        self.assertEqual((patch['method'], patch['url']), ('PATCH', get['url']))
+        heading, note, table = patch['body']['children']
+        self.assertIn('원인 미확정', heading['heading_3']['rich_text'][0]['text']['content'])
+        text = note['paragraph']['rich_text'][0]['text']['content']
+        self.assertIn('incidents.py --incident-id incident-1', text)
+        self.assertIn('장치 기록이 아직 올라오지 않았습니다', text)
+        rows = table['table']['children']
+        self.assertEqual(table['table']['table_width'], 3)
+        self.assertEqual([cell[0]['text']['content'] for cell in rows[0]['table_row']['cells']], ['출처', '시각', '내용'])
+        self.assertEqual(len(rows), 2)
+        # A retry after an unknown append finds the heading and does not append again.
+        sender, calls = self.sender([self.children('📦 블랙박스 증거 (후보 · 원인 미확정)')])
+        self.assertEqual(sender.send('notion', self.EVIDENCE).code, 'already_attached')
+        self.assertEqual(len(calls), 1)
+
+    def test_notion_evidence_failures_are_retryable_and_never_unbuilt(self):
+        for responses in ([{'network_error': True}], [self.children(), {'network_error': True}], [self.children(), {'status': 503}]):
+            sender, _ = self.sender(responses)
+            self.assertEqual(sender.send('notion', self.EVIDENCE).state, 'retryable')
+        sender, calls = self.sender([])
+        self.assertEqual(sender.send('notion', dict(self.EVIDENCE, evidence=True)).code, 'evidence_not_built')
+        self.assertEqual(calls, [])
+        _allowed_url(f'https://api.notion.com/v1/blocks/{PAGE}/children', 'GET')
+        for url, method in ((f'https://api.notion.com/v1/blocks/{PAGE}', 'DELETE'), (f'https://api.notion.com/v1/blocks/{PAGE}', 'PATCH')):
+            with self.assertRaises(ValueError): _allowed_url(url, method)
+
     def test_slack_bot_config_and_destinations(self):
         for channel_id in ('#has1-device-alerts', 'c0123456789', 7):
             with self.assertRaises(ValueError):

@@ -49,6 +49,29 @@
 
 새 이벤트는 최대 6번의 API 호출이 필요합니다. 이벤트 생성 직전에 HTTP 예산이 5초 미만으로 남았으면 아무것도 보내지 않고 재시도합니다. 예산이 끊긴 생성 요청은 결과를 알 수 없어 수동 확인 대상이 되기 때문입니다. Notion의 409(`conflict_error`)는 재시도합니다. 여러 수집기가 같은 데이터 소스에 동시에 같은 사건을 쓰지 않도록 운영하세요. Notion은 이 속성들에 고유 제약을 보장하지 않습니다.
 
+### 블랙박스 증거 요약
+
+복구·감시 종료로 끝난 이벤트에는 그 이벤트 페이지 본문에 `📦 블랙박스 증거 (후보 · 원인 미확정)` 표를 한 번 붙입니다. 원본은 매장 PC SQLite에 남기고 사람이 읽는 요약만 올립니다. 장애 기록에는 요약과 원본 위치를, 원본은 로그 저장소에 두는 장애 관리 도구의 일반적인 방식입니다.
+
+| 출처 | 고르는 기준 | 시각 표시 |
+| --- | --- | --- |
+| 게임 서버 | 같은 사건 ID의 끊김 감지·재연결·감시 종료(전후 60초) | 한국 시각 |
+| Omada | 같은 MAC의 AP 접속·해제·로밍·접속 실패(전후 60초). IP·포트가 담긴 트래픽 기록은 제외 | 한국 시각 |
+| 장치 블랙박스 | 끊기기 전 마지막으로 올라온 기록 앞 5건과 그 뒤로 기록된 것(끊긴 동안과 재연결 직후) | 부팅 회차 · 켜진 뒤 경과 시간(수신 시각) |
+
+- 장갑은 끊긴 동안의 기록을 재연결 뒤에 올립니다. 이 업로드는 서버의 복구 판정보다 먼저 올 수도 있습니다. 그래서 끊긴 뒤 같은 MAC의 기록이 처음 들어온 때와 이벤트가 끝난 때 양쪽에서 모두 2분이 지나면 붙입니다. 6시간 안에 장치 기록이 오지 않으면 서버·Omada 기록만으로 붙이고 "장치 기록이 아직 올라오지 않았습니다"라고 표시합니다. 기다리는 동안은 외부 요청을 보내지 않으며 재시도 횟수에도 들어가지 않습니다. 요약을 만드는 중 오류가 나도 보낸 것이 없으므로 1분 뒤 다시 만들고, 이벤트가 끝나고 7시간이 지나도 실패하면 `evidence_build_failed` 영구 오류로 남깁니다.
+- Omada 기록이 10건을 넘으면(접속·해제 반복) 처음 5건과 마지막 5건만 보이고 "일부만 표시했습니다"라고 적습니다.
+- 장치 기록에는 실제 시각이 없습니다. 업로드 시각으로 발생 시각을 추정하지 않고, 기록 순서(seq)로 끊김 전후를 고릅니다. 와이파이 끊김 원인 코드(예: `200 BEACON_TIMEOUT`)와 주요 값은 읽기 쉬운 이름으로 바꿉니다.
+- 표는 최대 40줄입니다. 넘치면 "일부만 표시했습니다"라고 적습니다. 전체는 매장 PC에서 `incidents.py --incident-id`로 내보냅니다.
+- 붙이기 전에 페이지 본문 앞부분에 이 제목이 이미 있는지 확인합니다. 그래서 응답이 유실되어 다시 시도해도 표가 두 번 붙지 않습니다. 이 확인은 본문 첫 100개 블록만 봅니다.
+- 표는 원인 판단이 아니라 후보 기록입니다. 원인은 사람이 `HAS1 문제 (근본 원인)` DB에 적습니다.
+
+붙을 표는 매장 PC에서 미리 볼 수 있습니다(읽기 전용).
+
+```powershell
+.\.venv\Scripts\python.exe incidents.py --database "$env:ProgramData\HAS1BlackBox\data\incidents.sqlite3" --telemetry-database "$env:ProgramData\HAS1BlackBox\data\telemetry.sqlite3" --evidence-summary '사건ID'
+```
+
 ## Windows에서 활성화
 
 1호점 설치 대상과 순서는 [STORE1-HANDOFF.md](STORE1-HANDOFF.md)에 정리되어 있습니다.
@@ -94,7 +117,7 @@ Slack bot 토큰·Webhook URL과 Notion 토큰은 숨김 입력창에서 입력�
 
 - Slack 알림은 매장·장치·MAC·한국 시각·무응답/장애 지속 시간을 담은 카드입니다. 값이 없거나 `unknown`인 항목은 표시하지 않습니다. 본문은 plain text라 장치/서버 문자열이 `@channel` 같은 멘션 명령이 되지 않습니다.
 - Bot 토큰 방식은 끊김 카드의 메시지 ID(`ts`)를 대기열 `remote_id`에 저장합니다. 복구 시 먼저 원본 카드를 수정하고(`chat.update`, 재시도 안전), 성공한 뒤에만 스레드 답글을 보냅니다(`chat.postMessage`). 그래서 수정 실패는 중복 답글 없이 재시도하고, 답글 전송 결과를 알 수 없으면 manual_review로 남깁니다. `not_in_channel`·`channel_not_found`·`invalid_auth` 같은 설정 오류는 `slack_<오류명>` 코드의 영구 오류로 기록합니다. Slack이 일시 오류로 안내하는 `internal_error`·`fatal_error`·`request_timeout`은 카드 수정이면 재시도하고, 새 메시지 전송이면 이미 올라갔을 수 있어 manual_review로 남깁니다. `service_unavailable`은 처리되지 않은 요청이라 둘 다 재시도합니다. 원본 카드가 삭제되어 수정할 수 없으면 복구 카드를 새 메시지로 올립니다. 수정과 답글은 한 번의 약 10초 HTTP 예산을 나눠 쓰므로, 수정이 느리면 답글 결과가 불확실해져 manual_review로 남을 수 있습니다(중복 전송은 없음). Webhook 방식은 복구만 별도 메시지로 알립니다.
-- Notion에는 같은 사건 ID로 상태·종료 시각·요약을 갱신합니다. 상세 원본 로그는 PC SQLite에 유지하고 외부에는 선택된 사건 필드만 전송합니다. Notion은 원본 로그의 영구 백업이 아닙니다.
+- Notion에는 같은 사건 ID로 상태·종료 시각·요약을 갱신하고, 끝난 이벤트에는 블랙박스 증거 요약 표를 붙입니다. 상세 원본 로그는 PC SQLite에 유지하고 외부에는 선택된 사건 필드와 위 요약만 전송합니다. 요약에는 장치 MAC 기반으로 고른 기록과 AP BSSID가 들어갈 수 있습니다. Notion은 원본 로그의 영구 백업이 아닙니다.
 - HTTP는 허용된 HTTPS 호스트에만 연결하고 리디렉션을 따르지 않습니다. 한 전달 작업은 DNS·응답 읽기를 포함해 최대 약 10초의 HTTP 예산을 사용하며, 응답은 64KiB로 제한합니다.
 - 429/529는 `Retry-After`를 적용합니다(최대 24시간). 대부분의 4xx는 설정 오류로 분류하고 무한 재시도하지 않습니다. 외부 오류 본문·URL·토큰은 오류 기록에 넣지 않습니다.
 - Slack POST 또는 Notion 페이지 생성 직후 응답이 유실되면 실제 저장 여부를 알 수 없습니다. 이 경우 **unknown/manual_review** 상태로 남겨 자동 재전송하지 않습니다. 운영자가 실제 채널/페이지와 사건 ID를 확인해야 합니다. Notion 스키마 읽기·사건 조회와 기존 페이지의 동일 속성 갱신은 안전한 재시도 대상으로 구분합니다. 일시적인 스키마 응답 오류는 쓰기 없이 재시도하며, 스키마 유형·옵션 불일치는 영구 설정 오류로 남깁니다. 설정을 수정한 뒤에는 수집기 DB의 실패한 대기열도 운영 절차에 따라 확인해야 하며, 설정 수정만으로 이전 실패 사건이 자동 재전송되지는 않습니다.
@@ -110,5 +133,6 @@ Slack bot 토큰·Webhook URL과 Notion 토큰은 숨김 입력창에서 입력�
 - [Notion Query a data source](https://developers.notion.com/reference/query-a-data-source): 데이터 소스별 필터 조회.
 - [Notion 2025-09-03 업그레이드](https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03): database/data source 분리.
 - [Notion 요청 제한](https://developers.notion.com/reference/request-limits): Retry-After, 재시도 제한, 불확실한 쓰기 결과 처리.
+- [Notion Append block children](https://developers.notion.com/reference/patch-block-children) · [Retrieve block children](https://developers.notion.com/reference/get-block-children): 페이지 본문에 표 추가, 기존 블록 확인.
 
 단위 검증은 HTTP 대역과 합성 자격 증명만 사용합니다. 일회용 Windows 서비스 CI는 서비스가 중지된 동안 실제 설정 스크립트의 숨김 입력을 합성 값으로 대체하여 DPAPI 왕복·제한된 ACL·기존 설정 보존을 검증합니다. 이후 알림 비활성 설정을 복원한 다음 서비스를 시작하므로 이 시험에서 외부 전송은 발생하지 않습니다. 실제 Slack 메시지 발송이나 Notion 페이지 작성은 수행하지 않습니다.
