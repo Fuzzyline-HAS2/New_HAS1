@@ -358,6 +358,17 @@ class IncidentStore:
                 elif state == "delivered":
                     self._queue(incident, channels, 2, "recovered" if incident["state"] == "recovered" else "monitoring_ended")
 
+    def queue_slack_evidence(self, incident_id, highlights):
+        """After the Notion blackbox table lands, thread a link to it under the session's Slack card."""
+        # Only for a device announced on that card: there is no card to thread under otherwise.
+        announced = self.db.execute("SELECT 1 FROM incident_outbox WHERE incident_id=? AND destination='slack' AND version=1 AND state='delivered'", (incident_id,)).fetchone()
+        row = self.db.execute("SELECT device_id FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
+        if not announced or not row:
+            return
+        payload = {"incident_id": incident_id, "evidence_notice": True, "device_id": row["device_id"],
+                   "highlights": [str(item)[:120] for item in highlights or [] if isinstance(item, str)][:4]}
+        self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,'slack',3,?)", (incident_id, canonical_json(payload)))
+
     def slack_session(self, incident_id):
         """Context for the game session's Slack card: its ts, Notion links and every notified device."""
         row = self.db.execute("SELECT site_id,session_id FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
@@ -570,6 +581,8 @@ class IncidentRuntime:
                             payload = dict(payload, slack_session=state.slack_session(row["incident_id"]))
                         result = sender.send(row["destination"],payload)
                         state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels)
+                        if self.slack_cards and isinstance(payload.get("evidence"), dict) and result.state == "delivered":
+                            state.queue_slack_evidence(row["incident_id"], payload["evidence"].get("highlights"))
                 except Exception:
                     # An unexpected exception after claim is ambiguous; never
                     # automatically resend a possibly accepted external request.

@@ -259,4 +259,47 @@ def summarize(raw, incident, now, limit=MAX_ROWS):
     rows += [row for row, _ in device_rows]
     pending = bool(incident["mac"]) and _first_upload_since_outage(raw, incident) is None
     return {"rows": [[str(cell)[:300] for cell in row] for row in rows[:limit]], "truncated": cut or len(rows) > limit,
-            "device_pending": pending, "collected_utc": now, "incident_id": incident["incident_id"]}
+            "device_pending": pending, "collected_utc": now, "incident_id": incident["incident_id"],
+            "highlights": _highlights(device, pending)}
+
+
+def _wifi_reason(event):
+    fields = event.get("fields") or {}
+    values = fields.get("values")
+    if event.get("event_type") != "WifiEvent" or not isinstance(values, list) or len(values) != 4 \
+            or not all(type(v) is int for v in values):
+        return None
+    decoded = named_values(SimpleNamespace(kind=EVENT_KINDS["WifiEvent"], text=fields.get("text") or "", values=tuple(values)))
+    item = decoded.get("fields", {}).get("disconnect_reason") or {}
+    return _value("disconnect_reason", item) if item.get("value") else None
+
+
+def _highlights(events, pending):
+    """A few words for chat: reboots, Wi-Fi disconnect reasons and crash records, or that there were none."""
+    if pending:
+        return ["장치 기록 아직 없음"]
+    if not events:
+        return ["장치 기록 없음"]
+    reasons, reboots, wifi, crashes, previous = {}, [], [], 0, None
+    for event in events:
+        reason = _reset_reason(event)
+        boot = (event.get("fields") or {}).get("boot")
+        if reason and boot not in reasons:
+            reasons[boot] = reason
+    for index, event in enumerate(events):
+        boot = (event.get("fields") or {}).get("boot")
+        if index and boot != previous:
+            reboots.append(boot)
+        previous = boot
+        crashes += event.get("event_type") == "Crash"
+        reason = _wifi_reason(event)
+        if reason and reason not in wifi:
+            wifi.append(reason)
+    parts = []
+    if reboots:
+        parts.append(f"재부팅 {len(reboots)}번" + (f"(리셋 원인 {reasons[reboots[0]]})" if reboots[0] in reasons else ""))
+    if wifi:
+        parts.append("와이파이 끊김 원인 " + ", ".join(wifi[:3]))
+    if crashes:
+        parts.append(f"크래시 기록 {crashes}건")
+    return parts or ["재부팅·와이파이 끊김·크래시 기록 없음"]
