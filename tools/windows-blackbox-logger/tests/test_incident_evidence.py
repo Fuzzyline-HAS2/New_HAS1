@@ -17,10 +17,10 @@ INCIDENT = {"incident_id": "incident-1", "site_id": "store-1", "source_id": "ser
             "opened_utc": OPENED, "updated_utc": CLOSED}
 
 
-def device(seq, observed, kind="State", text="", values=(0, 0, 0, 0)):
+def device(seq, observed, kind="State", text="", values=(0, 0, 0, 0), boot=485740653, uptime=None):
     return Event(site_id="store-1", source="device", source_id=MAC, event_id=f"r1:{seq}", observed_utc=observed,
                  occurred_utc=None, clock_quality="uptime_only", mac=MAC, device_id="iotglove", event_type=kind,
-                 fields={"ring": "r1", "seq": seq, "boot": 12, "uptime_ms": 60000 + seq * 1000,
+                 fields={"ring": "r1", "seq": seq, "boot": boot, "uptime_ms": 60000 + seq * 1000 if uptime is None else uptime,
                          "values": list(values), "text": text})
 
 
@@ -67,7 +67,7 @@ class EvidenceTests(unittest.TestCase):
         device_rows = [row for row in rows if row[0] == "장치"]
         # Five records before the last pre-outage report, then everything logged after it.
         self.assertEqual(len(device_rows), 7)
-        self.assertEqual(device_rows[0][1], "부팅 12 · 켜진 뒤 0:01:02 (수신 11:59:00)")
+        self.assertEqual(device_rows[0][1], "부팅 1 · 켜진 뒤 0:01:02 (수신 11:59:00)")
         self.assertIn("끊김 원인 200 BEACON_TIMEOUT", device_rows[5][2])
         self.assertIn("AP 112233445566", device_rows[5][2])
         self.assertIn("끊김 시간 3분 15초 · 시도 7", device_rows[6][2])
@@ -79,7 +79,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(wait_seconds(self.raw, INCIDENT, "2026-10-24T03:04:20.000000+00:00"), 71)
         self.assertEqual(wait_seconds(self.raw, INCIDENT, "2026-10-24T03:06:00.000000+00:00"), 0)
         silent = dict(INCIDENT, mac="112233445566")
-        self.assertEqual(wait_seconds(self.raw, silent, "2026-10-24T03:04:20.000000+00:00"), 601)
+        self.assertEqual(wait_seconds(self.raw, silent, "2026-10-24T03:04:20.000000+00:00"), 61)
         self.assertEqual(wait_seconds(self.raw, silent, "2026-10-24T09:03:20.000000+00:00"), 0)
         self.assertEqual(wait_seconds(self.raw, dict(INCIDENT, mac=None), CLOSED), 0)
         result = summarize(self.raw, silent, "2026-10-24T09:03:20.000000+00:00")
@@ -92,6 +92,61 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(wait_seconds(self.raw, late_close, "2026-10-24T03:05:00.000000+00:00"), 61)
         self.assertEqual(wait_seconds(self.raw, late_close, "2026-10-24T03:06:00.000000+00:00"), 0)
         self.assertFalse(summarize(self.raw, late_close, "2026-10-24T03:06:00.000000+00:00")["device_pending"])
+
+    def test_output_spam_collapses_and_reboot_crash_wifi_survive_the_limit(self):
+        # Game 1654: haptic/LED output changes fill the backlog, then the glove reboots.
+        path = Path(self.temp.name) / "reboot.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        for seq in range(2, 32):
+            store.save(device(seq, "2026-10-24T03:03:30.000000+00:00", "State", ("motor.applied", "output.applied")[seq % 2], (1, 4, 0, 0)))
+        new_boot = dict(boot=2994054713, uptime=0)
+        store.save(device(32, "2026-10-24T03:03:35.000000+00:00", "Boot", "device.boot", (1, 22, 1, 0), **new_boot))
+        store.save(device(33, "2026-10-24T03:03:35.000000+00:00", "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), **new_boot))
+        store.save(device(34, "2026-10-24T03:03:35.000000+00:00", "WifiEvent", "ap:ACA7F1C619E8", (113, 202, 1, 0), **new_boot))
+        store.save(device(35, "2026-10-24T03:03:35.000000+00:00", "State", "motor.applied", (0, 0, 0, 0), **new_boot))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            full = [row for row in summarize(raw, INCIDENT, CLOSED)["rows"] if row[0] == "장치"]
+            tight = summarize(raw, INCIDENT, CLOSED, limit=5)  # exactly the five key rows
+        texts = [row[2] for row in full]
+        self.assertEqual(texts[1], "모터·LED 출력 변경 30건")
+        self.assertEqual(full[1][1], "부팅 1 · 켜진 뒤 0:01:02~0:01:31 (수신 12:03:30)")
+        self.assertEqual(texts[2], "🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐")
+        self.assertIn("리셋 원인 1 POWERON 전원 켜짐", texts[3])
+        self.assertIn("끊김 원인 202 AUTH_FAIL", texts[5])
+        self.assertEqual(texts[6], "모터·LED 출력 변경 1건")
+        self.assertTrue(all(row[1].startswith("부팅 2 ") for row in full[2:]))
+        # Over the limit, the routine rows go first and the explanation stays.
+        kept = [row[2] for row in tight["rows"]]
+        self.assertTrue(tight["truncated"])
+        self.assertEqual(len(kept), 5)
+        self.assertFalse(any("출력 변경" in text for text in kept))
+        self.assertTrue(any("재부팅" in text for text in kept) and any("AUTH_FAIL" in text for text in kept))
+
+    def test_key_records_survive_the_fetch_cap_and_keep_the_outage_end(self):
+        path = Path(self.temp.name) / "spam.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        for seq in range(2, 252):  # more output changes than DEVICE_FETCH reads
+            store.save(device(seq, "2026-10-24T03:03:30.000000+00:00", "State", "motor.applied", (1, 4, 0, 0)))
+        for seq in range(252, 262):  # repeated reconnect attempts, then the recovery that ends it
+            store.save(device(seq, "2026-10-24T03:03:35.000000+00:00", "WifiTry", "connect.begin"))
+        store.save(device(262, "2026-10-24T03:03:35.000000+00:00", "Recovery", "wifi.offline.recovery", (1, 13000, 10, 0)))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            full = summarize(raw, INCIDENT, CLOSED)
+            tight = summarize(raw, INCIDENT, CLOSED, limit=6)
+        texts = [row[2] for row in full["rows"]]
+        self.assertTrue(full["truncated"])
+        self.assertIn("모터·LED 출력 변경 200건", texts)
+        self.assertEqual(sum("connect.begin" in text for text in texts), 10)
+        self.assertIn("끊김 시간 13.0초", texts[-1])
+        kept = [row[2] for row in tight["rows"]]
+        # Twelve key rows for six slots: the first three and the last three, in order.
+        self.assertEqual(len(kept), 6)
+        self.assertTrue(kept[0].startswith("와이파이 요약"))
+        self.assertIn("복구 동작", kept[-1])
 
     def test_flapping_omada_keeps_start_and_end_and_reports_the_cut(self):
         path = Path(self.temp.name) / "flap.db"
