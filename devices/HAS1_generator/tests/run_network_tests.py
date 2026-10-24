@@ -506,6 +506,13 @@ int main(){
  }
  pass("older revision and impossible equal-revision completion cannot clear or confirm the original journal");
 
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ memset(storedIntent.deviceKey,'G',sizeof(storedIntent.deviceKey)-1);storedIntent.deviceKey[sizeof(storedIntent.deviceKey)-1]=0;
+ networkCompletionSent=false;NetworkCompletionLoad();
+ assert(strlen(networkCompletionDevice)==64&&!strcmp(networkCompletionDevice,storedIntent.deviceKey));
+ assert(sizeof(networkCompletionStartState)==sizeof(GeneratorWireSnapshot::deviceState));
+ pass("journal restore preserves all 64 valid key characters and snapshot state capacity matches its source");
+
  // Prior association is sampled from the current link, not boot-ready game state.
  reset();mainTurn();assert(networkRecoveryPolicy.hadConnection);
  online=false;mainTurn();const uint32_t disconnectedAt=now;

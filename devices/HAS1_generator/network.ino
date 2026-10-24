@@ -356,7 +356,11 @@ bool GeneratorNetworkTag(const char *user) {
   }
   return false;
 }
-static char networkCompletion[24]={},networkCompletionDevice[32]={},networkCompletionStartState[24]={};
+static char networkCompletion[24]={};
+// Match source contracts so journal restoration and snapshot copies preserve
+// complete strings, including a valid maximum-length persisted device key.
+static char networkCompletionDevice[sizeof(GeneratorCompletionStore::Intent::deviceKey)]={};
+static char networkCompletionStartState[sizeof(GeneratorWireSnapshot::deviceState)]={};
 static uint32_t networkCompletionGeneration=0,networkCompletionRetryAt=0;
 static uint32_t networkCompletionSince=0,networkCompletionWarningAt=0;
 static bool networkCompletionSent=false,networkCompletionVerify=false,networkCompletionConfirmed=false,networkCompletionSuperseded=false,networkCompletionDispatched=false;
