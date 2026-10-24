@@ -373,8 +373,11 @@ void uploader(void *) {
               esp_mqtt_client_subscribe(client, ackTopic, 1) >= 0;
         }
         if (subscribed && !sent) {
-          sent = esp_mqtt_client_enqueue(client, topic, payload, int(bytes), 1,
-                                         0, true) >= 0;
+          // Written by this task now. An enqueued message waits for the MQTT
+          // task's next read poll (up to ~1 s), and a game poll in between
+          // cancels the session and discards it before it is ever sent.
+          sent = esp_mqtt_client_publish(client, topic, payload, int(bytes), 1,
+                                         0) >= 0;
           if (!sent)
             break;
         }
@@ -390,7 +393,7 @@ void uploader(void *) {
             const uint64_t up=uint64_t(esp_timer_get_time())/1000;
             char response[320];
             const size_t n=encodeTimeProbe(coverage,mac,challenge,up,response,sizeof(response));
-            if(n) probeMessage=esp_mqtt_client_enqueue(client,topic,response,int(n),1,0,true);
+            if(n) probeMessage=esp_mqtt_client_publish(client,topic,response,int(n),1,0);
           } else if(!success && exactAck(ack.data,ack.size,batch)) {
             Control save{true,token,gen,batch.ring,batch.records[batch.count-1].seq()};
             success=xQueueSend(controls,&save,0)==pdTRUE;
