@@ -66,6 +66,10 @@ def source_paths(root, device):
     if (sketch / "src").exists():
         paths.update(path for path in (sketch / "src").rglob("*") if path.is_file())
     paths.update(path for path in (root / "libraries/IoTGloveProtocol").rglob("*") if path.is_file())
+    if device == "iotglove":
+        # Only this archived target links the standalone blackbox library.
+        paths.update(path for path in (root / "libraries/HAS1BlackBox").rglob("*")
+                     if path.is_file() and "__pycache__" not in path.parts)
     if device in ("HAS1_tagmachine_main", "HAS1_tagmachine_sub"):
         paths.update(path for path in (root / "libraries/TagMachineProtocol").rglob("*")
                      if path.is_file())
@@ -74,6 +78,7 @@ def source_paths(root, device):
                      if path.is_file())
     paths.update(root / name for name in (
         "scripts/firmware_targets.py", "scripts/archive_iotglove_release.py",
+        "scripts/write_firmware_secret.py", "scripts/write_blackbox_release_config.py",
         "devices/iotglove/tools/has2-wifi-result-api.patch", ".github/workflows/deploy-firmware.yml",
     ))
     paths.update(path for path in (root / "devices/iotglove/tools/bounded_http").rglob("*") if path.is_file())

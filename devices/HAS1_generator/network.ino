@@ -71,6 +71,7 @@ static uint32_t NetworkSubmit(NetworkKind kind,const String &path,bool mutation,
     }
   }
   portEXIT_CRITICAL(&networkMux);
+  if(request.id) has1blackbox::blackbox.setUploadAllowed(false);
   return request.id;
 }
 void GeneratorNetworkInvalidateGame() {
@@ -256,6 +257,7 @@ static void NetworkWatchdogResult(const NetworkRequest &,const Has2BoundedTransp
 static void NetworkRefreshResult(const NetworkRequest &,const Has2BoundedTransport::Result &result,bool cancelled) {
   networkRefreshInFlight=false;
   const bool ok=NetworkApplySnapshot(result,cancelled);
+  BlackBoxValidSnapshot(ok);
   networkRefreshPending=!ok;networkRefreshAt=millis()+2000;
   if(networkPollAwaitingRefresh){ NetworkFinishPoll(ok); }
 }
@@ -266,10 +268,11 @@ static bool NetworkQueueRefresh() {
   networkRefreshInFlight=true;return true;
 }
 static void NetworkPollResult(const NetworkRequest &,const Has2BoundedTransport::Result &result,bool cancelled) {
-  if(!NetworkOk(result,cancelled)||!has2wifi.ApplyNetworkSnapshot("Loop",result.payload)){NetworkFinishPoll(false);return;}
+  if(!NetworkOk(result,cancelled)||!has2wifi.ApplyNetworkSnapshot("Loop",result.payload)){BlackBoxPollResult(false);NetworkFinishPoll(false);return;}
+  BlackBoxPollResult(true);
   if((int)shift_machine["watchdog"]>=1){ networkWatchdogRequested=true; }
   else if(networkWatchdogRequested&&!networkWatchdogPending) {
-    DiagnosticPrintf("[NET] explicit server reboot clear confirmed by poll\r\n");ESP.restart();
+    DiagnosticPrintf("[NET] explicit server reboot clear confirmed by poll\r\n");BlackBoxBeforeRestart();ESP.restart();
   }
   if(networkWatchdogRequested&&!networkWatchdogPending&&networkBootReady) {
     String path="/has2.php?request=Send&table=device&key="+NetworkEncode(my["device_name"]|"")+"&column=watchdog&value=0";
@@ -567,6 +570,7 @@ bool GeneratorNetworkComplete(const char *state) {
 void GeneratorNetworkRequestMaintenance(bool legacy) {
   if(networkMaintenance){ return; }
   networkMaintenance=true;networkMaintenanceLegacy=legacy;networkMaintenanceStarted=millis();
+  has1blackbox::blackbox.setUploadAllowed(false);
   portENTER_CRITICAL(&networkMux);
   for(auto &slot:networkSlots)if(slot.occupied&&!slot.active){ slot.request.cancelled=true; }
   portEXIT_CRITICAL(&networkMux);
@@ -589,6 +593,9 @@ void GeneratorNetworkLoop() {
   const bool scanPending=networkScanPending,driverFault=networkDriverFault;
   const Has2BoundedTransport::Phase phase=networkWorkerPhase;
   portEXIT_CRITICAL(&networkMux);
+  BlackBoxRecoveryState(queueDepth,ready,scanPending,driverFault,networkMaintenance);
+  BlackBoxNetwork(queueDepth!=0 || ready || scanPending || driverFault,networkMaintenance,
+      activeId,int(phase),activeId?millis()-activeStart:0,activeId?millis()-progressAt:0,workerStackFree);
   static uint32_t seenActive=0,lastActiveLog=0,scanSince=0,seenDisconnect=0;
   const HAS2_WifiDisconnectDiagnostic disconnect=has2wifi.GetDisconnectDiagnostic();
   if(disconnect.sequence!=seenDisconnect) {
@@ -611,6 +618,9 @@ void GeneratorNetworkLoop() {
     if(discard==NetworkDiscard::None){ discard=NetworkDiscardReason(request); }
     if(discard==NetworkDiscard::None&&!request.mutation&&uint32_t(millis()-request.started)>kNetworkReadLifetime){ discard=NetworkDiscard::ResultExpired; }
     const bool stale=discard!=NetworkDiscard::None;
+    BlackBoxHttpDetail(request,networkMailbox,stale,int(discard));
+    BlackBoxHttp(int(request.kind),int(networkMailbox.error),networkMailbox.status,
+        networkMailbox.timings.totalMs,stale);
     DiagnosticPrintf("[NET] id=%lu gen=%lu current_gen=%lu depth=%u discard=%s worker_stack_free=%lu\r\n",(unsigned long)request.id,(unsigned long)request.generation,(unsigned long)GeneratorNetworkGeneration(),queueDepth,NetworkDiscardName(discard),(unsigned long)workerStackFree);
     DiagnosticPrintf("[NET] id=%lu kind=%u queue_ms=%lu status=%d error=%u phase=%u errno=%d connect=%lu write=%lu first=%lu header=%lu body=%lu close=%lu total=%lu stale=%u\r\n",
       (unsigned long)request.id,unsigned(request.kind),(unsigned long)(request.started-request.enqueued),networkMailbox.status,
@@ -640,10 +650,12 @@ void GeneratorNetworkLoop() {
       networkMaintenance=false;GeneratorNetworkRefreshCycle();
       DiagnosticPrintf("[NET] OTA maintenance aborted: WiFi offline for 10 seconds; request again after recovery\r\n");
     } else if(!busy&&online) {
+      has1blackbox::blackbox.setPaused(true);
       esp_task_wdt_delete(nullptr);
       if(networkMaintenanceLegacy){ has2wifi.FirmwareUpdate(my["device_type"]|"generator","172.30.1.43"); }
       else ota.check();
       esp_task_wdt_add(nullptr);
+      has1blackbox::blackbox.setPaused(false);
       networkMaintenance=false;GeneratorNetworkRefreshCycle();
     }
   }

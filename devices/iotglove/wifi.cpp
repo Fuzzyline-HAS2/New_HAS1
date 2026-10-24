@@ -1,4 +1,7 @@
 #include "wifi_client.h"
+#include "blackbox.h"
+#include <BlackBoxWifi.h>
+#include <BlackBoxEvidence.h>
 #include "network_policy.h"
 #include "chip_report.h"
 #include "feedback_config.h"
@@ -49,6 +52,7 @@ portMUX_TYPE diagnosticsMux = portMUX_INITIALIZER_UNLOCKED;
 NetworkDiagnostics diagnostics;
 std::atomic<uint16_t> disconnectReason{0};
 bool otaOperation = false;
+int diagnosticHttpKind=0; // 0 unknown,1 own snapshot,2 peer read,3 send,4 chip report,5 management
 // STA link bookkeeping. The Wi-Fi event task marks the first drop of an
 // established link so later reconnect-attempt events never overwrite the
 // original reason; the worker owns the outage timer and attempt counting.
@@ -69,9 +73,11 @@ void noteLinkLost(uint16_t reason) {
   lossRssi.store(lastRssi.load());
   lossAtMs.store(millis());
   lossCount.fetch_add(1);
+  has1blackbox::blackbox.log(has1blackbox::EventType::WifiEvent,reason,lastRssi.load(),0,0,"link.lost");
 }
 
 void beginOperation(NetworkPhase phase, uint32_t deadlineMs, uint32_t idleDeadlineMs = 0) {
+  blackBoxOperation(int(phase));
   const uint32_t now = millis();
   portENTER_CRITICAL(&diagnosticsMux);
   diagnostics.phase = phase; ++diagnostics.sequence;
@@ -126,8 +132,12 @@ void publishDiagnostics() {
 void observeResponseBackoff(const HAS2HttpResult& result);
 
 void httpProgress(HAS2HttpPhase phase, uint32_t bytes, void*) {
+  static has1blackbox::EvidenceGate evidence[6];
+  static uint32_t operation=0,lastSuccess[6]={};
+  static bool inProgress=false;
   if (otaOperation) return;  // Keep completion acknowledgements inside the OTA exemption.
   if (phase == HAS2HttpPhase::Connect) {
+    if(!inProgress) {++operation;inProgress=true;}
     beginOperation(NetworkPhase::Http, 20000);
     portENTER_CRITICAL(&diagnosticsMux);
     diagnostics.lastHttpError = 0; diagnostics.lastHttpStatus = 0;
@@ -137,6 +147,20 @@ void httpProgress(HAS2HttpPhase phase, uint32_t bytes, void*) {
   else if (phase == HAS2HttpPhase::Complete) {
     const auto result = wifi.LastHttpResult();
     observeResponseBackoff(result);
+    if(!inProgress)++operation;
+    inProgress=false;
+    const unsigned kind=unsigned(diagnosticHttpKind);
+    const bool failed=result.error!=HAS2HttpError::None || result.status<200 || result.status>=300;
+    if(evidence[kind].observe(millis(),failed,int(result.error),int(result.phase),result.status)) {
+      has1blackbox::blackbox.log(has1blackbox::EventType::HttpSummary,operation,
+          int(result.error),result.status,result.elapsedMs,failed?"http.failure":"http.recovered");
+      has1blackbox::blackbox.log(has1blackbox::EventType::HttpSummary,operation,
+          int(result.phase),result.bytes,has1blackbox::Unknown,"http.phase.bytes.errno");
+      has1blackbox::blackbox.log(has1blackbox::EventType::HttpSummary,operation,
+          lastSuccess[kind]?int32_t(millis()-lastSuccess[kind]):has1blackbox::Unknown,
+          result.retryAfterMs,kind,"http.ok_age.retry.kind");
+    }
+    if(!failed) lastSuccess[kind]=millis();
     portENTER_CRITICAL(&diagnosticsMux);
     diagnostics.lastHttpError = static_cast<uint8_t>(result.error);
     diagnostics.lastHttpPhase = static_cast<uint8_t>(result.phase);
@@ -197,6 +221,7 @@ bool liveName(const char* name) { return ChipReportPolicy::liveDevice(name); }
 // ReceiveMine identifies the registration by this board's STA MAC. Its response
 // need not contain a known game state; the absolute-write API rechecks MAC/key.
 bool readChipIdentity() {
+  diagnosticHttpKind=1;
   if (serverRequestsDeferred()) return false;
   char name[24];
   if (!wifi.ReceiveMineChecked() ||
@@ -280,6 +305,7 @@ bool refresh(bool primary = false) {
   observeResponseBackoff(primaryResult);
   const bool valid = identified && decodeSnapshot(fresh);
   if (primary) {
+    blackBoxHttp(int(primaryResult.error),primaryResult.status,primaryResult.elapsedMs,valid);
     recovery.observePrimary(millis(), primaryResult.error == HAS2HttpError::Transport, valid);
     if (!valid) {
       static uint32_t lastFailureLog = 0;
@@ -295,6 +321,7 @@ bool refresh(bool primary = false) {
   if (!valid) { publishInvalid(); return false; }
   // The game can be activate while the tagger still waits for the altar.
   // Resolve the configured tagger instead of inferring altar activation from phase.
+  diagnosticHttpKind=2;
   if (!serverRequestsDeferred() && fresh.phase == Phase::Active && liveName(taggerName) && wifi.ReceiveChecked(taggerName)) {
     const char* remoteName = tag["device_name"] | "";
     const char* remoteRole = tag["role"] | "";
@@ -309,6 +336,7 @@ bool refresh(bool primary = false) {
 }
 
 bool send(const char* field, const String& value) {
+  diagnosticHttpKind=3;
   return !serverRequestsDeferred() && wifi.SendChecked(latest.deviceName, field, value);
 }
 
@@ -345,6 +373,7 @@ void reportChip() {
   observePhysicalChip();
   ChipReportPolicy::Request request;
   if (!chipReport.begin(millis(), request)) return;
+  diagnosticHttpKind=4;
   if (!serverRequestsDeferred()) wifi.SetGloveChipChecked(request.device, request.present);
   const bool readBack = readChipIdentity();
   long value, ready;
@@ -362,13 +391,14 @@ void reportChip() {
       verified ? "confirmed" : "pending");
 }
 
+bool checkedManagement() { diagnosticHttpKind=5;return wifi.LoopChecked(); }
 void checkManagement() {
-  if (serverRequestsDeferred() || !hadValid || !wifi.LoopChecked()) return;
+  if (serverRequestsDeferred() || !hadValid || !checkedManagement()) return;
   long watchdog;
   if (!number(shift_machine["watchdog"], 0, 1, watchdog)) return;
   if (!watchdog) { resetLatched = false; return; }
   if (!resetLatched && latest.phase != Phase::Active && otaState.load() != NetworkOtaStatus::Running &&
-      send("watchdog", "0") && !serverRequestsDeferred() && wifi.LoopChecked() &&
+      send("watchdog", "0") && !serverRequestsDeferred() && checkedManagement() &&
       number(shift_machine["watchdog"], 0, 1, watchdog) && watchdog == 0) {
     latest.resetRequested = true;
     resetLatched = true;
@@ -403,10 +433,12 @@ void performOta(const OtaRequest& request) {
   // Scope cleanup restores normal monitoring on every returning path.
   struct OtaOperationScope {
     OtaOperationScope() {
+      has1blackbox::blackbox.setPaused(true);
       otaOperation = true;
       beginOperation(NetworkPhase::Ota, 0);
     }
     ~OtaOperationScope() {
+      has1blackbox::blackbox.setPaused(false);
       otaOperation = false;
       finishOperation();
     }
@@ -485,8 +517,10 @@ void worker(void*) {
       invalidateConnection();
       recovery.disconnected();
       beginOperation(NetworkPhase::Connecting, 30000);
+      has1blackbox::blackbox.log(has1blackbox::EventType::WifiTry,connectFailures,0,0,0,"connect.begin");
       const bool connected = wifi.TrySetupFixed("badland", "badland_shoot");
       finishOperation();
+      has1blackbox::blackbox.log(has1blackbox::EventType::WifiTry,connected,connectFailures,0,0,"connect.end");
       if (!connected) { ++connectFailures; waitWorker(kRetryMs); continue; }
       const uint32_t now = millis();
       lastRssi.store(clampRssi(WiFi.RSSI()));
@@ -523,6 +557,8 @@ void worker(void*) {
     }
     if (recovery.shouldReconnect(millis())) {
       invalidateConnection();
+      has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,recovery.failures(),
+          recovery.reconnects(),recovery.cooldownMs(),0,"http.force_reconnect");
       recovery.reconnected(millis(), esp_random());
       remoteConsoleLogf("[net] force reconnect=%lu cooldown=%lu reason=primary transport failure\n",
           (unsigned long)recovery.reconnects(), (unsigned long)recovery.cooldownMs());
@@ -560,6 +596,7 @@ bool networkBegin(int firmwareVersion, int firmwarePartitionVersion) {
   wifi.EnableBoundedHttp();
   wifi.SetHttpProgressHook(httpProgress);
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    has1blackbox::logWifiMetadata(event,info);
     if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
     const uint16_t reason = info.wifi_sta_disconnected.reason;
     disconnectReason.store(reason);

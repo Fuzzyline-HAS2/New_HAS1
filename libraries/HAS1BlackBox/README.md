@@ -1,0 +1,146 @@
+# HAS1BlackBox
+
+A separate diagnostics library for `iotglove` TTGO and `HAS1_generator`. It does not modify game HTTP, shared HAS2_Wifi, SecureOTA, watchdog/restart policy, partitions, or telnet. Default broker configuration is empty: records stay on the device. No MQTT tasks are created when the broker is empty.
+
+## Operation and limits
+
+`begin(Config{device, firmware, brokerUri, enabled, username, password})` creates queues and starts asynchronous discovery. Its return value means initialization was scheduled; `ready()` reports actual partition recovery. Events can queue before discovery completes. The two valid device names are `iotglove` and `HAS1_generator`. Broker URI is an IPv4 literal with explicit port, for example `mqtt://192.168.0.10:1883`. An explicit broker username and password are passed through ESP-MQTT credentials. When MQTT is configured and the username is empty or null, the username defaults to this device’s uppercase 12-hex STA MAC, matching per-device broker ACLs. Flash-only mode leaves an omitted username empty. This fallback never invents a password, enables anonymous broker access, or overrides an explicit username. This initial transport is for a trusted, restricted LAN; it does not implement TLS or cryptographically signed application ACKs. Credentials travel over plain TCP; use an isolated network and broker ACLs. Do not expose the listener to untrusted clients.
+
+`log(type,a,b,c,d,text)` is a non-ISR, zero-wait queue operation. A nonzero return is an accepted ticket, **not a flash durability guarantee**. `flushThrough(ticket,timeoutMs)` checks every earlier accepted ticket and caps waiting at 100 ms. Once any accepted ticket failed, later barriers also report failure; queue-empty is never treated as durability. Producer order and ticket assignment share a short critical section. Tickets and flash sequences stop at their uint32 limits rather than wrapping.
+
+Flash has 1,920 physical record slots. **When full, it recycles the oldest sector, including unacknowledged records, so a device running for weeks can still capture a new fault.** It writes a LOST marker with the overwritten sequence range/count before the new event when possible. A power cut or flash error can also lose that marker; this is a finite rolling diagnostic window, not lossless delivery or first-fault pinning. Capacity is event-rate dependent: 1 record/minute is approximately 32 hours, 1 record/second approximately 32 minutes; periodic library anchors, loss markers, and device events consume capacity. Measure actual rates; these are illustrations, not retention guarantees. Continued logging during a long unrecovered fault eventually overwrites its earliest evidence.
+
+RAM-only queues, records being programmed, and the last uncompleted flash operation may be lost on power removal. Software logging cannot prove a brief supply droop or distinguish all hardware faults. Extract the raw partition offline if the device cannot reconnect. Unknown partitions or interrupted initial formatting are left intact for maintenance, not automatically formatted.
+
+## Ownership and interference
+
+- One writer owns all flash operations and the ring state. Event queue: 32 × (64-byte record + 4-byte ticket + 4-byte uptime epoch). Control queue: 8. Snapshot mailbox: one batch of up to 16 records. ACK queue: 8 × 80-byte payload plus length. Ring index uses about 9.6 KiB static RAM.
+- Writer stack: 4,096 bytes. Uploader stack: 8,192 bytes. ESP-MQTT stack: 4,096 bytes; input/output buffers: 512 bytes each; outbox: 4,096-byte limit. ESP-MQTT itself allocates additional fixed session state. Actual heap/high-water measurements remain a hardware acceptance gate.
+- These tasks use priority 1 (same as the Arduino loop on typical builds), unpinned. This is intentionally not described as strictly lower than every game task. Shared radio airtime, flash cache stalls, scheduling, and memory still need benchmarking.
+- Producer/game tasks never call MQTT APIs. The uploader owns client start, subscribe, enqueue, stop, and destroy. Callback processing only reassembles at most 80 bytes and queues an ACK. Retained ACKs are rejected.
+- `setUploadAllowed(false)` cancels the current generation. `setPaused(true)` also stops new writer work. These are atomic requests and do not wait for quiescence. **An already started flash operation or SDK network operation can finish after the request.** SDK flash serialization still applies during existing OTA; actual OTA/NeoPixel coexistence must be measured. No 20 ms cancellation guarantee is claimed.
+- The writer takes the LED/flash guard with zero wait and releases between operations. `tryBeginLedOutput()` also takes it with zero wait, and returns true if the logger never started. The caller must retain pending LED output after failure and only mark refresh complete after `show()` succeeds. Startup partition discovery scans the full partition while holding this guard; it may postpone early LED frames.
+- Writer failures get at most one fresh-slot retry for an uncertain append, then enter a 60-second recovery probe interval. Failed records are not reported durable. No logger activity feeds a game watchdog. There is no logger-triggered reboot.
+- There is no diagnostic Wi-Fi scan, automatic radio restart, coredump erase, or NVS dependency in this library. Device integrations report only observations actually available to them.
+
+## Raw flash format (version 1)
+
+Only the existing `spiffs` data partition, exactly 131,072 bytes, is accepted. Both metadata sectors precede the data area. A brand-new partition must be entirely `0xff`; any unrecognized nonblank content disables logging without erasing it. The flash adapter uses `esp_partition_read/write/erase_range`.
+
+Metadata is an append-only journal of 128 × 64-byte headers: 64 slots in each sector at offsets 0..8,191. The original two-header layout at offsets 0 and 4,096 remains readable as a sparse journal. Every integer is little endian:
+
+| Offset | Bytes | Meaning |
+|---:|---:|---|
+| 0 | 4 | ASCII `BBR1` |
+| 4 | 4 | format version = 1 |
+| 8 | 4 | generation (no wrap) |
+| 12 | 8 | random nonzero ring ID |
+| 20 | 4 | reserved sequence exclusive upper bound |
+| 24 | 4 | durable application ACK frontier |
+| 28 | 4 | physical slots = 1920 |
+| 32 | 4 | commit marker = 0x434f4d31 |
+| 36 | 24 | zero |
+| 60 | 4 | CRC32 over bytes 0..59 |
+
+Recovery scans all 128 headers and chooses the highest valid generation. Any valid header with a different ring identity, or equal generation with different bytes, disables the ring. Generation zero and ACK frontiers outside the reserved range are invalid. Updates alternate sectors and program/read-verify the first entirely erased 64-byte slot in the inactive sector. Torn slots are consumed and never rewritten. Only when all 64 slots there are dirty is that inactive sector erased and verified blank; the latest valid generation remains intact in the other sector. Both sectors have a valid header before the first event is appended. Partial first initialization with no valid copy remains disabled rather than guessing a new identity. Sequence numbers reserve blocks of 64 in metadata **before** any event using that block is written. On reboot, unused reservations are skipped. This ensures identities are never reused after torn writes; gaps are normal. NVS erase does not change ring identity.
+
+Events occupy 64-byte slots from offset 8,192 through 131,071:
+
+| Offset | Bytes | Meaning |
+|---:|---:|---|
+| 0 | 1 | marker 0xb7 |
+| 1 | 1 | event type, 1..15 |
+| 2 | 2 | reserved zero |
+| 4 | 4 | sequence, nonzero |
+| 8 | 4 | random boot ID |
+| 12 | 4 | monotonic uptime milliseconds modulo 2^32 |
+| 16 | 16 | four signed int32 values |
+| 32 | 28 | ASCII text, max 27 printable bytes + NUL; controls replaced by `?` |
+| 60 | 4 | IEEE CRC32 (reflected polynomial 0xedb88320), bytes 0..59 |
+
+Event IDs: 1 Boot, 2 Crash, 3 WifiEvent, 4 WifiTry, 5 WifiSummary, 6 HttpSummary, 7 Recovery, 8 State, 9 Health, 10 Progress, 11 Peer, 12 Logger, 13 Lost, 14 Dropped, 15 Acked. Lost is emitted on unACKed sector recycling; its values are first sequence, last sequence, count, zero (sequence fields interpreted as uint32 bit patterns). Acked is reserved; ACK persistence uses metadata. Device-specific field meanings live in each device's BLACKBOX document. `INT32_MIN` is the unknown sentinel when applicable, not zero voltage/RSSI.
+
+Library-owned Boot values: reset reason, unknown, unknown, unknown; text is firmware version. Dropped values: cumulative count, delta, zero, zero. Logger `uptime64/errors` records once per minute while capacity and writer availability permit: `v[0]` is high 32 bits of uptime in milliseconds, `v[1]` flash errors, `v[2]` upload failures, `v[3]` dropped count. The ordinary uptime field supplies low bits. Wall-clock timestamps cannot be inferred from uptime alone; a missing anchor across an outage can leave rollover ambiguous. Boot IDs identify reset boundaries, not trustworthy calendar time. The additional `erase/lost/stack` Logger record contains erase-call count (including failed attempts), maximum observed erase microseconds, overwritten-record count for this boot, and writer task minimum free stack (ESP-IDF bytes). These measurements are diagnostics, not enforced latency bounds.
+
+Every append must succeed and match a readback byte-for-byte. A failed write can already have changed flash; dirty slots are never reprogrammed. Recovery scans all slots, rejects duplicate valid sequence numbers or records beyond metadata reservations, ignores CRC-invalid slots, and preserves their dirty status until a safe sector erase. ACKed whole sectors recycle first; when none are available, the oldest sector recycles with the LOST procedure above. Data corruption beyond this model (for example an undetected CRC collision) is not guaranteed recoverable. Raw flash is neither encrypted nor tamper-proof.
+
+Application ACKs first advance a RAM frontier. Metadata checkpoints after 64 sequence positions of progress, at the 60-second writer summary, before reclaiming a sector based on an ACK, and as part of a sequence reservation. Reservation writes occur once per 64 sequences (and after resets that skip reservations). A power cut before checkpoint causes replay; it never allows reclaim based only on a lost RAM ACK. The append-only metadata journal amortizes an erase over 64 checkpoints per sector rather than erasing on every checkpoint. A host endurance test performs 4,161 metadata writes with 64 metadata erases (32 per sector), over 64 times fewer erases than the previous policy. This is an operation-count test, not a hardware lifetime guarantee. The two metadata sectors still wear faster than data sectors. Estimate endurance from actual event/upload rates and flash specifications; continuous high-rate logging is not an intended workload.
+
+## MQTT and durable ACK
+
+MQTT 3.1.1 QoS 1, clean session. Topics:
+
+```
+has1/blackbox/v1/AABBCCDDEEFF/batch
+has1/blackbox/v1/AABBCCDDEEFF/ack
+```
+
+MAC is uppercase 12 hex digits. Batch payload:
+
+```
+BB1 iotglove AABBCCDDEEFF 0123456789abcdef 89abcdef
+<128 lowercase hex characters encoding one full record>\n
+...
+```
+
+`HAS1_generator` is the other device token. Ring is 16 lowercase hex digits; batch token is 8 lowercase hex digits. There are 1..16 records, strictly increasing sequence, maximum payload 4,096 bytes. The header and every record end with an actual LF byte. There are no END lines. Skipped/torn/reserved sequences need not be contiguous.
+
+Collector commits **all** records to SQLite before publishing:
+
+```
+ACK1 0123456789abcdef 89abcdef 1234
+```
+
+It ends with one LF; last value is canonical unsigned decimal for the final record in this exact batch. The device requires byte-exact ring/token/final-sequence match. MQTT broker PUBACK never advances the journal. The writer alone applies application ACK. A failed checkpoint causes safe replay. SQLite must deduplicate `(MAC, ring, sequence)` and reject different payloads with the same identity. Batch IDs are random correlation values, not authentication secrets.
+
+Normal backlog pacing is 5 seconds. Failed sessions back off with ±20% jitter, capped at a 60-second base. The uploader targets 1,500 ms from snapshot request through ACK wait, with a 250 ms SDK network timeout. **SDK API/stop/destroy latency can exceed that target; it is not a proven wall-clock bound.** A single batch is pending, and a failed/cancelled session destroys the client and bounded RAM outbox. Its flash data remains for the next session. Benchmarks must measure impact, particularly when the broker is absent or Wi-Fi is unstable.
+
+## Tests
+
+```
+python3 libraries/HAS1BlackBox/tests/run_tests.py
+```
+
+Host tests use C++17 plus AddressSanitizer and UndefinedBehaviorSanitizer on Unix. They cover the CRC vector, byte order/strings, all 65 record/header/metadata-journal-rollover/rolling LOST-marker write cut points, sequence reservations across reboot, ACK checkpoint interruption, unknown data preservation, invalid size/read failure, duplicate records, partial erase, full capacity, LOST ranges, ACK coalescing/replay and recycling, and exact bounded protocol formatting/ACK validation. They exercise the pure storage/protocol implementation, **not FreeRTOS scheduling, real flash power loss, MQTT SDK latency, or target hardware behavior**. Firmware builds and independent device tests are additional gates.
+
+## Evidence build 20261024.2
+
+The `Boot/evidence.20261024.2` record identifies diagnostic schema 2 independently
+of the unchanged deployed firmware release number, OTA protocol, partition and
+64-byte record format. Its values are actual ESP reset cause, schema 2, replayed
+RTC count, and warm-reset flag. `firmware`/`device.boot` remain separate records.
+
+Eight recent critical records are also copied to a fixed RTC no-init journal with
+individual CRCs in the zero-wait producer. This adds no flash write or recovery
+flush wait. Normal peer/worker summaries and prior RTC re-exports are excluded.
+Warm-reset recovery validates slots and queues their **original boot ID and uptime**;
+new flash sequence IDs are assigned, so an already persisted event can appear
+again. `Logger/rtc.replay.end` gives count, warm flag, `may_duplicate=1`, reserved.
+This is a bounded replay marker, not an assertion that every prior event was saved.
+Power-on and brownout discard RTC contents. This does **not** add power-loss durability
+or pin the first fault indefinitely. The event queue now stores an additional
+32-bit uptime-wrap value per record; only the writer publishes sequence coverage.
+
+Optional clock probes use the same authenticated logging session and existing
+`batch`/`ack` ACLs. Collector sends exactly `T1 <32 lowercase hex token>\n` on `ack`
+after committing a batch and before its normal, unchanged `ACK1`. Device replies
+once per session on `batch` with bounded JSON:
+
+```
+{"v":1,"kind":"time_probe","mac":"AABBCCDDEEFF","ring":"0123456789abcdef","boot":123,"token":"0123456789abcdef0123456789abcdef","uptime_ms":123456,"seq_min":100,"seq_max":200,"record_uptime_wraps":0}
+```
+
+The uptime is sampled while processing this challenge, not at batch creation or
+from an old boot in the uploaded backlog. `seq_min..seq_max` covers writer-confirmed
+records from the **current boot and one uptime32 wrap epoch**; coverage resets at
+wrap and is refused if uptime has crossed to another epoch before a new record
+persists. There are no flash reads, scans, JSON parser, new game messages or new
+producer waits. Uploader may spend at most another 50 ms after an ordinary ACK
+waiting for this optional publish, still inside the existing 1,500 ms session
+target, and continues honoring upload/OTA cancellation. SDK stop latency remains
+outside a proven bound. Failure or no challenge yields no anchor and never delays
+normal application ACK persistence. This is a PC round-trip bracket, **not NTP
+synchronization or proof of PC UTC accuracy**. Collector must retain clock quality
+as unverified and reject expired/mismatched tokens, wall-clock jumps and excessive
+round trips. Old firmware ignores the extra challenge; old collectors ignore the
+optional response safely without treating it as a record batch.

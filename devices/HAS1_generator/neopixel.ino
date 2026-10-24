@@ -4,9 +4,12 @@
 // remain alive for the whole boot, including after a transmission timeout.
 static GeneratorNeo::Sender neoSenders[NeopixelNum];
 static bool neoFaultReported[NeopixelNum] = {};
+static bool neoBlackBoxPending[NeopixelNum] = {};
 
 void NeoShow(int neoIdx) {
   if (neoIdx < 0 || neoIdx >= NeopixelNum) return;
+  if(!has1blackbox::blackbox.tryBeginLedOutput()) { neoBlackBoxPending[neoIdx]=true; return; }
+  neoBlackBoxPending[neoIdx]=false;
   bool sent;
   {
     DiagnosticScope trace(GeneratorDiagnostic::Neo,static_cast<uint32_t>(neoIdx));
@@ -16,6 +19,7 @@ void NeoShow(int neoIdx) {
       trace.result(error>0?-error:(error?error:-1),static_cast<uint32_t>(neoIdx));
     }
   }
+  has1blackbox::blackbox.endLedOutput();
   if (sent) return;
   if (!neoFaultReported[neoIdx]) {
     neoFaultReported[neoIdx] = true;
@@ -23,6 +27,10 @@ void NeoShow(int neoIdx) {
     Serial.printf("[NEO] strip=%d disabled until reboot, error=%d\n",
                   neoIdx, static_cast<int>(neoSenders[neoIdx].error()));
   }
+}
+
+void NeoRetryPending() {
+  for(int n=0;n<NeopixelNum;++n) if(neoBlackBoxPending[n]) NeoShow(n);
 }
 
 // =================================================================================

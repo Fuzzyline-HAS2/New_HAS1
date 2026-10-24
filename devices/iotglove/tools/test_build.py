@@ -24,6 +24,14 @@ prepare_spec.loader.exec_module(prepare_libraries)
 
 
 class BuildContractTests(unittest.TestCase):
+    def test_blackbox_only_links_glove_ttgo_profiles(self):
+        for profile in ("ttgo", "training"):
+            self.assertIn(ROOT / "libraries/HAS1BlackBox", glove_compile.extra_libraries(profile))
+        self.assertNotIn(ROOT / "libraries/HAS1BlackBox", glove_compile.extra_libraries("beetle"))
+        self.assertEqual(glove_compile.blackbox_flags("beetle", "mqtt"), "")
+        self.assertIn("BLACKBOX_ENABLED=0", glove_compile.blackbox_flags("ttgo", "off"))
+        self.assertIn("127.0.0.1", glove_compile.blackbox_flags("training", "mqtt"))
+
     def test_release_workflow_rejects_non_default_branches_before_checkout(self):
         workflow = (ROOT / ".github" / "workflows" / "deploy-firmware.yml").read_text()
         guard = workflow.index("github.event.repository.default_branch")

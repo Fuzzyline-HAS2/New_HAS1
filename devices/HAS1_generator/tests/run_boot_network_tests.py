@@ -65,6 +65,9 @@ struct Ota {
  template<class T> void setOnSkip(T) {}
  void setPartitionUpdate(const char*,const char*,const char*,int) {}
 } ota;
+void BlackBoxBegin() {}
+void BlackBoxLoop() {}
+void NeoRetryPending() {}
 void DiagnosticInit() {}
 void CrashReportInit() {}
 void TelnetPreserveCrashReport() {}

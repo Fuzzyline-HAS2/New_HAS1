@@ -1,0 +1,544 @@
+#include "BlackBoxEvidence.h"
+#include "BlackBoxIdentity.h"
+#include <type_traits>
+static_assert(std::is_trivial<has1blackbox::RetainedEvidence>::value,"RTC no-init storage must have no startup constructor");
+#include "BlackBoxRing.h"
+#include "BlackBoxUpload.h"
+#include <algorithm>
+#include <cassert>
+#include <iostream>
+#include <vector>
+using namespace has1blackbox;
+struct Memory : Flash {
+  std::vector<uint8_t> data = std::vector<uint8_t>(Ring::Size, 255);
+  int writeLimit = -1, eraseLimit = -1;
+  bool failRead = false, writeDataOnly = false, eraseDataOnly = false;
+  unsigned writes = 0, erases = 0, metadataWrites = 0, metadataErases = 0;
+  unsigned metadataSectorErases[2]{};
+  size_t size() const override { return data.size(); }
+  bool read(size_t o, uint8_t *b, size_t n) override {
+    if (failRead || o + n > data.size())
+      return false;
+    std::memcpy(b, data.data() + o, n);
+    return true;
+  }
+  bool write(size_t o, const uint8_t *b, size_t n) override {
+    ++writes;
+    if (o < Ring::Data)
+      ++metadataWrites;
+    bool fault = writeLimit >= 0 && (!writeDataOnly || o >= Ring::Data);
+    size_t count = fault ? std::min(n, size_t(writeLimit)) : n;
+    if (count)
+      for (size_t i = 0; i < n; ++i)
+        assert(data[o + i] == 255); // never reprogram a dirty slot
+    for (size_t i = 0; i < count; ++i) {
+      assert((data[o + i] & b[i]) == b[i]);
+      data[o + i] &= b[i];
+    }
+    return !fault;
+  }
+  bool erase(size_t o, size_t n) override {
+    ++erases;
+    if (o < Ring::Data) {
+      ++metadataErases;
+      ++metadataSectorErases[o / Ring::Sector];
+    }
+    assert(o % 4096 == 0 && n % 4096 == 0);
+    bool fault = eraseLimit >= 0 && (!eraseDataOnly || o >= Ring::Data);
+    size_t count = fault ? std::min(n, size_t(eraseLimit)) : n;
+    std::fill(data.begin() + o, data.begin() + o + count, 255);
+    return !fault;
+  }
+};
+Record event() {
+  return Record::make(EventType::Health, 0x12345678, 0xfffffff0, Unknown, 2, 3,
+                      4, "hello\nworld");
+}
+void records() {
+  assert(crc32(reinterpret_cast<const uint8_t *>("123456789"), 9) ==
+         0xcbf43926);
+  Record r = event();
+  assert(!r.valid());
+  r.sequence(1);
+  assert(r.valid());
+  assert(get32(r.bytes + 8) == 0x12345678);
+  assert(get32(r.bytes + 16) == 0x80000000);
+  assert(r.bytes[37] == '?');
+  for (size_t i = 0; i < 64; ++i) {
+    auto corrupt = r;
+    corrupt.bytes[i] ^= 1;
+    assert(!corrupt.valid());
+  }
+  auto longText = Record::make(EventType::State, 0, 0, 0, 0, 0, 0,
+                               "abcdefghijklmnopqrstuvwxyz0123456789");
+  assert(longText.bytes[59] == 0);
+  char h[129];
+  assert(r.hex(h, sizeof(h)));
+  assert(!r.hex(h, 128));
+  Record erased;
+  std::memset(erased.bytes, 255, 64);
+  assert(erased.erased());
+  assert(!erased.valid());
+  assert(uint32_t(0x10u - 0xfffffff0u) == 32);
+}
+void recovery() {
+  Memory f;
+  Ring r(f);
+  assert(r.begin(0x1234));
+  auto e = event();
+  assert(r.append(e) == AppendResult::Persisted);
+  assert(e.seq() == 1);
+  Ring reboot(f);
+  assert(reboot.begin(0x9999));
+  assert(reboot.id() == 0x1234);
+  e = event();
+  assert(reboot.append(e) == AppendResult::Persisted);
+  assert(e.seq() == 65);
+  assert(reboot.acknowledge(65));
+  Ring next(f);
+  assert(next.begin(0));
+  assert(next.id() == 0x1234 && next.acked() == 65);
+  Record out[16];
+  size_t count;
+  assert(next.snapshot(out, 16, count) && count == 0);
+  assert(!next.acknowledge(66));
+}
+void fullAndRecycle() {
+  Memory f;
+  Ring r(f);
+  assert(r.begin(0x42));
+  Record e;
+  for (size_t i = 0; i < Ring::Slots; ++i) {
+    e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+    assert(e.seq() == i + 1);
+  }
+  e = event();
+  assert(r.append(e) == AppendResult::Persisted);
+  assert(e.seq() == 1922);
+  assert(r.lostRecords() == 64);
+  Record loss;
+  assert(f.read(Ring::Data, loss.bytes, 64));
+  assert(loss.valid() && loss.bytes[1] == uint8_t(EventType::Lost));
+  assert(get32(loss.bytes + 16) == 1 && get32(loss.bytes + 20) == 64 &&
+         get32(loss.bytes + 24) == 64);
+  Ring reboot(f);
+  assert(reboot.begin(0));
+  Record out[16];
+  size_t count;
+  assert(reboot.snapshot(out, 16, count) && count == 16 && out[0].seq() == 65);
+  assert(reboot.acknowledge(reboot.maximum()));
+  for (size_t i = 0; i < 1920; ++i) {
+    e = event();
+    assert(reboot.append(e) == AppendResult::Persisted);
+  }
+  // Uncheckpointed small ACKs replay safely after reset; explicit checkpoint
+  // makes them durable.
+  Memory cf;
+  Ring cr(cf);
+  assert(cr.begin(2));
+  e = event();
+  assert(cr.append(e) == AppendResult::Persisted);
+  assert(cr.acknowledge(1));
+  Ring replay(cf);
+  assert(replay.begin(0) && replay.acked() == 0);
+  assert(cr.checkpointAck());
+  Ring confirmed(cf);
+  assert(confirmed.begin(0) && confirmed.acked() == 1);
+}
+void tornRecords() {
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory f;
+    Ring r(f);
+    assert(r.begin(42));
+    auto e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+    f.writeLimit = cut;
+    e = event();
+    assert(r.append(e) == AppendResult::Uncertain);
+    f.writeLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    e = event();
+    assert(recovered.append(e) == AppendResult::Persisted);
+    assert(e.seq() == 65);
+    Record out[16];
+    size_t count;
+    assert(recovered.snapshot(out, 16, count));
+    assert(out[0].seq() == 1);
+    if (cut == 64) {
+      assert(count == 3 && out[1].seq() == 2);
+    } else
+      assert(count == 2);
+  }
+}
+void tornMetadata() {
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory f;
+    Ring r(f);
+    assert(r.begin(42));
+    Record e;
+    for (int i = 0; i < 64; ++i) {
+      e = event();
+      assert(r.append(e) == AppendResult::Persisted);
+    }
+    f.writeLimit = cut;
+    e = event();
+    assert(r.append(e) == AppendResult::Failed);
+    f.writeLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    e = event();
+    assert(recovered.append(e) == AppendResult::Persisted);
+    assert(e.seq() == (cut == 64 ? 129u : 65u));
+  }
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory f;
+    Ring r(f);
+    f.writeLimit = cut;
+    assert(!r.begin(42));
+    f.writeLimit = -1;
+    Ring recovered(f);
+    bool ok = recovered.begin(99);
+    assert(ok == (cut == 0 || cut == 64));
+    if (cut == 64)
+      assert(recovered.id() == 42);
+  }
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory f;
+    Ring r(f);
+    assert(r.begin(42));
+    auto e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+    assert(r.acknowledge(1));
+    f.writeLimit = cut;
+    assert(!r.checkpointAck());
+    f.writeLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    assert(recovered.acked() == (cut == 64 ? 1u : 0u));
+  }
+}
+void partialErase() {
+  for (int cut : {0, 1, 63, 64, 2048, 4095, 4096}) {
+    Memory f;
+    Ring r(f);
+    assert(r.begin(42));
+    Record e;
+    for (size_t i = 0; i < Ring::Slots; ++i) {
+      e = event();
+      assert(r.append(e) == AppendResult::Persisted);
+    }
+    assert(r.acknowledge(64));
+    // Ensure sequence reservation checkpoint is already available before
+    // faulting data erase.
+    e = event();
+    assert(r.append(e) == AppendResult::Persisted); // erased ACKed sector, now
+                                                    // occupies first slot
+    assert(r.acknowledge(e.seq()));
+    for (int i = 1; i < 64; ++i) {
+      e = event();
+      assert(r.append(e) == AppendResult::Persisted);
+    }
+    // Next append may checkpoint first; any interrupted erase must leave
+    // recoverable evidence.
+    f.eraseLimit = cut;
+    e = event();
+    auto result = r.append(e);
+    assert(result != AppendResult::Persisted);
+    f.eraseLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    Record out[16];
+    size_t n;
+    assert(recovered.snapshot(out, 16, n));
+  }
+}
+void rollingPowerCuts() {
+  Memory baseline;
+  Ring full(baseline);
+  assert(full.begin(0x42));
+  for (size_t i = 0; i < Ring::Slots; ++i) {
+    auto e = event();
+    assert(full.append(e) == AppendResult::Persisted);
+  }
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory f = baseline;
+    Ring r(f);
+    assert(r.begin(0));
+    f.writeDataOnly = true;
+    f.writeLimit = cut;
+    auto e = event();
+    assert(r.append(e) == AppendResult::Uncertain);
+    f.writeLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    e = event();
+    assert(recovered.append(e) == AppendResult::Persisted);
+    assert(e.seq() >= 1985);
+    Record out[16];
+    size_t count;
+    assert(recovered.snapshot(out, 16, count));
+    assert(out[0].seq() == 65);
+  }
+  for (int cut : {0, 1, 63, 64, 2048, 4095, 4096}) {
+    Memory f = baseline;
+    Ring r(f);
+    assert(r.begin(0));
+    f.eraseDataOnly = true;
+    f.eraseLimit = cut;
+    auto e = event();
+    assert(r.append(e) == AppendResult::Uncertain);
+    f.eraseLimit = -1;
+    Ring recovered(f);
+    assert(recovered.begin(0));
+    e = event();
+    assert(recovered.append(e) == AppendResult::Persisted);
+    assert(e.seq() >= 1985);
+  }
+}
+void metadataJournal() {
+  Memory f;
+  Ring r(f);
+  assert(r.begin(77));
+  for (unsigned i = 0; i < 4096; ++i) {
+    auto e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+    assert(r.acknowledge(e.seq()));
+    assert(r.checkpointAck());
+  }
+  assert(f.metadataWrites >= 4096);
+  assert(f.metadataErases > 0 && f.metadataWrites / f.metadataErases >= 64);
+  for (auto count : f.metadataSectorErases)
+    assert(count >= 31 && count <= 33);
+  Ring recovered(f);
+  assert(recovered.begin(0));
+  assert(recovered.acked() == r.acked());
+  std::cout << "metadata journal: " << f.metadataWrites << " writes, "
+            << f.metadataErases << " erases (" << f.metadataSectorErases[0]
+            << "/" << f.metadataSectorErases[1] << ")\n";
+
+  // Fill both 64-entry metadata sectors using one new reservation per reboot.
+  Memory full;
+  {
+    Ring first(full);
+    assert(first.begin(77));
+    auto e = event();
+    assert(first.append(e) == AppendResult::Persisted);
+  }
+  while (full.metadataWrites < 128) {
+    Ring boot(full);
+    assert(boot.begin(0));
+    auto e = event();
+    assert(boot.append(e) == AppendResult::Persisted);
+  }
+  assert(full.metadataWrites == 128 && full.metadataErases == 0);
+  for (int cut = 0; cut <= 64; ++cut) {
+    Memory broken = full;
+    Ring boot(broken);
+    assert(boot.begin(0));
+    broken.writeLimit = cut;
+    auto e = event();
+    assert(boot.append(e) == AppendResult::Failed);
+    broken.writeLimit = -1;
+    assert(broken.metadataErases == 1);
+    Ring reboot(broken);
+    assert(reboot.begin(0));
+    e = event();
+    assert(reboot.append(e) == AppendResult::Persisted);
+    assert(e.seq() == (cut == 64 ? 8193u : 8129u));
+  }
+  for (int cut : {0, 1, 63, 64, 2048, 4095, 4096}) {
+    Memory broken = full;
+    Ring boot(broken);
+    assert(boot.begin(0));
+    broken.eraseLimit = cut;
+    auto e = event();
+    assert(boot.append(e) == AppendResult::Failed);
+    broken.eraseLimit = -1;
+    Ring reboot(broken);
+    assert(reboot.begin(0));
+    e = event();
+    assert(reboot.append(e) == AppendResult::Persisted);
+    assert(e.seq() == 8129);
+  }
+  Memory conflict = full;
+  uint8_t header[64];
+  std::memcpy(header, conflict.data.data(), 64);
+  put32(header + 20, get32(header + 20) + 64);
+  put32(header + 60, crc32(header, 60));
+  std::memcpy(conflict.data.data() + 7 * 64, header, 64);
+  Ring duplicate(conflict);
+  assert(!duplicate.begin(0));
+  conflict = full;
+  uint8_t *old = conflict.data.data() + 7 * 64;
+  put32(old + 12, 999);
+  put32(old + 60, crc32(old, 60));
+  Ring identity(conflict);
+  assert(!identity.begin(0));
+  // The legacy two-header layout remains a valid sparse journal.
+  Memory legacy;
+  {
+    Ring first(legacy);
+    assert(first.begin(88));
+    auto e = event();
+    assert(first.append(e) == AppendResult::Persisted);
+  }
+  assert(get32(legacy.data.data() + 8) == 1 &&
+         get32(legacy.data.data() + 4096 + 8) == 2);
+  Ring compatible(legacy);
+  assert(compatible.begin(0) && compatible.id() == 88);
+}
+void invalid() {
+  Memory f;
+  f.data[12345] = 1;
+  auto before = f.data;
+  Ring r(f);
+  assert(!r.begin(1));
+  assert(f.data == before);
+  Memory shortF;
+  shortF.data.resize(4096);
+  Ring small(shortF);
+  assert(!small.begin(1));
+  Memory readFail;
+  readFail.failRead = true;
+  Ring fail(readFail);
+  assert(!fail.begin(1));
+  Memory duplicate;
+  Ring dr(duplicate);
+  assert(dr.begin(1));
+  auto e = event();
+  assert(dr.append(e) == AppendResult::Persisted);
+  std::memcpy(duplicate.data.data() + Ring::Data + 64, e.bytes, 64);
+  Ring dup(duplicate);
+  assert(!dup.begin(1));
+  Memory boundary;
+  Ring br(boundary);
+  assert(br.begin(1));
+  for (size_t offset : {size_t(0), size_t(4096)}) {
+    uint8_t *p = boundary.data.data() + offset;
+    if (std::memcmp(p, "BBR1", 4))
+      continue;
+    put32(p + 20, UINT32_MAX);
+    put32(p + 60, crc32(p, 60));
+  }
+  Ring end(boundary);
+  assert(end.begin(0));
+  assert(end.append(e) == AppendResult::Unavailable);
+}
+void protocol() {
+  Batch b;
+  b.ring = 0x1234;
+  b.token = 0xdeadbeef;
+  b.count = 2;
+  b.records[0] = event();
+  b.records[0].sequence(1);
+  b.records[1] = event();
+  b.records[1].sequence(65);
+  char payload[4096];
+  auto n = encodeBatch(b, "iotglove", "AABBCCDDEEFF", payload, sizeof(payload));
+  assert(n > 256 && n < 4096);
+  assert(std::strncmp(payload,
+                      "BB1 iotglove AABBCCDDEEFF 0000000000001234 deadbeef\n",
+                      51) == 0);
+  const char *ack = "ACK1 0000000000001234 deadbeef 65\n";
+  assert(exactAck(ack, std::strlen(ack), b));
+  assert(!exactAck(ack, std::strlen(ack) - 1, b));
+  assert(!exactAck("ACK1 0000000000001234 deadbeef 64\n", 33, b));
+  ++b.token;
+  assert(!exactAck(ack, std::strlen(ack), b));
+  assert(
+      !encodeBatch(b, "bad device", "AABBCCDDEEFF", payload, sizeof(payload)));
+  assert(!encodeBatch(b, "iotglove", "aabbccddeeff", payload, sizeof(payload)));
+  assert(!encodeBatch(b, "iotglove", "AABBCCDDEEFF", payload, 100));
+  b.count = 16;
+  for (size_t i = 0; i < 16; ++i) {
+    b.records[i] = event();
+    b.records[i].sequence(uint32_t(i + 1));
+  }
+  assert(encodeBatch(b, "HAS1_generator", "AABBCCDDEEFF", payload,
+                     sizeof(payload)) < 4096);
+  b.count = 17;
+  assert(!encodeBatch(b, "iotglove", "AABBCCDDEEFF", payload, sizeof(payload)));
+  assert(backoffMs(0) == 5000 && backoffMs(4) == 60000);
+}
+void evidence() {
+  const uint8_t address[]={172,30,1,43};
+  assert(ipv4FromNetworkBytes(address)==0xac1e012b);
+  EvidenceGate g;
+  assert(!g.observe(0,false,0,5,200));
+  assert(g.observe(10,true,1,1,0));
+  assert(!g.observe(100,true,1,1,0));
+  assert(g.observe(1010,true,2,2,0));
+  assert(g.observe(2010,false,0,5,200));
+  assert(!g.observe(3010,false,0,5,200));
+  assert(g.observe(UINT32_MAX-10,true,1,1,0));
+  assert(g.observe(1000,true,2,2,0));
+  EvidenceGate pending;
+  assert(pending.observe(100,true,1,1,0));
+  assert(!pending.observe(200,false,0,5,200));
+  assert(!pending.observe(300,false,0,5,200));
+  assert(pending.observe(1100,false,0,5,200));
+  assert(!pending.observe(1200,false,0,5,200));
+  ClockCoverage c;
+  c.observe(10,20,100,0);c.observe(10,20,105,0);
+  assert(c.first==100 && c.last==105);
+  c.observe(10,20,106,1);
+  assert(c.first==106 && c.last==106 && c.wraps==1);
+  c.observe(10,21,200,0);
+  assert(c.boot==21 && c.first==200 && c.wraps==0);
+  Record old=Record::make(EventType::Recovery,20,500);old.sequence(201);
+  c.observeCurrentRecord(10,21,old,0);
+  assert(c.boot==21 && c.first==200 && c.last==200);
+  Record current=Record::make(EventType::Recovery,21,1000);current.sequence(202);
+  c.observeCurrentRecord(10,21,current,0);
+  assert(c.boot==21 && c.first==200 && c.last==202);
+  char token[33];
+  const char *probe="T1 0123456789abcdef0123456789abcdef\n";
+  assert(parseTimeProbe(probe,36,token));
+  assert(!parseTimeProbe(probe,35,token));
+  assert(!parseTimeProbe("T1 0123456789abcdef0123456789abcdeF\n",36,token));
+  char response[320];
+  assert(parseTimeProbe(probe,36,token));
+  assert(encodeTimeProbe(c,"AABBCCDDEEFF",token,1000,response,sizeof(response)));
+  assert(std::strstr(response,"\"boot\":21"));
+  assert(std::strstr(response,"\"seq_min\":200"));
+  assert(!encodeTimeProbe(c,"AABBCCDDEEFF",token,1ull<<32,response,sizeof(response)));
+  assert(!encodeTimeProbe(c,"AABBCCDDEEFF",token,1000,response,20));
+  RetainedEvidence rtc{};rtc.clear();
+  Record recovered[RetainedEvidence::Capacity];
+  for(unsigned i=0;i<10;++i)rtc.add(Record::make(EventType::Recovery,100+i,200+i,i,0,0,0,"fault"));
+  assert(rtc.recover(recovered,false)==0);
+  assert(rtc.recover(recovered,true)==8);
+  assert(get32(recovered[0].bytes+8)==102 && get32(recovered[7].bytes+8)==109);
+  assert(get32(recovered[0].bytes+12)==202 && get32(recovered[7].bytes+12)==209);
+  rtc.entries[1][16]^=1; // torn/corrupted latest payload cannot be replayed.
+  assert(rtc.recover(recovered,true)==7);
+  rtc.magic=0;
+  assert(rtc.recover(recovered,true)==0);
+}
+void mqttIdentity() {
+  const char *mac="AABBCCDDEEFF";
+  assert(std::strcmp(resolveMqttUsername("","mqtt://127.0.0.1:1883",mac),mac)==0);
+  assert(std::strcmp(resolveMqttUsername(nullptr,"mqtt://127.0.0.1:1883",mac),mac)==0);
+  assert(std::strcmp(resolveMqttUsername("fixture-user","mqtt://127.0.0.1:1883",mac),"fixture-user")==0);
+  assert(std::strcmp(resolveMqttUsername("fixture-user","",mac),"fixture-user")==0);
+  assert(!resolveMqttUsername("","",mac)[0]);
+  assert(!resolveMqttUsername(nullptr,nullptr,mac)[0]);
+  assert(!resolveMqttUsername(nullptr,"mqtt://127.0.0.1:1883",nullptr)[0]);
+}
+int main() {
+  mqttIdentity();
+  evidence();
+  records();
+  recovery();
+  fullAndRecycle();
+  tornRecords();
+  tornMetadata();
+  partialErase();
+  rollingPowerCuts();
+  metadataJournal();
+  invalid();
+  protocol();
+  std::cout << "blackbox core: all fault and protocol tests passed\n";
+}

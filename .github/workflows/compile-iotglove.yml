@@ -6,8 +6,10 @@ on:
     paths:
       - "devices/iotglove/**"
       - "libraries/IoTGloveProtocol/**"
+      - "libraries/HAS1BlackBox/**"
       - "scripts/firmware_targets.py"
       - "scripts/write_firmware_secret.py"
+      - "scripts/write_blackbox_release_config.py"
       - "scripts/archive_iotglove_release.py"
       - ".github/workflows/compile-iotglove.yml"
       - ".github/workflows/deploy-firmware.yml"
@@ -15,8 +17,10 @@ on:
     paths:
       - "devices/iotglove/**"
       - "libraries/IoTGloveProtocol/**"
+      - "libraries/HAS1BlackBox/**"
       - "scripts/firmware_targets.py"
       - "scripts/write_firmware_secret.py"
+      - "scripts/write_blackbox_release_config.py"
       - "scripts/archive_iotglove_release.py"
       - ".github/workflows/compile-iotglove.yml"
       - ".github/workflows/deploy-firmware.yml"
@@ -42,6 +46,8 @@ jobs:
         run: python3 -m unittest discover -s devices/iotglove/tools -p 'test_*.py'
       - name: Firmware host tests
         run: python3 devices/iotglove/tools/run_tests.py
+      - name: Blackbox flash and protocol fault tests
+        run: python3 libraries/HAS1BlackBox/tests/run_tests.py
 
   compile:
     runs-on: ubuntu-latest

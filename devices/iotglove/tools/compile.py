@@ -26,6 +26,23 @@ PROFILES = {
 SOURCE_EXTENSIONS = {".ino", ".h", ".hpp", ".c", ".cpp", ".S", ".s", ".tpp", ".inc"}
 
 
+def extra_libraries(profile):
+    libraries = [ROOT / "libraries" / "IoTGloveProtocol"]
+    if profile in ("ttgo", "training"):
+        libraries.append(ROOT / "libraries" / "HAS1BlackBox")
+    return libraries
+
+
+def blackbox_flags(profile, mode):
+    if profile == "beetle":
+        return ""
+    if mode == "off":
+        return " -DIOTGLOVE_BLACKBOX_ENABLED=0"
+    if mode == "mqtt":
+        return ' -DIOTGLOVE_BLACKBOX_BROKER_URI="mqtt://127.0.0.1:1883"'
+    return ""
+
+
 def stage_sketch(source, destination, check_ota_paths=False):
     destination.mkdir()
     for entry in source.iterdir():
@@ -52,6 +69,8 @@ def main():
     parser.add_argument("--libraries-dir", type=Path, default=os.environ.get("IOTGLOVE_LIBRARY_DIR"))
     parser.add_argument("--output-dir", type=Path, default=ROOT / "build" / "iotglove-compile-only")
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--blackbox-mode", choices=("off", "flash", "mqtt"), default="flash",
+                        help="Validation mode; mqtt uses localhost and output must never be deployed")
     parser.add_argument("--check-ota-paths", action="store_true",
                         help="Link production OTA branches using a public test key; never deploy the output")
     args = parser.parse_args()
@@ -89,9 +108,11 @@ def main():
                 "--build-path", str(Path(work) / "build"),
                 "--output-dir", str(output),
                 "--libraries", str(libraries),
-                "--library", str(ROOT / "libraries" / "IoTGloveProtocol"),
+                *[argument for library in extra_libraries(profile)
+                  for argument in ("--library", str(library))],
                 "--build-property", f"compiler.cpp.extra_flags=-DIOTGLOVE_TRAINING={training}" +
-                    ("" if args.check_ota_paths else " -DIOTGLOVE_COMPILE_ONLY=1"),
+                    ("" if args.check_ota_paths else " -DIOTGLOVE_COMPILE_ONLY=1") +
+                    blackbox_flags(profile, args.blackbox_mode),
                 str(sketch),
             ]
             print(f"Compile {profile}: {fqbn}", flush=True)

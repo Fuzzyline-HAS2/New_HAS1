@@ -11,6 +11,7 @@
 #include "sensor.h"
 #include "feedback.h"
 #include "pixel_refresh.h"
+#include "blackbox.h"
 #include "network_policy.h"
 #include "network_restart.h"
 #include "link_loss.h"
@@ -204,6 +205,9 @@ LinkLossContext currentLinkLossContext(uint32_t now) {
 void reportRetainedLinkLoss(esp_reset_reason_t resetReason) {
   if (!linkLossPresent(linkLossRecord)) return;
   const LinkLossRecord& r = linkLossRecord;
+  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,r.cause,r.reason,r.rssi,r.restartAttempt,"prior.link_loss");
+  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,r.lostAtMs,r.noticedAtMs,r.restartAtMs,r.connectFailures,"prior.loss_timing");
+  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,r.stateKnown?r.phase:-1,r.stateKnown?r.role:-1,r.motor,blackBoxRetainedAdcMv(r.batteryAdcMv),"prior.loss_context");
   char motorAge[16];
   ageText(motorAge, sizeof(motorAge), r.motorAgeMs != kLinkLossMotorNever, r.motorAgeMs);
   remoteConsoleLogf("[recovery] retained link loss: cause=%s reset_reason=%u reason=%u rssi=%d lost_uptime_ms=%lu noticed_uptime_ms=%lu restart_uptime_ms=%lu down_ms=%lu connect_failures=%lu attempt=%u\n",
@@ -346,6 +350,8 @@ void reportDiagnosticChanges(uint32_t now) {
       (!transitionPrinted || uint32_t(now - transitionPrintedAt) >= 500U)) {
     const char* change = !reportedKnown ? "discovered" :
         (known && peer.bootId() != reportedBoot ? "new_boot" : (online ? "online" : "offline"));
+    has1blackbox::blackbox.log(has1blackbox::EventType::Peer,peer.bootId(),
+        peer.firmwareVersion(),peer.partitionVersion(),(known?1:0)|(online?2:0),"beetle.hello.state");
     transitionPrinted = true; transitionPrintedAt = now;
     if (diagnosticLog.append("[peer] %s known=%u online=%u fw=%lu partition=%lu boot=%lu\n", change,
         known, online, (unsigned long)peer.firmwareVersion(), (unsigned long)peer.partitionVersion(),
@@ -364,6 +370,8 @@ void reportDiagnosticChanges(uint32_t now) {
   const ResetObservation result = linkDiagnostics.resetState();
   if (result != ResetObservation::Never && result != ResetObservation::Waiting && result != reportedReset &&
       uint32_t(now - resetReportAt) >= 500U) {
+    has1blackbox::blackbox.log(has1blackbox::EventType::Peer,int(result),
+        linkDiagnostics.resetBaselineBoot(),linkDiagnostics.resetObservedBoot(),0,"beetle.reset.observed");
     resetReportAt = now;
     const char* evidence = result == ResetObservation::RebootObserved ? "new_boot+post_pulse_PING_HELLO" :
         (result == ResetObservation::BaselineUnknown ? "PING_HELLO_without_baseline" : "none");
@@ -391,10 +399,16 @@ void pollPeer(uint32_t now) {
     if (!decoded) continue;
     ++rxDecoded;
     diagnostics::Log log;
-    if (diagnostics::parseLog(frame, log) && beetleLogs.accept(log, peer.known(), peer.bootId()))
+    if (diagnostics::parseLog(frame, log) && beetleLogs.accept(log, peer.known(), peer.bootId())) {
+      // Parser and boot/sequence tracker have validated this peer evidence.
+      has1blackbox::blackbox.log(has1blackbox::EventType::Peer,log.bootId,log.uptimeMs,
+          log.sequence,log.value,"beetle.log.values");
+      has1blackbox::blackbox.log(has1blackbox::EventType::Peer,log.bootId,log.sequence,
+          int(log.event),int(log.code),"beetle.log.kind");
       remoteConsoleLogf("[beetle] boot=%lu uptime_ms=%lu %s/%s value=%lu seq=%lu\n",
           (unsigned long)log.bootId, (unsigned long)log.uptimeMs, diagnostics::eventName(log.event),
           diagnostics::codeName(log.code), (unsigned long)log.value, (unsigned long)log.sequence);
+    }
     if (peer.receive(frame, now)) {
       linkDiagnostics.observeHello(frame.id, peer, now);
       modeKnown = false; sendMode();
@@ -502,7 +516,7 @@ void controlReset(uint32_t now) {
   if (resetHigh && uint32_t(now - resetStarted) >= kResetPulseMs) {
     digitalWrite(IOTGLOVE_BEETLE_RESET_PIN, LOW);
     resetHigh = false;
-    if (resetTtgo) { remoteConsoleLogf("[reset] Server watchdog: restarting TTGO\n"); ESP.restart(); }
+    if (resetTtgo) { remoteConsoleLogf("[reset] Server watchdog: restarting TTGO\n"); blackBoxBeforeRestart(1,networkRestartHistory.attempts); ESP.restart(); }
   }
   if (resetPending && !resetHigh && !otaBusy() &&
       (!haveReset || uint32_t(now - lastReset) >= kResetCooldownMs)) {
@@ -513,6 +527,8 @@ void controlReset(uint32_t now) {
           kResetPulseMs, linkDiagnostics.resetBaselineKnown(),
           (unsigned long)linkDiagnostics.resetBaselineBoot(), (unsigned long)LinkDiagnostics::kResetTimeoutMs);
     }
+    has1blackbox::blackbox.log(has1blackbox::EventType::Peer,resetTtgo,kResetPulseMs,
+        peer.known(),peer.bootId(),"beetle.reset.pulse");
     digitalWrite(IOTGLOVE_BEETLE_RESET_PIN, HIGH);
     resetStarted = lastReset = now;
     resetHigh = haveReset = true;
@@ -543,12 +559,16 @@ void sampleBattery(uint32_t now) {
     lastBatteryAdcSample = now;
     const uint32_t mv = analogReadMilliVolts(IOTGLOVE_BATTERY_PIN);
     batteryAdcMv = mv > 0xFFFFU ? 0xFFFFU : static_cast<uint16_t>(mv);
+    blackBoxAdcSample(now,mv);
   }
   if (!battery.configured() || uint32_t(now - lastBatterySample) < 20U) return;
   lastBatterySample = now;
   float voltage = 0;
-  if (!battery.add(analogReadMilliVolts(IOTGLOVE_BATTERY_PIN), voltage)) return;
+  const uint32_t sample=analogReadMilliVolts(IOTGLOVE_BATTERY_PIN);
+  blackBoxAdcSample(now,sample);
+  if (!battery.add(sample, voltage)) return;
   batteryVolts = voltage;
+  blackBoxBatteryVoltage(now);
   if (lastBatteryReport != 0 && uint32_t(now - lastBatteryReport) < 60000U) return;
   lastBatteryReport = now;
   remoteConsoleLogf("[battery] %.2f V\n", static_cast<double>(voltage));
@@ -565,6 +585,7 @@ void render(uint32_t now) {
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
+  blackBoxOutput(now,out.motor,lastOutputs.lit,lastBrightness);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   if (out.motor) { lastMotorOnMs = now; motorEverOn = true; }
   // Already raw 0..255 — the network task converted it when the snapshot was parsed.
@@ -572,14 +593,20 @@ void render(uint32_t now) {
   const bool visualChanged = !haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
       out.blue != lastOutputs.blue || out.lit != lastOutputs.lit || brightness != lastBrightness;
   // Rebuild from current output even on recovery resends, preserving intentional darkness.
-  if (pixelRefresh.update(out.motor, visualChanged, now)) {
+  PixelRefresh nextRefresh = pixelRefresh;
+  const bool refreshNeeded = nextRefresh.update(out.motor, visualChanged, now);
+  if (!refreshNeeded) pixelRefresh = nextRefresh; // Track motor edges without consuming an output.
+  if (refreshNeeded && has1blackbox::blackbox.tryBeginLedOutput()) {
     pixels.setBrightness(brightness);
     for (uint8_t n = 0; n < IOTGLOVE_LED_COUNT; ++n)
       pixels.setPixelColor(n, n < out.lit ? pixels.Color(out.red, out.green, out.blue) : 0);
     pixels.show();
+    has1blackbox::blackbox.endLedOutput();
+    pixelRefresh = nextRefresh; // Denied flash guard must not consume a resend.
     lastOutputs = out;
     lastBrightness = brightness;
     haveOutputs = true;
+    blackBoxOutput(now,out.motor,out.lit,brightness);
   }
 }
 void handleConsoleCommand(char command, uint32_t now) {
@@ -625,6 +652,11 @@ void monitorNetwork() {
   if (d.wifiLossCount != observedLossCount) {
     observedLossCount = d.wifiLossCount;
     const LinkLossContext context = currentLinkLossContext(now);
+    has1blackbox::blackbox.log(has1blackbox::EventType::State,
+        context.stateKnown?context.phase:-1,context.stateKnown?context.role:-1,context.motor,
+        context.batteryMv?context.batteryMv:-1,"loss.context");
+    has1blackbox::blackbox.log(has1blackbox::EventType::State,
+        context.motorAgeMs,context.lit,blackBoxAdcMv(context.batteryAdcMv,lastBatteryAdcSample!=0),context.heapFree,"loss.output_adc_heap");
     linkLossCapture(linkLossRecord, now, d.wifiLastLossAtMs, d.wifiLastLossReason, d.wifiLastLossRssi,
                     d.wifiConnectFailures, context);
     remoteConsoleLogf("[recovery] link loss captured reason=%u rssi=%d age_ms=%lu phase=%s role=%s device_state=%s motor=%u motor_age_ms=%s battery_adc_mv=%u\n",
@@ -642,6 +674,7 @@ void monitorNetwork() {
   const bool stalled = networkWorkerStalled(d, now);
   if (networkRestartPolicy.observe(now, d.sequence, stalled) && networkRestartHistory.attempts) {
     networkRestartHistory = {NetworkRestartPolicy::kMagic, 0, false};
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,0,0,0,0,"budget.restored");
     remoteConsoleLogf("[recovery] worker progressed for 10 minutes; restart budget restored\n");
     linkDownReported = false;  // A still-dead link may use the fresh budget.
     armMainWatchdog();
@@ -649,6 +682,8 @@ void monitorNetwork() {
   if (!stalled) stallReported = false;
   else if (!stallReported) {
     stallReported = true;
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,int(d.phase),d.sequence,
+        now-d.startedAtMs,now-d.progressAtMs,"worker.stall");
     remoteConsoleLogf("[recovery] worker stalled phase=%u sequence=%lu age_ms=%lu idle_ms=%lu restarts=%lu\n",
         static_cast<unsigned>(d.phase), (unsigned long)d.sequence,
         (unsigned long)(now - d.startedAtMs), (unsigned long)(now - d.progressAtMs),
@@ -656,8 +691,10 @@ void monitorNetwork() {
     if (NetworkRestartPolicy::request(networkRestartHistory)) {
       linkLossComplete(linkLossRecord, LinkLossCause::WorkerStall, now, d.wifiConnectFailures,
                        static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
+      blackBoxBeforeRestart(2,networkRestartHistory.attempts);
       ESP.restart();
     }
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,networkRestartHistory.attempts,0,0,0,"budget.exhausted");
     remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
   }
   // The STA retry loop alone never ends; after a bounded outage the same
@@ -665,14 +702,18 @@ void monitorNetwork() {
   if (!wifiLinkDownTooLong(d, now)) { linkDownReported = false; return; }
   if (linkDownReported) return;
   linkDownReported = true;
+  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,now-d.wifiDownSinceMs,
+      d.wifiConnectFailures,d.wifiWasUp,d.wifiLastLossReason,"wifi.down.threshold");
   remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu last_loss_reason=%u last_loss_rssi=%d restarts=%lu\n",
       (unsigned long)(now - d.wifiDownSinceMs), d.wifiWasUp, (unsigned long)d.wifiConnectFailures,
       d.wifiLastLossReason, d.wifiLastLossRssi, (unsigned long)networkRestartHistory.attempts);
   if (NetworkRestartPolicy::request(networkRestartHistory)) {
     linkLossComplete(linkLossRecord, LinkLossCause::WifiDown, now, d.wifiConnectFailures,
                      static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
+    blackBoxBeforeRestart(3,networkRestartHistory.attempts);
     ESP.restart();
   }
+  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,networkRestartHistory.attempts,0,0,0,"budget.exhausted");
   remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
 }
 }  // namespace
@@ -685,7 +726,12 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   sensorConfigurePins();
   Serial.begin(115200);
   beetleSerial.begin(IOTGLOVE_UART_BAUD, SERIAL_8N1, IOTGLOVE_UART_RX, IOTGLOVE_UART_TX);
-  pixels.begin(); pixels.clear(); pixels.show();
+  blackBoxBegin(firmware, partition);
+  pixels.begin(); pixels.clear();
+  if (has1blackbox::blackbox.tryBeginLedOutput()) {
+    pixels.show();
+    has1blackbox::blackbox.endLedOutput();
+  } // First main render retries the current frame if writer owned the flash guard.
   const uint32_t now = millis();
   sensorBegin(now);
   game.begin(sensorChipPresent(), now);
@@ -743,6 +789,10 @@ void gloveLoop() {
   render(now);
   flushDiagnostics();
   remoteConsolePoll();
+  blackBoxLoop(millis(),int(game.server().phase),int(game.server().role),int(game.server().deviceState),
+      game.synchronized() && serverFresh(millis()),otaBusy(),lastOutputs.motor,lastOutputs.lit,
+      blackBoxAdcMv(batteryAdcMv,lastBatteryAdcSample!=0),
+      battery.configured() && batteryVolts>0 ? int(batteryVolts*1000) : -1,peer.online(millis()));
   monitorNetwork();
   // Feed only after completing a full main-loop pass, including the worker check.
   if (mainWatchdog) esp_task_wdt_reset_user(mainWatchdog);

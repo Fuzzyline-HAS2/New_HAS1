@@ -69,3 +69,19 @@
 #define WIRE_PIN_4 36
 
 #endif
+
+// Separate blackbox library. Empty broker URI records locally only. Set enabled
+// to 0 for baseline benchmarks; never use credentials inside the broker URI.
+#ifndef HAS1_GENERATOR_BLACKBOX_ENABLED
+#define HAS1_GENERATOR_BLACKBOX_ENABLED 1
+#endif
+#ifndef HAS1_GENERATOR_BLACKBOX_BROKER_URI
+#define HAS1_GENERATOR_BLACKBOX_BROKER_URI ""
+#endif
+
+#ifndef HAS1_GENERATOR_BLACKBOX_MQTT_USERNAME
+#define HAS1_GENERATOR_BLACKBOX_MQTT_USERNAME ""
+#endif
+#ifndef HAS1_GENERATOR_BLACKBOX_MQTT_PASSWORD
+#define HAS1_GENERATOR_BLACKBOX_MQTT_PASSWORD ""
+#endif

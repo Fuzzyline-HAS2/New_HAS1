@@ -1,0 +1,8 @@
+# One unique username equal to the device's uppercase 12-digit MAC.
+# The authenticated username, NOT a claimed payload identity, scopes each device.
+pattern write has1/blackbox/v1/%u/batch
+pattern read has1/blackbox/v1/%u/ack
+
+user collector
+topic read has1/blackbox/v1/+/batch
+topic write has1/blackbox/v1/+/ack

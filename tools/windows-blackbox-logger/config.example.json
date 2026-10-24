@@ -1,0 +1,32 @@
+{
+  "host": "127.0.0.1",
+  "port": 1883,
+  "client_id": "has1-blackbox-collector",
+  "username": "collector",
+  "password_env": "HAS1_BLACKBOX_PASSWORD",
+  "database": "data/blackbox.sqlite3",
+  "tls_ca": null,
+  "telemetry": {
+    "site_id": "store-1",
+    "database": "data/telemetry.sqlite3",
+    "omada": {
+      "enabled": false
+    },
+    "server_jsonl": {
+      "enabled": false
+    },
+    "min_free_bytes": 1073741824,
+    "device_import": {
+      "enabled": false
+    },
+    "clock_probe": {
+      "enabled": false
+    },
+    "gateway_udp": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 5515,
+      "source_id": "store-1-php-gateway"
+    }
+  }
+}
