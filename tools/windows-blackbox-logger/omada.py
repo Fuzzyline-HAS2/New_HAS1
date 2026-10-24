@@ -6,6 +6,7 @@ are operator configured. Timestamp quality is evidence, never a clock-sync claim
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import ipaddress
+import json
 import queue
 import re
 import socket
@@ -15,6 +16,20 @@ UTC = timezone.utc
 MAC_PATTERN = r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}"
 MONTHS = {name: number for number, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+IPV4_PATTERN = r"(?:\d{1,3}\.){3}\d{1,3}"
+# AP traffic logging observed from an EAP: "[<epoch>.<ns>] AP MAC=.. MAC SRC=.. IP SRC=.. ..."
+TRAFFIC_RECORD = re.compile(
+    r"\[(\d{9,11})\.(\d{1,9})\]\s+AP MAC=(" + MAC_PATTERN + r")\s+MAC SRC=(" + MAC_PATTERN + r")\s+"
+    r"IP SRC=(" + IPV4_PATTERN + r")\s+IP DST=(" + IPV4_PATTERN + r")\s+IP proto=(\d{1,3})(?=\s|$)"
+    r"(?:\s+SPT=(\d{1,5})(?=\s|$))?(?:\s+DPT=(\d{1,5})(?=\s|$))?")
+# Records stay only in the raw datagram; fields keep a bounded summary.
+MAX_TRAFFIC_SUMMARY_ITEMS = 32
+# EAP epochs outside this window of arrival are treated as bogus, not as source time.
+MAX_TRAFFIC_EPOCH_SKEW = timedelta(days=1)
+MAX_LIST_ITEMS = 8
+MAX_LIST_TEXT = 128
+# telemetry.Event allows 16 KiB of fields; leave room for adapter-added keys.
+MAX_DETAILS_BYTES = 12288
 
 
 @dataclass(frozen=True)
@@ -43,6 +58,37 @@ def _identities(message, label):
     return list(dict.fromkeys(_mac(value) for value in bracket + plain))
 
 
+def _names(message, label):
+    # Omada event text names devices as "[client:<name>:<MAC>]"; keep the name only when present.
+    found = re.findall(r"\[" + label + r":([^\]\r\n]{1,128}?):" + MAC_PATTERN + r"\]", message, re.I)
+    return _bounded(found)
+
+
+def _bounded(values):
+    return list(dict.fromkeys(value[:MAX_LIST_TEXT] for value in values))[:MAX_LIST_ITEMS]
+
+
+def _traffic_records(message):
+    """Return complete records and the number of records cut off at the datagram end."""
+    records = []
+    partial = 0
+    for match in TRAFFIC_RECORD.finditer(message):
+        if match.end() == len(message):
+            # The sender cuts datagrams mid-record; a value at the very end may be incomplete.
+            partial += 1
+            continue
+        seconds, fraction, ap, src_mac, src_ip, dst_ip, proto, spt, dpt = match.groups()
+        try:
+            stamp = datetime.fromtimestamp(int(seconds), UTC) + timedelta(microseconds=int(fraction.ljust(9, "0")[:6]))
+        except (OverflowError, OSError, ValueError):
+            stamp = None
+        records.append({"utc": stamp.isoformat() if stamp else None, "ap_mac": _mac(ap),
+                        "src_mac": _mac(src_mac), "src_ip": src_ip, "dst_ip": dst_ip,
+                        "proto": int(proto), "spt": int(spt) if spt else None,
+                        "dpt": int(dpt) if dpt else None})
+    return records, partial
+
+
 def parse_syslog(payload, source_ip, observed_at, site_id, utc_offset_minutes=540,
                  max_datagram=8192):
     """Preserve bounded raw input, including unknown/malformed formats.
@@ -67,36 +113,65 @@ def parse_syslog(payload, source_ip, observed_at, site_id, utc_offset_minutes=54
                "site_binding": "operator_configured_sender_destination"}
     event_at = None
     quality = "missing_or_invalid"
+    local_zone = timezone(timedelta(minutes=utc_offset_minutes))
     body = re.sub(r"^<\d{1,3}>", "", text)
+    traffic, partial_traffic = _traffic_records(text)
     # RFC5424 VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA.
-    modern = re.match(r"^\d{1,3}\s+(\S+)\s+", body)
+    # Omada controllers send "YYYY-MM-DD HH:MM:SS" (space, no offset) in site local time.
+    modern = re.match(r"^\d{1,3}\s+(?:(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)(Z|[+-]\d{2}:\d{2})?(?=\s)|(\S+))", body)
     if modern:
-        stamp = modern.group(1)
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})", stamp):
+        date, clock, zone, other = modern.groups()
+        if date:
             try:
-                event_at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(UTC)
-                quality = "source_offset_unverified"
+                if zone:
+                    event_at = datetime.fromisoformat(f"{date}T{clock}{zone.replace('Z', '+00:00')}").astimezone(UTC)
+                    quality = "source_offset_unverified"
+                else:
+                    event_at = datetime.fromisoformat(f"{date}T{clock}").replace(tzinfo=local_zone).astimezone(UTC)
+                    quality = "naive_local_configured_offset"
+                    details["assumed_utc_offset_minutes"] = utc_offset_minutes
+                    details["timestamp_flags"].append("naive_source_timestamp_configured_offset")
             except ValueError:
-                pass
-        elif stamp != "-":
+                details["timestamp_flags"].append("invalid_or_naive_source_timestamp")
+        elif other != "-":
             details["timestamp_flags"].append("invalid_or_naive_source_timestamp")
     else:
         legacy = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})(?:\s|$)", body)
         if legacy:
             month, day, hour, minute, second = legacy.groups()
             if month in MONTHS:
-                local = observed_at.astimezone(timezone(timedelta(minutes=utc_offset_minutes)))
+                local = observed_at.astimezone(local_zone)
+                # Some senders repeat the full local date in the message; use its year only
+                # when month/day/time agree with the header.
+                years = [int(year) for year, m, d, hh, mm, ss in re.findall(
+                    r"\b(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\b", body[legacy.end():])
+                    if (int(m), int(d), hh, mm, ss) == (MONTHS[month], int(day), hour, minute, second)]
                 candidates = []
-                for year in (local.year - 1, local.year, local.year + 1):
+                for year in years[:1] or (local.year - 1, local.year, local.year + 1):
                     try:
-                        candidates.append(datetime(year, MONTHS[month], int(day), int(hour), int(minute), int(second), tzinfo=local.tzinfo).astimezone(UTC))
+                        candidates.append(datetime(year, MONTHS[month], int(day), int(hour), int(minute), int(second), tzinfo=local_zone).astimezone(UTC))
                     except ValueError:
                         pass
                 if candidates:
                     event_at = min(candidates, key=lambda candidate: abs((candidate - observed_at).total_seconds()))
-                    quality = "estimated_year_configured_offset"
                     details["assumed_utc_offset_minutes"] = utc_offset_minutes
-                    details["timestamp_flags"].append("year_ambiguous")
+                    if years:
+                        quality = "naive_local_configured_offset"
+                        details["timestamp_flags"].append("naive_source_timestamp_configured_offset")
+                    else:
+                        quality = "estimated_year_configured_offset"
+                        details["timestamp_flags"].append("year_ambiguous")
+    # Per-record epoch seconds are absolute UTC and finer than the header; prefer the first one.
+    first_traffic = next((record["utc"] for record in traffic if record["utc"]), None)
+    if first_traffic:
+        traffic_at = datetime.fromisoformat(first_traffic)
+        if abs(traffic_at - observed_at) <= MAX_TRAFFIC_EPOCH_SKEW:
+            event_at = traffic_at
+            quality = "source_epoch_unverified"
+            details.pop("assumed_utc_offset_minutes", None)
+            details["timestamp_flags"] = [flag for flag in details["timestamp_flags"] if flag != "year_ambiguous"]
+        else:
+            details["timestamp_flags"].append("traffic_epoch_implausible")
     if event_at is not None:
         delta = (observed_at - event_at).total_seconds()
         details["observed_minus_event_seconds"] = delta
@@ -114,25 +189,66 @@ def parse_syslog(payload, source_ip, observed_at, site_id, utc_offset_minutes=54
     for label in ("rssi", "reason", "channel", "client_ip", "ap_ip", "dhcp_type"):
         matches = re.findall(r"\["+label+r"\s*[:=]\s*([^\]\r\n]{1,128})\]", text, re.I)
         if matches:
-            explicit[label] = list(dict.fromkeys(matches))
+            explicit[label] = _bounded(matches)
+    # Omada event sentences, e.g. '[client:..] (IP: 1.2.3.4) went online on [ap:..] with SSID "x" on channel 6.'
+    for label, pattern in (("client_ip", r"\(IP:\s*(" + IPV4_PATTERN + r")\)"),
+                           ("ssid", r'\bSSID "([^"\r\n]{1,64})"'),
+                           ("channel", r"\bon channel (\d{1,3})\b"),
+                           ("allocated_ip", r"\ballocated IP address (" + IPV4_PATTERN + r")\b")):
+        matches = re.findall(pattern, text, re.I)
+        if matches:
+            explicit[label] = _bounded(explicit.get(label, []) + matches)
     details["explicit_fields"] = explicit
     clients = _identities(text, "client")
     aps = _identities(text, "ap")
+    if partial_traffic:
+        details["traffic_partial_records"] = partial_traffic
+    if traffic:
+        # "AP MAC=" is an explicit label; MAC SRC may be either end of the flow, so not a client.
+        aps = list(dict.fromkeys(aps + [record["ap_mac"] for record in traffic]))
+        stamps = [record["utc"] for record in traffic if record["utc"]]
+        details["traffic_record_count"] = len(traffic)
+        details["traffic_first_utc"] = min(stamps) if stamps else None
+        details["traffic_last_utc"] = max(stamps) if stamps else None
+        truncated = False
+        for key, values in (("traffic_src_macs", [record["src_mac"] for record in traffic]),
+                            ("traffic_src_ports", [record["spt"] for record in traffic if record["spt"] is not None]),
+                            ("traffic_dst_ports", [record["dpt"] for record in traffic if record["dpt"] is not None])):
+            distinct = list(dict.fromkeys(values))
+            truncated = truncated or len(distinct) > MAX_TRAFFIC_SUMMARY_ITEMS
+            details[key] = distinct[:MAX_TRAFFIC_SUMMARY_ITEMS]
+        details["traffic_summary_truncated"] = truncated
     details["client_macs"] = clients
     details["ap_macs"] = aps
+    for key, label in (("client_names", "client"), ("ap_names", "ap")):
+        names = _names(text, label)
+        if names:
+            details[key] = names
     if len(clients) > 1:
         details["ambiguous_client"] = True
-    event_type = "unknown"
-    for name, pattern in (("roaming", r"\broam(?:ed|ing|s)?\b"),
-                          ("disconnected", r"\bdisconnect(?:ed|ing|s)?\b|\bdisassociat(?:ed|ion)\b"),
+    event_type = "traffic_log" if traffic else "unknown"
+    for name, pattern in (("dhcp_lease", r"\bDHCP\b[^.\r\n]{0,40}\ballocated IP address\b"),
+                          ("roaming", r"\broam(?:ed|ing|s)?\b"),
+                          ("disconnected", r"\bdisconnect(?:ed|ing|s)?\b|\bdisassociat(?:ed|ion)\b"
+                           + (r"|\bwent offline\b" if clients else "")),
                           ("connection_failed", r"\bfailed to connect\b|\bconnection failed\b"),
-                          ("connected", r"\bconnected\b|\bassociated\b"),
+                          ("connected", r"\bconnected\b|\bassociated\b" + (r"|\bwent online\b" if clients else "")),
+                          ("device_online", r"\bwent online\b"),
                           ("device_offline", r"\boffline\b"),
                           ("device_restart", r"\breboot(?:ed|ing)?\b|\brestart(?:ed|ing)?\b")):
+        if event_type != "unknown":
+            break
         if re.search(pattern, text, re.I):
             event_type = name
-            break
     details["classification"] = "heuristic" if event_type != "unknown" else "unknown"
+    # Invalid bytes become U+FFFD (3 bytes in JSON); drop derived extras rather than fail storage.
+    # The raw datagram is always retained, so dropped fields can be re-derived later.
+    for key in ("client_names", "ap_names", "explicit_fields", "traffic_src_ports", "traffic_src_macs"):
+        if len(json.dumps(details, ensure_ascii=False).encode("utf-8")) <= MAX_DETAILS_BYTES:
+            break
+        if key in details:
+            details.pop(key)
+            details.setdefault("fields_dropped_for_size", []).append(key)
     return OmadaEvent("omada", site_id, source_ip, observed_at.isoformat(),
                       event_at.isoformat() if event_at else None, quality, event_type,
                       clients[0] if len(clients) == 1 else None,

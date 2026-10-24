@@ -59,8 +59,35 @@ payload permits later parser improvements after real samples are available.
 | Input | Stored interpretation |
 |---|---|
 | RFC5424 explicit `Z` or UTC offset | Source UTC, `source_offset_unverified` |
+| RFC5424 without offset, incl. Omada controller `2026-10-25 03:34:30` | Configured offset (default UTC+09:00), `naive_local_configured_offset` |
+| RFC3164 header whose body repeats the same `YYYY-MM-DD HH:MM:SS` (ER7212PC gateway) | Year from the body, configured offset, `naive_local_configured_offset` |
 | RFC3164 `Oct 24 12:00:00` | Nearest year and configured offset (default UTC+09:00), `estimated_year_configured_offset` |
-| Missing, malformed or naive RFC5424 timestamp | No event UTC; observation UTC remains separate |
+| EAP traffic records `[1792867094.740301419] AP MAC=...` | First record's epoch as UTC, `source_epoch_unverified` |
+| Missing or malformed timestamp | No event UTC; observation UTC remains separate |
+
+## Observed store-1 formats (controller 6.2.14.30, ER7212PC, EAP)
+
+| Sender | Example | `event_type` |
+|---|---|---|
+| Controller | `[client:name:MAC] (IP: ..) went online on [ap:name:MAC] with SSID ".." on channel 6.` | `connected` (client) / `device_online` (no client label) |
+| Controller | `... went offline ...` | `disconnected` (client) / `device_offline` |
+| Controller / gateway | `DHCP Server allocated IP address .. for the [client:MAC].` | `dhcp_lease` |
+| EAP (More Detail Logs) | one datagram, several `[epoch] AP MAC= MAC SRC= IP SRC= IP DST= IP proto= SPT= DPT=` | `traffic_log` |
+
+Client name, SSID, channel, client/allocated IP are kept in `explicit_fields`,
+`client_names` and `ap_names`. Traffic records are not copied into fields (the raw
+datagram keeps them); fields hold a summary: `traffic_record_count`,
+`traffic_first_utc`/`traffic_last_utc`, and distinct `traffic_src_macs`,
+`traffic_src_ports`, `traffic_dst_ports` (32 each, `traffic_summary_truncated` when cut).
+`MAC SRC` can be either end of a flow, so it is stored as `traffic_src_macs`, never as
+the client identity. The EAP cuts datagrams mid-record: a record ending exactly at the
+datagram end may hold a cut value, so it is counted in `traffic_partial_records` and not
+stored. A traffic epoch more than one day from arrival is ignored (header time kept,
+`traffic_epoch_implausible`). When an RFC3164 body repeats the header's date and time,
+its year replaces nearest-year selection without any range check. Derived lists hold at
+most 8 values of 128 characters; if derived fields still exceed 12 KiB they are dropped
+and named in `fields_dropped_for_size` (raw stays available). The gateway forwards each DHCP event twice (RFC3164 and RFC5424);
+both arrivals are retained.
 
 RFC3164 has no year or zone. Nearest-year selection is always marked ambiguous;
 logs delayed more than roughly half a year cannot be dated reliably. A timestamp
