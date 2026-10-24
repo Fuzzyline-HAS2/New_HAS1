@@ -124,6 +124,22 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(any("출력 변경" in text for text in kept))
         self.assertTrue(any("재부팅" in text for text in kept) and any("AUTH_FAIL" in text for text in kept))
 
+    def test_same_second_runs_show_one_time_and_unavailable_values_are_hidden(self):
+        # Game 1656: "0:06:53~0:06:53" and "부팅 · 22 · 값 1 -2147483648 -2147483648 -2147483648".
+        path = Path(self.temp.name) / "polish.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        for seq in (2, 3):
+            store.save(device(seq, "2026-10-24T03:03:30.000000+00:00", "State", "motor.applied", (1, 4, 0, 0), uptime=413000))
+        store.save(device(4, "2026-10-24T03:03:30.000000+00:00", "Boot", "22", (1, -2147483648, -2147483648, -2147483648)))
+        store.save(device(5, "2026-10-24T03:03:30.000000+00:00", "Boot", "blank", (-2147483648,) * 4))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            rows = [row for row in summarize(raw, INCIDENT, CLOSED)["rows"] if row[0] == "장치"]
+        self.assertEqual(rows[1], ["장치", "부팅 1 · 켜진 뒤 0:06:53 (수신 12:03:30)", "모터·LED 출력 변경 2건"])
+        self.assertEqual(rows[2][2], "부팅 · 22 · 값 1")
+        self.assertEqual(rows[3][2], "부팅 · blank")
+
     def test_key_records_survive_the_fetch_cap_and_keep_the_outage_end(self):
         path = Path(self.temp.name) / "spam.db"
         store = TelemetryStore(path)
