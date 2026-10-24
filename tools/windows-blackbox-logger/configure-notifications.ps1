@@ -31,6 +31,42 @@ function Read-PrivateText([string]$Prompt) {
     try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); $secure.Dispose() }
 }
+function Invoke-NotionHelper([string]$PythonPath, [ValidateSet('--resolve-notion-database', '--check-notion-schema')][string]$Mode, [hashtable]$Request) {
+    # Explicit pipes avoid Windows PowerShell native-pipeline stdin forwarding.
+    # Only the fixed mode and installed script path appear on the command line.
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $PythonPath
+    $start.Arguments = '-E -s -X utf8 "' + (Join-Path $PSScriptRoot 'notifications.py') + '" ' + $Mode
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    $payload = [Text.Encoding]::UTF8.GetBytes(($Request | ConvertTo-Json -Compress))
+    try {
+        if ($payload.Length -gt 65536 -or -not $process.Start()) { throw 'Notion helper could not start.' }
+        # Drain both output streams while writing input to prevent pipe deadlocks.
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $writeTask = $process.StandardInput.BaseStream.WriteAsync($payload, 0, $payload.Length)
+        if (-not $writeTask.Wait(30000)) { throw 'Notion helper input timed out.' }
+        # Close the byte stream directly; the unused text writer must not emit
+        # an encoding preamble after the JSON on older .NET/PowerShell versions.
+        $process.StandardInput.BaseStream.Close()
+        if (-not $process.WaitForExit(30000) -or -not $outputTask.Wait(5000) -or -not $errorTask.Wait(5000)) { throw 'Notion helper timed out.' }
+        if ($process.ExitCode -ne 0) { throw 'Notion helper failed.' }
+        return ($outputTask.Result | ConvertFrom-Json)
+    } catch {
+        # Never forward helper stderr or exception text: either may contain input.
+        throw 'Cannot run Notion validation. Check the installed Python environment and network. Previous config is retained.'
+    } finally {
+        [Array]::Clear($payload, 0, $payload.Length)
+        try { if (-not $process.HasExited) { $process.Kill() } } catch { }
+        $process.Dispose()
+    }
+}
 # Credentials are never accepted on command lines or printed. A new credential
 # file is written before the atomic config switch so prior config stays usable.
 $private = @{}
@@ -44,25 +80,22 @@ if ($EnableNotion) {
     $private.notion_token = Read-PrivateText 'Notion integration token (hidden)'
     if ($private.notion_token -cnotmatch '^[A-Za-z0-9_-]{10,512}$') { throw 'Invalid Notion token format.' }
     if ($NotionDatabaseUrl) {
-        $lookup = @{ database_url = $NotionDatabaseUrl; token = $private.notion_token } | ConvertTo-Json -Compress
-        $result = ($lookup | & $python -E -s (Join-Path $PSScriptRoot 'notifications.py') --resolve-notion-database) | ConvertFrom-Json
-        $lookup = $null
-        if ($LASTEXITCODE -ne 0 -or $result.state -ne 'delivered') {
+        $result = Invoke-NotionHelper $python '--resolve-notion-database' @{ database_url = $NotionDatabaseUrl; token = $private.notion_token }
+        if ($result.state -ne 'delivered') {
             if ($result.code -eq 'multiple_data_sources_choose_explicit_id') { throw 'This database has several data sources. Select the correct source and use -NotionDataSourceId.' }
             throw 'Cannot resolve the Notion data source. Check DB URL, token access and network, then retry.'
         }
         $NotionDataSourceId = $result.remote_id
     }
     # Read-only preflight for either input form; never save unusable credentials/config.
-    $lookup = @{ data_source_id = $NotionDataSourceId; token = $private.notion_token } | ConvertTo-Json -Compress
     try {
-        $result = ($lookup | & $python -E -s (Join-Path $PSScriptRoot 'notifications.py') --check-notion-schema) | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $result.state -ne 'delivered') {
+        $result = Invoke-NotionHelper $python '--check-notion-schema' @{ data_source_id = $NotionDataSourceId; token = $private.notion_token }
+        if ($result.state -ne 'delivered') {
             throw 'Notion preflight failed.'
         }
     } catch {
         throw 'Cannot validate Notion schema. Check token access, network and property types/options in NOTIFICATIONS.md. Previous config is retained.'
-    } finally { $lookup = $null }
+    }
 }
 Add-Type -AssemblyName System.Security
 $bytes = [Text.Encoding]::UTF8.GetBytes(($private | ConvertTo-Json -Compress))
