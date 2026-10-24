@@ -17,6 +17,8 @@ actual_datachanged=wifi[wifi.index('JsonDocument cur;'):wifi.index('// 아무 �
 wire=(ROOT/'wire_http.ino').read_text().replace('#include <HTTPClient.h>','').replace('#include <has2_http_body.h>','')
 prefix=r'''
 #define HAS2_BT_HOST
+#define GENERATOR_COMPLETION_STORE_HOST
+#include "generator_completion_store.h"
 #include <ArduinoJson.h>
 #include <cassert>
 #include <cstdint>
@@ -34,6 +36,16 @@ struct String:std::string {
 #include "generator_network.h"
 #include "generator_wire_state.h"
 #include "generator_wire_protocol.h"
+static bool stored=false,saveOk=true,clearOk=true;
+static GeneratorCompletionStore::Intent storedIntent={};
+namespace GeneratorCompletionStore {
+ bool save(const Intent &value){if(!saveOk)return false;storedIntent=value;stored=true;return true;}
+ LoadResult load(Intent &value){if(!stored)return LoadResult::Empty;value=storedIntent;return LoadResult::Ready;}
+ bool clear(){if(!clearOk)return false;stored=false;return true;}
+}
+static GeneratorWireSnapshot fakeContext;
+bool WireCompletionContext(GeneratorWireSnapshot &value){value=fakeContext;return true;}
+void WireRequestContextRefresh(){}
 static uint32_t now=100;
 static bool worker=false,online=true,failWatchdog=false;
 static int depth=0,restarts=0,dataChanges=0,otaChecks=0,requestCalls=0;
@@ -165,11 +177,12 @@ void Mp3PlayLargeFolder(int,int){}
 void AllNeoOn(int){}
 void WirePollMain(){}
 void NeoLightColor(int,int){}
-void WireResetTracking(){}
+void WireResetTracking();
 void TaggerRfidLoop(){}
 void TaggerEnter(){ptrCurrentMode=TaggerRfidLoop;}
 void BatteryFinish();void StartFinish();int StarterGaugeCnt();
 bool batteryFinishDone=false,batteryFinishAudioPlayed=false,starterRfidNeedsValidation=false;
+void WireResetTracking(){batteryFinishDone=batteryFinishAudioPlayed=false;serverWireBypass=false;GeneratorNetworkInvalidateGame();}
 int displayedGaugeNeoCnt=-1,gameTimerCnt=0;unsigned gameTime=400;
 void GameTimerFunc(){}
 bool WireReadyForCompletion(){return serverWireBypass||wireState.qualified(now);}
@@ -218,14 +231,27 @@ static void reset(){
  otaTrace.clear();blackboxUploadIdle=true;bleResumeFails=false;
  pendingContributionCount=0;starterContribUser="";
  networkCompletionGeneration=0;networkCompletionToken=1;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
- networkCompletionAttempts=0;NetworkCompletionResendClear();networkCompletionWireCount=-1;networkCompletionWireGeneration=0;networkCompletionWireBypass=false;
+ networkCompletionAttempts=0;networkCompletionResendId=0;networkCompletionDurable=networkCompletionStoreFault=networkCompletionRestored=networkCompletionAwaitResync=networkCompletionNeedsFull=false;stored=false;saveOk=clearOk=true;networkCompletionWireCount=-1;networkCompletionWireGeneration=0;
  duringWireSnapshot=nullptr;
- networkCompletionSince=networkCompletionWarningAt=0;
+ networkCompletionSince=networkCompletionWarningAt=networkCompletionRetryAt=0;
  GeneratorNetworkForgetTag();wireHttpPending=wireHttpDone=false;wireHttpRequestId=0;
  wireState.reset();for(int i=0;i<=10;++i){ wireState.sampleMask(i*100,0); }
  my["device_name"]="TG";my["game_state"]="activate";my["device_state"]="activate";
  strcpy(networkIdentity,"TG");strcpy(networkGame,"activate");
  now=1100;reply("{}");
+}
+static void completionSetup(){
+ wireState.reset();for(int i=0;i<=10;++i)wireState.sampleMask(now+i*100,15);now+=1100;
+ fakeContext=GeneratorWireSnapshot{};strcpy(fakeContext.device,"TG");strcpy(fakeContext.epoch,"11111111-1111-1111-1111-111111111111");
+ strcpy(fakeContext.gameState,"activate");strcpy(fakeContext.deviceState,"activate");fakeContext.revision=7;fakeContext.count=4;fakeContext.maximum=4;fakeContext.completionProtocol=1;
+ my["battery_pack"]=4;my["max_battery_pack"]=4;
+}
+static int completionCount(){int count=0;for(const auto &path:paths)if(path.find("CompleteGenerator")!=std::string::npos)++count;return count;}
+static void casReply(const char *state,unsigned revision,int status=200,bool mutation=true,const char *epoch="11111111-1111-1111-1111-111111111111") {
+ JsonDocument json;json["device_name"]="TG";json["epoch"]=epoch;json["revision"]=revision;json["game_state"]="activate";json["device_state"]=state;
+ json["battery_pack"]=4;json["max_battery_pack"]=4;json["completion_protocol"]=1;json["success"]=status==200;if(status==409)json["error"]="CONFLICT";
+ if(mutation)json["applied"]=status==200;
+ std::string body;serializeJson(json,body);reply(body.c_str(),status);
 }
 static void pass(const char *text){printf("PASS %s\n",text);}
 int main(){
@@ -243,7 +269,7 @@ int main(){
  reset();for(int i=0;i<6;++i) {assert(GeneratorNetworkSend("TG","crash_log","x"));}
  assert(GeneratorNetworkRequestPoll());
  for(int i=0;i<4;++i){reply("{\"shift_machine\":0,\"watchdog\":0}");workerTurn();mainTurn();}
- assert(paths.size()==4&&paths[3].find("request=Loop")!=std::string::npos);
+ bool pollServed=false;for(size_t i=0;i<paths.size()&&i<4;++i)if(paths[i].find("request=Loop")!=std::string::npos)pollServed=true;assert(pollServed);
  pass("heartbeat is served after at most three other completed operations");
 
  reset();online=false;for(int i=0;i<6;++i){ assert(GeneratorNetworkSend("TG","crash_log","x")); }
@@ -357,211 +383,171 @@ int main(){
  reset();failWatchdog=true;workerTurn();assert(!networkTask);assert(!GeneratorNetworkRequestPoll());
  pass("worker watchdog registration failure cannot leave an accepting dead queue");
 
- reset();
- assert(!GeneratorNetworkComplete("battery_max"));assert(used()==1);
+ // Completion protocol is opt-in and never falls back to an unfenced Send.
+ reset();completionSetup();fakeContext.completionProtocol=0;
+ assert(!GeneratorNetworkComplete("battery_max")&&used()==0&&!stored);
+ pass("missing server capability cannot send legacy completion");
+
+ reset();completionSetup();saveOk=false;
+ assert(!GeneratorNetworkComplete("battery_max")&&requestCalls==0&&used()==0&&networkCompletionStoreFault);
+ pass("journal failure prevents all completion transmission");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));assert(stored&&used()==1);
+ const std::string originalEpoch=storedIntent.epoch;const auto originalRevision=storedIntent.revision;
+ casReply("battery_max",8);workerTurn();mainTurn();
+ assert(networkCompletionConfirmed&&!stored&&GeneratorNetworkComplete("battery_max"));
+ assert(paths[0].find("request=CompleteGenerator")!=std::string::npos&&paths[0].find("revision=7")!=std::string::npos);
+ pass("durable conditional request confirms snapshot and clears journal");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
  failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
- assert(used()==1); // Main loop schedules verification even without another game callback.
+ assert(networkCompletionDispatched&&stored&&!networkCompletionConfirmed);
+ now=networkCompletionRetryAt;mainTurn();casReply("battery_max",8,200,false);workerTurn();mainTurn();
+ assert(networkCompletionConfirmed&&!stored&&completionCount()==1);
+ pass("lost applied response reconciles completed state without a second mutation");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ for(int i=0;i<5;++i) {
+   failAt(i%2?Has2BoundedTransport::Phase::Header:Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
+   assert(stored&&!networkCompletionConfirmed&&queuedCompletions()==0);
+   const auto deadline=networkCompletionRetryAt;
+   now=deadline-1;mainTurn();assert(used()==0);
+   now=deadline;mainTurn();casReply("activate",7,200,false);workerTurn();mainTurn();
+   assert(queuedCompletions()==1&&storedIntent.revision==7&&!strcmp(storedIntent.epoch,originalEpoch.c_str()));
+ }
+ casReply("battery_max",8,409);workerTurn();mainTurn();
+ assert(completionCount()==6&&networkCompletionConfirmed&&sendCount()==0);
+ for(const auto &path:paths) if(path.find("CompleteGenerator")!=std::string::npos) assert(path.find("revision=7")!=std::string::npos);
+ assert(originalRevision==7);
+ pass("connect and uncertain failures retry beyond three with backoff and immutable original token");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ casReply("activate",9,409);workerTurn();mainTurn();
+ assert(networkCompletionSuperseded&&networkCompletionAwaitResync&&!stored);
+ assert(!GeneratorNetworkComplete("battery_max")&&completionCount()==1);
+ pass("changed revision abandons old gameplay intent until authoritative cycle resync");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ casReply("activate",7,409,true,"22222222-2222-2222-2222-222222222222");workerTurn();mainTurn();
+ assert(networkCompletionSuperseded&&networkResetCyclePending&&!stored&&completionCount()==1);
+ pass("server epoch change never retokens old work");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+ for(int i=1;i<=10;++i)wireState.sampleMask(now+i*100,7);
+ now=networkCompletionRetryAt;mainTurn();casReply("activate",7,200,false);workerTurn();mainTurn();
+ assert(networkCompletionSuperseded&&queuedCompletions()==0&&!stored);
+ pass("fresh physical wire removal prevents uncertain completion retry");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+ // Emulate new volatile state with the same committed journal.
+ networkCompletionSent=networkCompletionDispatched=networkCompletionConfirmed=networkCompletionSuperseded=false;
+ networkCompletionDurable=false;networkCompletionGeneration=0;networkCompletionResendId=0;
+ NetworkCompletionLoad();assert(networkCompletionRestored&&GeneratorNetworkCompletionPending());
+ assert(!GeneratorNetworkComplete("battery_max")&&queuedCompletions()==0);
+ casReply("activate",7,200,false);workerTurn();mainTurn();
+ assert(!networkCompletionRestored&&queuedCompletions()==1&&storedIntent.revision==7);
+ casReply("battery_max",8,409);workerTurn();mainTurn();assert(networkCompletionConfirmed&&!stored);
+ pass("restored journal requires token-bearing read before retrying original operation");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ clearOk=false;casReply("battery_max",8);workerTurn();mainTurn();
+ assert(networkCompletionStoreFault&&stored&&!GeneratorNetworkComplete("repaired"));
+ pass("journal clear failure blocks subsequent intents");
+
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();
- assert(GeneratorNetworkComplete("battery_max"));assert(requestCalls==2);
- pass("legacy completion verifies uncertain mutation and never blindly repeats Send");
- reset();my["device_state"]="battery_max";my["left_generator"]="3";cur.set(my);
- ptrCurrentMode=StarterActivate;exerciseActualDataChanged=true;encoderValue=28;tag["role"]="player";
- assert(!GeneratorNetworkComplete("repaired"));
- // Remove the card and decay the gauge before Send returns. No StartFinish reentry.
- tag.clear();encoderValue=0;failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();assert(used()==1);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");
- workerTurn();mainTurn();assert(ptrCurrentMode==WaitFunc&&gameTimerDeletes>=2&&!receiveMineOn);
- assert(!strcmp(cur["device_state"].as<const char*>(),"repaired"));assert(requestCalls==2);
- pass("actual DataChanged completes repaired after card removal and gauge decay without StartFinish reentry");
+ assert(!networkCompletionConfirmed&&stored);
+ pass("legacy partial JSON cannot confirm a conditional completion");
 
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ duringWireSnapshot=[](){++networkGeneration;};workerTurn();mainTurn();assert(requestCalls==0);
+ pass("game change during dispatch preflight still rejects completion");
 
- reset();assert(GeneratorNetworkContribution("G1P1",3));reply("{}");workerTurn();mainTurn();
- assert(requestCalls==1&&paths[0].find("request=Situation")!=std::string::npos&&paths[0].find("G1P1%3A3")!=std::string::npos);
- for(int i=0;i<20;++i){mainTurn();workerTurn();}assert(requestCalls==1);
- pass("default build sends legacy contribution once without a background retry");
+ reset();completionSetup();assert(GeneratorNetworkContribution("G1P1",1));
+ assert(!GeneratorNetworkComplete("battery_max"));casReply("battery_max",8);workerTurn();
+ assert(paths[0].find("CompleteGenerator")!=std::string::npos);
+ pass("completion dispatch precedes older optional contribution transmission");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{\"success\":true}");workerTurn();mainTurn();
- assert(!networkCompletionConfirmed);reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();
- assert(GeneratorNetworkComplete("battery_max"));assert(!GeneratorNetworkComplete("repaired"));reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\"}");workerTurn();mainTurn();
- assert(GeneratorNetworkComplete("repaired")&&requestCalls==4);
- pass("normal legacy battery then repair each sends once and confirms by fresh snapshot");
+ reset();completionSetup();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=WirePollMain;
+ BatteryFinish();assert(!batteryFinishDone&&stored);
+ casReply("battery_max",8);workerTurn();mainTurn();BatteryFinish();
+ assert(batteryFinishDone&&ptrCurrentMode==StarterActivate&&!serverWireBypass);
+ std::string full;serializeJson(my,full);reply(full.c_str());workerTurn();mainTurn();
+ fakeContext.revision=8;strcpy(fakeContext.deviceState,"battery_max");
+ StartFinish();assert(stored&&!networkCompletionConfirmed);
+ casReply("repaired",9);workerTurn();mainTurn();
+ assert(networkCompletionConfirmed&&networkCompletionNeedsFull&&!GeneratorNetworkComplete("repaired"));
+ JsonDocument complete;complete.set(my);complete["device_state"]="repaired";complete["left_generator"]="2";
+ full.clear();serializeJson(complete,full);reply(full.c_str());workerTurn();mainTurn();
+ assert(!networkCompletionNeedsFull&&ptrCurrentMode==WaitFunc&&!serverWireBypass&&!strcmp(my["left_generator"]|"","2"));
+ pass("actual BatteryFinish and StartFinish consume conditional confirmations without staff bypass");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
- for(int i=0;i<18;++i){reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();now+=2100;mainTurn();}
- int sends=sendCount();
- bool warning=false;for(const auto &line:diagnostics){if(line.find("staff recovery required")!=std::string::npos){warning=true;}}
- assert(sends==1&&!networkCompletionConfirmed&&warning);
- pass("unapplied uncertain completion is read-only retried with bounded staff-recovery warning");
- for(auto phase:{Has2BoundedTransport::Phase::Write,Has2BoundedTransport::Phase::Header,Has2BoundedTransport::Phase::Body}) {
-  reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(phase);workerTurn();mainTurn();
-  for(int i=0;i<6;++i){now+=2100;mainTurn();reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();}
-  assert(sendCount()==1&&!networkCompletionResendPending);
+ reset();completionSetup();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=WirePollMain;
+ assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+ networkCompletionSent=networkCompletionConfirmed=networkCompletionSuperseded=false;networkCompletionGeneration=0;
+ NetworkCompletionLoad();NetworkCompletionService();casReply("battery_max",8,200,false);workerTurn();mainTurn();
+ assert(networkCompletionConfirmed&&GeneratorNetworkComplete("battery_max"));BatteryFinish();
+ assert(ptrCurrentMode==StarterActivate&&batteryFinishDone&&!serverWireBypass);
+ pass("already-applied restored battery intent binds boot generation and advances actual gameplay");
+
+ reset();completionSetup();saveOk=false;assert(!GeneratorNetworkComplete("battery_max"));
+ NetworkCompletionService();assert(used()==0&&networkCompletionStoreFault);
+ my["game_state"]="ready";NetworkCompletionService();assert(used()==1);
+ casReply("activate",7,200,false);workerTurn();mainTurn();assert(networkCompletionStoreFault);
+ now=networkCompletionRetryAt;NetworkCompletionService();
+ casReply("activate",7,200,false);JsonDocument safe;deserializeJson(safe,nextReply.payload);safe["game_state"]="ready";
+ std::string safeBody;serializeJson(safe,safeBody);reply(safeBody.c_str());workerTurn();mainTurn();
+ assert(!networkCompletionStoreFault&&networkCompletionAwaitResync&&!stored);
+ pass("journal fault only clears after fresh matching inactive game boundary, never during active play");
+
+ reset();completionSetup();my["device_state"]="battery_max";my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;
+ strcpy(fakeContext.deviceState,"battery_max");batteryFinishDone=true;encoderValue=1000;displayedGaugeNeoCnt=28;ptrCurrentMode=StarterActivate;
+ StartFinish();assert(stored);casReply("battery_max",9,409);workerTurn();mainTurn();
+ assert(networkCompletionSuperseded&&!batteryFinishDone&&networkCompletionAwaitResync);
+ std::string resynced;serializeJson(my,resynced);reply(resynced.c_str());workerTurn();mainTurn();
+ assert(ptrCurrentMode==BatteryFinish);ptrCurrentMode();
+ assert(!networkCompletionAwaitResync&&batteryFinishDone&&encoderValue==1&&displayedGaugeNeoCnt<28&&ptrCurrentMode==StarterActivate);
+ assert(queuedCompletions()==0&&completionCount()==1);
+ pass("stale repair resync resets actual starter gauge before any new accomplishment can create a token");
+
+ for(bool identityChange:{false,true}) {
+   reset();completionSetup();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;
+   assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+   now=networkCompletionRetryAt;mainTurn();casReply("battery_max",8,200,false);
+   duringRequest=[ ](){my["game_state"]="ready";GeneratorNetworkInvalidateGame();};
+   if(identityChange)duringRequest=[](){my["device_name"]="OTHER";my["game_state"]="ready";GeneratorNetworkInvalidateGame();};
+   workerTurn();mainTurn();assert(!networkCompletionConfirmed&&stored&&!strcmp(my["game_state"]|"","ready")&&activations==0);
+   if(identityChange)assert(!strcmp(my["device_name"]|"","OTHER"));
  }
- pass("a failure after any request byte stays uncertain and is never resent");
+ pass("late verification after game or identity reset cannot resurrect old presentation");
 
- // Connect-phase failure: nothing reached the server. The resend is armed only by a
- // successful verify that still shows the start state, then confirmed by snapshot.
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));uint32_t firstToken=networkCompletionToken;
- failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- assert(networkCompletionResendPending&&networkCompletionSent&&!networkCompletionDispatched&&queuedCompletions()==0);
- failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn(); // verify also fails: no resend without fresh evidence
- now+=2100;mainTurn();assert(queuedCompletions()==0&&networkCompletionResendPending);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn(); // verify ok, still start state
- assert(queuedCompletions()==1&&!networkCompletionResendPending&&networkCompletionResendId!=0);
- bool sameToken=true;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&slot.request.token!=firstToken){sameToken=false;}}
- assert(sameToken&&networkCompletionToken==firstToken);
- reply("{}");workerTurn();mainTurn();assert(sendCount()==2&&networkCompletionDispatched&&networkCompletionResendId==0);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");
- for(int i=0;i<4&&!networkCompletionConfirmed;++i){now+=2100;mainTurn();workerTurn();mainTurn();}
- assert(networkCompletionConfirmed&&GeneratorNetworkComplete("battery_max")&&sendCount()==2);
- pass("connect-phase failure is resent once a fresh verify shows the start state, then confirmed by snapshot");
+ reset();completionSetup();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;
+ assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+ networkCompletionSent=networkCompletionConfirmed=networkCompletionSuperseded=false;networkCompletionGeneration=0;
+ NetworkCompletionLoad();NetworkCompletionService();casReply("battery_max",8,200,false);
+ duringRequest=[](){my["game_state"]="ready";GeneratorNetworkInvalidateGame();my["game_state"]="activate";GeneratorNetworkInvalidateGame();};
+ workerTurn();mainTurn();assert(!networkCompletionConfirmed&&stored&&networkCompletionRestored&&!strcmp(my["device_state"]|"","activate"));
+ now=networkCompletionRetryAt;mainTurn();casReply("activate",7,200,false);workerTurn();mainTurn();
+ assert(queuedCompletions()==1&&!networkCompletionRestored&&storedIntent.revision==7);
+ pass("restored verification crossing a local reset is discarded; a new generation read reconciles the original token");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));
- for(int attempt=1;attempt<=3;++attempt){
-  failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn(); // send attempt fails at connect; verify queued
-  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn(); // verify ok
-  if(attempt<3){ assert(queuedCompletions()==1&&!networkCompletionResendPending); }
-  else { assert(queuedCompletions()==0&&!networkCompletionResendPending); }
+ for(unsigned staleRevision:{6u,7u}) {
+   reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+   casReply("battery_max",staleRevision);workerTurn();mainTurn();
+   assert(stored&&!networkCompletionConfirmed&&!networkCompletionSuperseded&&!strcmp(my["device_state"]|"","activate"));
+   now=networkCompletionRetryAt;mainTurn();casReply("activate",6,200,false);workerTurn();mainTurn();
+   assert(stored&&queuedCompletions()==0&&!networkCompletionSuperseded&&storedIntent.revision==7);
  }
- now+=2100;mainTurn();bool verifyQueued=false;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Verify){verifyQueued=true;}}
- now+=30000;mainTurn();
- bool exhausted=false,budgetWarning=false;for(const auto &line:diagnostics){if(line.find("resend budget exhausted")!=std::string::npos){exhausted=true;}if(line.find("staff recovery required")!=std::string::npos){budgetWarning=true;}}
- assert(sendCount()==3&&exhausted&&budgetWarning&&verifyQueued&&!networkCompletionConfirmed&&!networkCompletionResendPending&&networkCompletionSent);
- pass("connect-phase resends are bounded to three total attempts, then read-only verification continues");
+ pass("older revision and impossible equal-revision completion cannot clear or confirm the original journal");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- assert(networkCompletionResendPending&&!networkCompletionDispatched);
- JsonDocument staff;assert(!deserializeJson(staff,"{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}"));
- assert(!NetworkOwnBatteryEcho(staff)); // nothing was delivered, so this cannot be the device's own echo
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");assert(NetworkApplySnapshot(nextReply,false));
- assert(networkCompletionConfirmed&&!networkCompletionResendPending);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();now+=5000;mainTurn(); // pending verify completes; no resend follows
- assert(queuedCompletions()==0&&sendCount()==1&&GeneratorNetworkComplete("battery_max"));
- pass("staff override arriving before any resend confirms the stage and is not mistaken for the device's own echo");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\"}");assert(NetworkApplySnapshot(nextReply,false));
- assert(!networkCompletionResendPending);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");assert(NetworkApplySnapshot(nextReply,false)); // back to the start value
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();
- now+=2100;mainTurn();reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();
- assert(queuedCompletions()==0&&sendCount()==1&&!networkCompletionResendPending);
- pass("a brief authoritative state change away from the start state permanently drops the resend");
-
- reset();assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- assert(networkCompletionResendPending);for(int i=1;i<=10;++i){wireState.sampleMask(now+i*100,1);}
- now+=1100;reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn(); // verify ok arms the resend with the original expectations
- assert(queuedCompletions()==1);workerTurn();mainTurn(); // dispatch guard rejects the changed wires
- assert(requestCalls==2&&sendCount()==1&&queuedCompletions()==0&&!networkCompletionSent&&!networkCompletionResendPending);
- pass("resend keeps the original wire expectations so a wire change is rejected at dispatch");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();assert(queuedCompletions()==1);uint32_t keptToken=networkCompletionToken;
- online=false;mainTurn();workerTurn();mainTurn(); // offline: the queued resend is withdrawn before dispatch
- assert(queuedCompletions()==0&&networkCompletionResendPending&&networkCompletionSent&&networkCompletionToken==keptToken&&requestCalls==2);
- online=true;now+=2100;mainTurn(); // reconnect queues poll, refresh and the due verify
- for(int i=0;i<3;++i){reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();} // reads only; the fresh verify re-arms
- assert(queuedCompletions()==1&&sendCount()==1);reply("{}");workerTurn();mainTurn();assert(sendCount()==2);
- pass("a resend queued when WiFi drops is withdrawn and re-armed only by a fresh verify after reconnect");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();assert(queuedCompletions()==1);
- now+=5100;mainTurn();workerTurn();mainTurn(); // not dispatched within the queue lifetime
- assert(queuedCompletions()==0&&networkCompletionResendPending&&networkCompletionSent);
- pass("a resend that waits too long in the queue is withdrawn rather than dispatched against stale evidence");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));
- failAt(Has2BoundedTransport::Phase::Connect,Has2BoundedTransport::Error::InvalidRequest);workerTurn();mainTurn();
- assert(!networkCompletionResendPending&&networkCompletionSent&&sendCount()==1);
- pass("an invalid request is not treated as an undelivered connect failure");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();
- GeneratorNetworkInvalidateGame();now+=2100;mainTurn();workerTurn();mainTurn();
- for(int i=0;i<10;++i){now+=2100;mainTurn();workerTurn();mainTurn();}
- assert(requestCalls==1&&sendCount()==1);
- pass("game change after an undelivered send cannot trigger a resend for the old game");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max")&&networkCompletionSent);
- failAt(Has2BoundedTransport::Phase::Connect);workerTurn();mainTurn();assert(networkCompletionResendPending&&used()==1); // verify queued
- for(int i=0;i<6;++i){assert(NetworkSubmit(NetworkKind::Tag,"/filler",false,0,networkTagToken,nullptr));}
- assert(GeneratorNetworkRequestPoll()&&used()==8);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn(); // verify ok but the queue is full
- assert(networkCompletionResendPending&&queuedCompletions()==0);
- GeneratorNetworkForgetTag();now+=2100;mainTurn(); // next verify is queued once capacity returns
- for(int i=0;i<2;++i){reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"activate\"}");workerTurn();mainTurn();} // poll and verify, either order
- assert(!networkCompletionResendPending&&queuedCompletions()==1);
- pass("a full queue defers the resend until the next fresh verify instead of dropping or duplicating it");
-
- reset();assert(!GeneratorNetworkComplete("battery_max"));for(int i=1;i<=10;++i){wireState.sampleMask(now+i*100,1);}workerTurn();mainTurn();
- assert(requestCalls==0&&!networkCompletionSent);
- pass("wire change cancels queued completion before transmission");
- reset();serverWireBypass=true;wireState.reset();assert(!GeneratorNetworkComplete("repaired"));workerTurn();assert(requestCalls==1);
- pass("staff forced completion retains explicit physical gate bypass");
-
- reset();assert(!GeneratorNetworkComplete("battery_max"));duringWireSnapshot=[](){++networkGeneration;};workerTurn();mainTurn();
- assert(requestCalls==0);
- pass("game cancellation between preflight and dispatch wins under the final dispatch lock");
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));duringRequest=[](){++networkGeneration;};workerTurn();mainTurn();
- assert(requestCalls==1&&!networkCompletionConfirmed);for(int i=0;i<20;++i){mainTurn();workerTurn();}assert(requestCalls==1);
- pass("game change after dispatch discards outcome and cannot trigger automatic mutation retry");
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
- NetworkRequest oldVerify={};for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Verify){oldVerify=slot.request;}}
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"starter_finish\"}");assert(NetworkApplySnapshot(nextReply,false));
- assert(!GeneratorNetworkComplete("repaired"));uint32_t token=networkCompletionToken;
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");NetworkCompletionVerifyResult(oldVerify,nextReply,false);
- assert(networkCompletionToken==token&&!strcmp(networkCompletion,"repaired")&&!strcmp(my["device_state"]|"","starter_finish"));
- pass("authoritative advancement releases prior stage and late old verify cannot overwrite the next operation");
-
- reset();assert(!GeneratorNetworkComplete("battery_max"));reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired_all\"}");
- assert(NetworkApplySnapshot(nextReply,false));workerTurn();mainTurn();assert(requestCalls==0);
- pass("authoritative terminal state cancels an obsolete queued completion");
- reset();serverWireBypass=true;my["device_state"]="battery_max";assert(!GeneratorNetworkComplete("repaired"));
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\"}");assert(NetworkApplySnapshot(nextReply,false));workerTurn();mainTurn();assert(requestCalls==0&&!networkCompletionSent);
- my["device_state"]="starter_finish";assert(!GeneratorNetworkComplete("repaired"));
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"starter_finish\"}");assert(NetworkApplySnapshot(nextReply,false));workerTurn();assert(requestCalls==1);
- pass("known unsent cancellation recaptures current state before a valid retry");
-
-
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"WRONG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();assert(!networkCompletionConfirmed&&!strcmp(my["device_name"]|"","TG"));
- now+=2100;mainTurn();reply("{\"device_name\":\"TG\",\"device_state\":\"battery_max\"}");workerTurn();mainTurn();assert(!networkCompletionConfirmed);
- pass("wrong-device and malformed completion snapshots cannot confirm or replace current state");
-
- reset();for(int i=0;i<7;++i){assert(NetworkSubmit(NetworkKind::Tag,"/filler",false,0,networkTagToken,nullptr));}
- assert(!GeneratorNetworkComplete("battery_max")&&!networkCompletionSent);reply("{}");workerTurn();mainTurn();
- assert(!GeneratorNetworkComplete("battery_max")&&networkCompletionSent);for(int i=0;i<100;++i){assert(!GeneratorNetworkComplete("battery_max"));}
- int completions=0;for(const auto &slot:networkSlots){if(slot.occupied&&slot.request.kind==NetworkKind::Completion){++completions;}}
- assert(completions==1);
- pass("queue-full rejection may retry enqueue but never duplicates an accepted completion");
-
- reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");
- assert(NetworkApplySnapshot(nextReply,false));assert(activations==0&&networkCompletionConfirmed&&!receiveMineOn);
- pass("ordinary refresh of own dispatched battery echo cannot masquerade as staff override");
- reset();my["device_state"]="battery_max";my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=StarterActivate;receiveMineOn=true;
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");
- assert(NetworkApplySnapshot(nextReply,false));assert(ptrCurrentMode==WaitFunc&&!receiveMineOn&&gameTimerDeletes>=2);
- pass("ordinary repaired refresh cannot be swallowed by a stale battery echo guard");
-
- reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;ptrCurrentMode=BatteryFinish;
- BatteryFinish();assert(!batteryFinishDone&&networkCompletionSent);
- reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");workerTurn();mainTurn();
- BatteryFinish();assert(batteryFinishDone&&ptrCurrentMode==StarterActivate&&!serverWireBypass);
- StartFinish();reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"repaired\",\"left_generator\":\"3\"}");workerTurn();mainTurn();
- assert(ptrCurrentMode==WaitFunc&&networkCompletionConfirmed&&requestCalls==4&&!serverWireBypass);
- pass("actual BatteryFinish and StartFinish complete legacy gameplay without granting staff wire bypass");
-
- reset();my["left_generator"]="3";cur.set(my);exerciseActualDataChanged=true;
- assert(!GeneratorNetworkComplete("battery_max"));reply("{}");workerTurn();mainTurn();
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");workerTurn();mainTurn();batteryFinishDone=true;
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"tagger\",\"left_generator\":\"3\"}");assert(NetworkApplySnapshot(nextReply,false));assert(ptrCurrentMode==TaggerRfidLoop);
- reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");assert(NetworkApplySnapshot(nextReply,false));
- assert(ptrCurrentMode==BatteryFinish&&!serverWireBypass);BatteryFinish();assert(ptrCurrentMode==StarterActivate);
- pass("confirmed local battery transaction cannot swallow later authoritative tagger return");
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
+ memset(storedIntent.deviceKey,'G',sizeof(storedIntent.deviceKey)-1);storedIntent.deviceKey[sizeof(storedIntent.deviceKey)-1]=0;
+ networkCompletionSent=false;NetworkCompletionLoad();
+ assert(strlen(networkCompletionDevice)==64&&!strcmp(networkCompletionDevice,storedIntent.deviceKey));
+ assert(sizeof(networkCompletionStartState)==sizeof(GeneratorWireSnapshot::deviceState));
+ pass("journal restore preserves all 64 valid key characters and snapshot state capacity matches its source");
 
  // Prior association is sampled from the current link, not boot-ready game state.
  reset();mainTurn();assert(networkRecoveryPolicy.hadConnection);
@@ -607,13 +593,11 @@ int main(){
  networkMailboxReady=false;assert(NetworkOfflineRecoveryService()&&restarts==1);
  pass("OTA, failed worker, active request and unread mailbox defer recovery without taking the dispatch fence");
 
- reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
  failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
- assert(networkCompletionSent&&networkCompletionDispatched&&!networkCompletionConfirmed);
  online=false;mainTurn();now+=180000;workerTurn();mainTurn();
- assert(restarts==0&&!networkRecoveryFence&&sendCount()==1);
- now+=3600000;workerTurn();mainTurn();assert(restarts==0&&sendCount()==1);
- pass("possibly delivered completion retains read-only confirmation even through a long outage; no restart/replay");
+ assert(restarts==1&&networkRecoveryFence&&stored&&completionCount()==1);
+ pass("durable uncertain completion permits offline reboot without losing retry identity");
 
  reset();online=false;assert(!NetworkOfflineRecoveryService());now+=180000;
  reconnectOnRecheck=true;wifiStatusCalls=0;
@@ -624,7 +608,7 @@ int main(){
  assert(requestCalls==0);assert(!GeneratorNetworkContribution("G1P1",1));
  pass("restart fence prevents worker selection and new enqueue");
 
- reset();serverWireBypass=false;assert(!GeneratorNetworkComplete("battery_max"));
+ reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
  duringWireSnapshot=[](){networkRecoveryFence=true;};workerTurn();mainTurn();
  assert(requestCalls==0);
  pass("restart fence published after preflight still wins at the final dispatch boundary");

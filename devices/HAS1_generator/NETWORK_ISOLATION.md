@@ -1,41 +1,24 @@
-# Generator networking with the existing server
+# Generator networking and conditional completion
 
 ## Compatibility and release status
 
-Completion and contribution transmission are enabled in the normal build using
-existing `Send device_state=battery_max/repaired` and `Situation generator_gauge`
-requests. No new server endpoint, generation parameter or capability is required.
-The earlier development-only transmission block and deliberate production-build
-error have been removed at the user's request.
+Completion now uses the generator-only `CompleteGenerator` API advertised by
+`completion_protocol: 1` in wire snapshots. Deploy server PR #87 and its PHP
+proxy first. Missing capability blocks completion; there is no legacy Send
+fallback. See [conditional completion recovery](COMPLETION_RECOVERY.md) for the
+protocol, durable intent, deployment gates and field checks.
 
-Completion allows one transport attempt per local operation, followed by
-ReceiveMine state checks. Enqueue failure or definite cancellation before
-dispatch can be retried after fresh gameplay checks. After dispatch, a timeout,
-HTTP failure or missing confirmation does not cause an automatic repeat of that
-Send, with one narrow exception: when the TCP connect itself failed or the
-shared deadline expired while still connecting, no request byte was written and
-the server cannot have applied the mutation. That undelivered Send may be
-resent, at most two more times (three attempts per transaction), under the same
-token and with the original wire expectations. The resend is armed only by a
-successful ReceiveMine verify, taken after the failed attempt, that still shows
-the state the transaction started from; the cached state is never trusted for
-this. A queued resend is withdrawn (without resetting the transaction) while
-WiFi is offline or after five seconds in the queue, so it cannot sit through an
-outage and land after staff changed the state. The snapshot observer drops the
-pending resend as soon as any other authoritative device state is seen, and the
-dispatch guard still rejects a resend whose wires or game generation changed.
-A failure after any request byte (write, header or body stage) stays uncertain
-and is never repeated. HTTP 200 by itself is not completion. Reads remain
-retryable and do not block gameplay input or the network polling loop.
+An immutable epoch/revision/target is stored before sending. Ambiguous responses
+are reconciled with a fresh token-bearing read and retried with the original
+condition while it remains valid. Changed conditions abandon that intent and
+resynchronize; they never silently renew an old operation onto a new revision.
+A durable pending operation survives reboot, and cannot consume its own original
+revision through a boot wire SET before reconciliation.
 
-Contributions retain a bounded buffer only until queue acceptance; uncertain
-transmission is not retried automatically. This avoids introducing blind
-repetition into APIs that can apply duplicates. It is not durable exactly-once
-delivery across reboot, and it can lose an event when a request never arrives.
-
-Server changes are not a prerequisite for this compatibility version. Field
-validation is still needed before claiming that the resets are resolved. No
-firmware release or installation has been performed by this change.
+Contributions retain the existing bounded queue and uncertain-delivery policy;
+they are not made exactly-once or automatically replayed. Their capture timing
+is preserved and transmission has lower priority than control requests.
+This is source/PR validation, not a firmware release or store installation.
 
 ## What changed
 
@@ -110,30 +93,20 @@ every event across power loss or a long outage.
 
 ## Correctness boundaries
 
-Local request generations reject queued work and stale responses. They cannot
-undo a mutation already sent to the server. The current wire CAS protects its
-own writes; it does not prove that completion or contribution APIs are protected.
+The server CAS protects completion state/count writes, including repeated requests
+whose responses were lost. Local generations still only cancel queued work or
+ignore stale results; they cannot retract a request already on the network.
+Server state changes and process restarts invalidate the original condition.
 
-The existing server does not check a game generation for completion or
-contributions; duplicate `repaired` can decrement its counter again. A request
-already sent can still arrive during the next game despite local cancellation.
-The existing APIs cannot resolve that case fully on the client. Polling can also
-miss a complete reset/start transition while the device is offline.
+The server does not provide a durable operation ledger or exactly-once external
+audio/EXP follow-up. A snapshot confirms current state, not a historical proof
+that all post-commit effects completed. Contribution requests remain legacy.
+The device's flash journal follows NVS guarantees, not arbitrary flash-corruption
+recovery. Storage failures block new completion mutations and are diagnosed.
 
-If a completion request never applied, the device keeps checking the state but
-does not repeat the mutation automatically once any request byte has been
-written; only a connect-stage failure is resent within the bounded budget above.
-Unconfirmed completion is logged at a bounded rate after 30 seconds together
-with the number of Send attempts used. Staff may need to confirm/correct the
-state in the existing OS. A future server generation/idempotency contract can
-remove this tradeoff; merely appending an unsupported `gen` parameter cannot.
-An ignored/error response, including HTTP 200 with an application-level rejection,
-must not be interpreted as proof of completion.
-
-Existing input, audio and LED code can have their own bounded delays. Moving
-network waits off main does not establish a universal maximum main-loop duration.
-During an AP outage live Telnet is unavailable; local bounded logs are retained
-and replayed after connection recovery.
+Input, audio, LED and OS socket cleanup retain their own timing limitations.
+Moving network waits off main does not establish a universal maximum loop time.
+Existing HTTP/Wi-Fi/OTA recovery and shared libraries are otherwise unchanged.
 
 ## Verification commands
 
@@ -157,12 +130,12 @@ Required hardware checks before release: delayed/partial/no server responses,
 server and AP outage/recovery, wire changes while requests are pending, tag swap,
 new-game transition during an in-flight mutation, explicit employee reboot,
 OTA maintenance, repeated startup and worker stack/heap/socket high-water marks.
-With the existing server, test successful completion, lost replies after a
-committed mutation, requests that never applied, and staff recovery. Observe
-cross-game delayed requests as a remaining limitation; this firmware cannot
-guarantee that the server rejects them.
+With the conditional-completion server, test successful completion, lost replies
+after commit, never-delivered requests, restart restoration, stale epoch/revision
+conflicts and staff recovery. See COMPLETION_RECOVERY.md for the current rollout
+checklist; the historical test summary below describes the earlier firmware.
 
-## Verification (2026-10-22)
+## Historical verification before conditional completion (2026-10-22)
 
 Independent review of the network isolation resolved the scan-buffer race, offline maintenance drain,
 stale contribution session, epoch restoration of completed states, tag queue

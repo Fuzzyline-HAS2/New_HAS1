@@ -41,6 +41,7 @@ static bool WireParseSnapshot(const JsonDocument &json, const char *device,
     else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
   }
   snapshot.revision = json["revision"].as<uint32_t>();
+  snapshot.completionProtocol = json["completion_protocol"].is<unsigned>() && json["completion_protocol"].as<unsigned>()==1 ? 1 : 0;
   snapshot.count = json["battery_pack"].as<int>();
   snapshot.maximum = json["max_battery_pack"].as<int>();
   return snapshot.maximum >= 1 && snapshot.maximum <= 4; // GET may reveal an old invalid accumulated count.
