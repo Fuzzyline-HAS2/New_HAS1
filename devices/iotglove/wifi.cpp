@@ -49,6 +49,27 @@ portMUX_TYPE diagnosticsMux = portMUX_INITIALIZER_UNLOCKED;
 NetworkDiagnostics diagnostics;
 std::atomic<uint16_t> disconnectReason{0};
 bool otaOperation = false;
+// STA link bookkeeping. The Wi-Fi event task marks the first drop of an
+// established link so later reconnect-attempt events never overwrite the
+// original reason; the worker owns the outage timer and attempt counting.
+std::atomic<bool> linkUp{false};
+std::atomic<int8_t> lastRssi{0};
+std::atomic<uint32_t> lossCount{0}, lossAtMs{0};
+std::atomic<uint16_t> lossReason{0};
+std::atomic<int8_t> lossRssi{0};
+bool wifiWasUp = false, wifiDown = true, forcedReconnect = false;
+uint32_t wifiDownSinceMs = 0, wifiUpSinceMs = 0, connectFailures = 0;
+
+int8_t clampRssi(int value) {
+  return static_cast<int8_t>(value < -127 ? -127 : (value > 0 ? 0 : value));
+}
+
+void noteLinkLost(uint16_t reason) {
+  lossReason.store(reason);
+  lossRssi.store(lastRssi.load());
+  lossAtMs.store(millis());
+  lossCount.fetch_add(1);
+}
 
 void beginOperation(NetworkPhase phase, uint32_t deadlineMs, uint32_t idleDeadlineMs = 0) {
   const uint32_t now = millis();
@@ -76,7 +97,18 @@ void publishDiagnostics() {
   const uint32_t stack = uxTaskGetStackHighWaterMark(nullptr);
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  const bool connected = linkUp.load();
+  if (connected) lastRssi.store(clampRssi(WiFi.RSSI()));
   portENTER_CRITICAL(&diagnosticsMux);
+  diagnostics.wifiConnected = connected;
+  diagnostics.wifiWasUp = wifiWasUp;
+  diagnostics.wifiDownSinceMs = wifiDownSinceMs;
+  diagnostics.wifiConnectFailures = connectFailures;
+  diagnostics.wifiLossCount = lossCount.load();
+  diagnostics.wifiLastLossAtMs = lossAtMs.load();
+  diagnostics.wifiLastLossReason = lossReason.load();
+  diagnostics.wifiLastLossRssi = lossRssi.load();
+  diagnostics.rssi = lastRssi.load();
   diagnostics.lastHttpError = static_cast<uint8_t>(result.error);
   diagnostics.lastHttpPhase = static_cast<uint8_t>(result.phase);
   diagnostics.lastHttpStatus = result.status;
@@ -440,12 +472,30 @@ void worker(void*) {
   Battery battery{};
   while (true) {
     if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != "badland_shoot") {
+      // A drop the event task did not see (SSID mismatch, missed event) still counts once.
+      if (linkUp.exchange(false)) noteLinkLost(disconnectReason.load());
+      if (!wifiDown) {
+        wifiDown = true; wifiDownSinceMs = millis(); connectFailures = 0;
+        if (forcedReconnect) remoteConsoleLogf("[net] link released for forced reconnect\n");
+        else remoteConsoleLogf("[net] link lost reason=%u rssi=%d up_ms=%lu losses=%lu\n",
+            lossReason.load(), lossRssi.load(), (unsigned long)(wifiDownSinceMs - wifiUpSinceMs),
+            (unsigned long)lossCount.load());
+      }
+      forcedReconnect = false;
       invalidateConnection();
       recovery.disconnected();
       beginOperation(NetworkPhase::Connecting, 30000);
       const bool connected = wifi.TrySetupFixed("badland", "badland_shoot");
       finishOperation();
-      if (!connected) { waitWorker(kRetryMs); continue; }
+      if (!connected) { ++connectFailures; waitWorker(kRetryMs); continue; }
+      const uint32_t now = millis();
+      lastRssi.store(clampRssi(WiFi.RSSI()));
+      linkUp.store(true);
+      if (wifiWasUp || connectFailures)
+        remoteConsoleLogf("[net] link restored after %lu ms failures=%lu rssi=%d last_loss reason=%u rssi=%d\n",
+            (unsigned long)(now - wifiDownSinceMs), (unsigned long)connectFailures, lastRssi.load(),
+            lossReason.load(), lossRssi.load());
+      wifiWasUp = true; wifiDown = false; wifiUpSinceMs = now; connectFailures = 0;
       versionReportedTo[0] = 0;
       forceSnapshot.store(true);
     }
@@ -479,6 +529,8 @@ void worker(void*) {
       beginOperation(NetworkPhase::Connecting, 30000);
       // Do not erase credentials. TrySetupFixed alone returns immediately if
       // the STA still claims to be associated with this SSID.
+      forcedReconnect = true;
+      linkUp.store(false);  // Deliberate: the disconnect event is not a link loss.
       WiFi.disconnect(true, false);
       finishOperation();
       waitWorker(100);
@@ -508,9 +560,14 @@ bool networkBegin(int firmwareVersion, int firmwarePartitionVersion) {
   wifi.EnableBoundedHttp();
   wifi.SetHttpProgressHook(httpProgress);
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
-      disconnectReason.store(info.wifi_sta_disconnected.reason);
+    if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+    const uint16_t reason = info.wifi_sta_disconnected.reason;
+    disconnectReason.store(reason);
+    // Only the first drop of an established link is a loss; the reconnect
+    // attempts that follow raise their own disconnect events.
+    if (linkUp.exchange(false)) noteLinkLost(reason);
   });
+  wifiDownSinceMs = wifiUpSinceMs = millis();
   beginOperation(NetworkPhase::Starting, 30000);
   snapshots = xQueueCreate(1, sizeof(ServerSnapshot));
   commands = xQueueCreate(1, sizeof(GameEvent));

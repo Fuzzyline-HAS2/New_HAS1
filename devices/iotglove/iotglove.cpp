@@ -13,6 +13,7 @@
 #include "pixel_refresh.h"
 #include "network_policy.h"
 #include "network_restart.h"
+#include "link_loss.h"
 #include "state_policy.h"
 #include "library_and_pin.h"
 #include "wifi_client.h"
@@ -46,9 +47,21 @@ uint32_t lastBatterySample = 0, lastBatteryReport = 0;
 uint32_t resetStarted = 0, lastReset = 0;
 bool networkReady = false, desiredScan = false, modeKnown = false;
 RTC_NOINIT_ATTR NetworkRestartHistory networkRestartHistory;
+RTC_NOINIT_ATTR LinkLossRecord linkLossRecord;
 NetworkRestartPolicy networkRestartPolicy;
 esp_task_wdt_user_handle_t mainWatchdog = nullptr;
-bool stallReported = false;
+bool stallReported = false, linkDownReported = false;
+uint32_t observedLossCount = 0;
+// Context for the link-loss record: last valid server state, motor activity,
+// and the raw battery ADC that is sampled even without a calibrated divider.
+bool lastValidKnown = false;
+Phase lastValidPhase = Phase::Unknown;
+Role lastValidRole = Role::Neutral;
+DeviceState lastValidDeviceState = DeviceState::Other;
+bool motorEverOn = false;
+uint32_t lastMotorOnMs = 0, lastBatteryAdcSample = 0;
+uint16_t batteryAdcMv = 0;
+float batteryVolts = 0;
 bool resetLatched = false;
 bool resetPending = false, resetHigh = false, resetTtgo = false, haveReset = false;
 bool ttgoOtaSubmitted = false;
@@ -164,6 +177,49 @@ const char* roleName(Role role) {
   }
 }
 
+const char* motorAgeText(uint32_t now) {
+  static char text[16];
+  ageText(text, sizeof(text), motorEverOn, now - lastMotorOnMs);
+  return text;
+}
+
+LinkLossContext currentLinkLossContext(uint32_t now) {
+  LinkLossContext context;
+  context.stateKnown = lastValidKnown;
+  context.phase = static_cast<uint8_t>(lastValidPhase);
+  context.role = static_cast<uint8_t>(lastValidRole);
+  context.deviceState = static_cast<uint8_t>(lastValidDeviceState);
+  context.motor = lastOutputs.motor;
+  context.lit = lastOutputs.lit;
+  context.motorAgeMs = motorEverOn ? uint32_t(now - lastMotorOnMs) : kLinkLossMotorNever;
+  context.heapFree = ESP.getFreeHeap();
+  context.batteryAdcMv = batteryAdcMv;
+  context.batteryMv = batteryVolts > 0 ? static_cast<uint16_t>(batteryVolts * 1000.0f) : 0;
+  return context;
+}
+
+// Printed once on the first boot after a recovery restart (or any reset that
+// kept RTC RAM) so the Telnet collector sees why the link was lost even though
+// the loss itself happened while nothing could be delivered.
+void reportRetainedLinkLoss(esp_reset_reason_t resetReason) {
+  if (!linkLossPresent(linkLossRecord)) return;
+  const LinkLossRecord& r = linkLossRecord;
+  char motorAge[16];
+  ageText(motorAge, sizeof(motorAge), r.motorAgeMs != kLinkLossMotorNever, r.motorAgeMs);
+  remoteConsoleLogf("[recovery] retained link loss: cause=%s reset_reason=%u reason=%u rssi=%d lost_uptime_ms=%lu noticed_uptime_ms=%lu restart_uptime_ms=%lu down_ms=%lu connect_failures=%lu attempt=%u\n",
+      linkLossCauseName(static_cast<LinkLossCause>(r.cause)), static_cast<unsigned>(resetReason),
+      r.reason, r.rssi, (unsigned long)r.lostAtMs, (unsigned long)r.noticedAtMs,
+      (unsigned long)r.restartAtMs,
+      (unsigned long)(r.restartAtMs && r.lostAtMs ? r.restartAtMs - r.lostAtMs : 0),
+      (unsigned long)r.connectFailures, r.restartAttempt);
+  remoteConsoleLogf("[recovery] retained context: phase=%s role=%s device_state=%s state_known=%u motor=%u motor_age_ms=%s lit=%u battery_adc_mv=%u battery_mv=%u heap=%lu\n",
+      r.stateKnown ? phaseName(static_cast<Phase>(r.phase)) : "unknown",
+      r.stateKnown ? roleName(static_cast<Role>(r.role)) : "unknown",
+      r.stateKnown ? deviceStateName(static_cast<DeviceState>(r.deviceState)) : "unknown",
+      r.stateKnown, r.motor, motorAge, r.lit, r.batteryAdcMv, r.batteryMv, (unsigned long)r.heapFree);
+  linkLossClear(linkLossRecord);
+}
+
 void reportServerChanges(uint32_t now) {
   const ServerSnapshot& server = game.server();
   const bool fresh = serverFresh(now);
@@ -208,6 +264,13 @@ void printDiagnostics(uint32_t now) {
         static_cast<unsigned>(network.phase), (unsigned long)network.sequence,
         (unsigned long)(now - network.startedAtMs), (unsigned long)(now - network.progressAtMs),
         (unsigned long)network.deadlineMs, (unsigned long)network.idleDeadlineMs);
+    remoteConsoleLogf("[link] up=%u was_up=%u down_ms=%lu connect_failures=%lu losses=%lu last_loss_reason=%u last_loss_rssi=%d last_loss_age_ms=%lu restart_after_ms=%lu\n",
+        network.wifiConnected, network.wifiWasUp,
+        (unsigned long)(network.wifiConnected ? 0 : now - network.wifiDownSinceMs),
+        (unsigned long)network.wifiConnectFailures, (unsigned long)network.wifiLossCount,
+        network.wifiLastLossReason, network.wifiLastLossRssi,
+        (unsigned long)(network.wifiLossCount ? now - network.wifiLastLossAtMs : 0),
+        (unsigned long)(network.wifiWasUp ? kWifiLostRestartMs : kWifiNeverUpRestartMs));
     remoteConsoleLogf("[http] error=%u phase=%u status=%d elapsed_ms=%lu bytes=%lu primary_failures=%lu reconnects=%lu cooldown_ms=%lu\n",
         network.lastHttpError, network.lastHttpPhase, network.lastHttpStatus,
         (unsigned long)network.lastHttpElapsedMs, (unsigned long)network.lastHttpBytes,
@@ -227,9 +290,11 @@ void printDiagnostics(uint32_t now) {
       roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
       game.count(), server.revivalCount, server.sacrificed, server.open, deviceStateName(server.deviceState));
   // feedback() consumes event haptics. Diagnostics only read the last render.
-  remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u brightness8=%u\n",
+  remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u brightness8=%u motor_age_ms=%s\n",
       haveOutputs, lastOutputs.red, lastOutputs.green, lastOutputs.blue, lastOutputs.lit,
-      lastOutputs.motor, lastBrightness);
+      lastOutputs.motor, lastBrightness, motorAgeText(now));
+  remoteConsoleLogf("[battery] adc_mv=%u configured=%u volts=%.2f\n",
+      batteryAdcMv, battery.configured(), static_cast<double>(batteryVolts));
   diagnosticLog.append(
       "[diag] TTGO fw=%d partition=%d; UART TX32->6 RX36<-5 reset12->1\n"
       "[peer] known=%u online=%u fw=%lu partition=%lu boot=%lu last_seen_ms=%s hello_age_ms=%s\n"
@@ -366,6 +431,11 @@ void pollNetwork(uint32_t now) {
   ServerSnapshot snapshot;
   while (networkPoll(snapshot)) {
     game.applyServer(snapshot, now);
+    if (snapshot.valid) {
+      lastValidKnown = true;
+      lastValidPhase = snapshot.phase; lastValidRole = snapshot.role;
+      lastValidDeviceState = snapshot.deviceState;
+    }
     if (otaRequests.observe(snapshot)) remoteConsoleLogf("[OTA] Malformed version command rejected\n");
     if (snapshot.resetRequested && !resetLatched) { resetPending = true; resetTtgo = true; }
     resetLatched = snapshot.resetRequested;
@@ -467,13 +537,21 @@ void reportLocation(uint32_t now) {
 }
 
 void sampleBattery(uint32_t now) {
+  // The raw ADC is always sampled so the loss record and the status show the
+  // pin even before the divider is calibrated (a floating pin reads ~0).
+  if (uint32_t(now - lastBatteryAdcSample) >= 1000U) {
+    lastBatteryAdcSample = now;
+    const uint32_t mv = analogReadMilliVolts(IOTGLOVE_BATTERY_PIN);
+    batteryAdcMv = mv > 0xFFFFU ? 0xFFFFU : static_cast<uint16_t>(mv);
+  }
   if (!battery.configured() || uint32_t(now - lastBatterySample) < 20U) return;
   lastBatterySample = now;
   float voltage = 0;
   if (!battery.add(analogReadMilliVolts(IOTGLOVE_BATTERY_PIN), voltage)) return;
+  batteryVolts = voltage;
   if (lastBatteryReport != 0 && uint32_t(now - lastBatteryReport) < 60000U) return;
   lastBatteryReport = now;
-  remoteConsoleLogf("[battery] %.2f V\n", voltage);
+  remoteConsoleLogf("[battery] %.2f V\n", static_cast<double>(voltage));
   if (!kTraining && networkReady) networkReportBattery(voltage);
 }
 
@@ -488,6 +566,7 @@ void render(uint32_t now) {
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
+  if (out.motor) { lastMotorOnMs = now; motorEverOn = true; }
   // Already raw 0..255 — the network task converted it when the snapshot was parsed.
   const uint8_t brightness = kTraining ? 255 : game.server().brightness;
   const bool visualChanged = !haveOutputs || out.red != lastOutputs.red || out.green != lastOutputs.green ||
@@ -542,24 +621,59 @@ void monitorNetwork() {
   NetworkDiagnostics d;
   if (!networkDiagnostics(d)) return;
   const uint32_t now = millis();  // Never compare a newer worker sample to an older loop time.
+  // Capture a new link loss once, as close to the event as the worker's 1s publish allows.
+  if (d.wifiLossCount != observedLossCount) {
+    observedLossCount = d.wifiLossCount;
+    const LinkLossContext context = currentLinkLossContext(now);
+    linkLossCapture(linkLossRecord, now, d.wifiLastLossAtMs, d.wifiLastLossReason, d.wifiLastLossRssi,
+                    d.wifiConnectFailures, context);
+    remoteConsoleLogf("[recovery] link loss captured reason=%u rssi=%d age_ms=%lu phase=%s role=%s device_state=%s motor=%u motor_age_ms=%s battery_adc_mv=%u\n",
+        d.wifiLastLossReason, d.wifiLastLossRssi, (unsigned long)(now - d.wifiLastLossAtMs),
+        context.stateKnown ? phaseName(lastValidPhase) : "unknown",
+        context.stateKnown ? roleName(lastValidRole) : "unknown",
+        context.stateKnown ? deviceStateName(lastValidDeviceState) : "unknown",
+        context.motor, motorAgeText(now), context.batteryAdcMv);
+  }
+  if (d.wifiConnected && linkLossPending(linkLossRecord)) {
+    remoteConsoleLogf("[recovery] link loss resolved without restart down_ms=%lu\n",
+        (unsigned long)(now - linkLossRecord.lostAtMs));
+    linkLossClear(linkLossRecord);
+  }
   const bool stalled = networkWorkerStalled(d, now);
   if (networkRestartPolicy.observe(now, d.sequence, stalled) && networkRestartHistory.attempts) {
     networkRestartHistory = {NetworkRestartPolicy::kMagic, 0, false};
     remoteConsoleLogf("[recovery] worker progressed for 10 minutes; restart budget restored\n");
+    linkDownReported = false;  // A still-dead link may use the fresh budget.
     armMainWatchdog();
   }
-  if (!stalled) { stallReported = false; return; }
-  if (!stallReported) {
+  if (!stalled) stallReported = false;
+  else if (!stallReported) {
     stallReported = true;
     remoteConsoleLogf("[recovery] worker stalled phase=%u sequence=%lu age_ms=%lu idle_ms=%lu restarts=%lu\n",
         static_cast<unsigned>(d.phase), (unsigned long)d.sequence,
         (unsigned long)(now - d.startedAtMs), (unsigned long)(now - d.progressAtMs),
         (unsigned long)networkRestartHistory.attempts);
     if (NetworkRestartPolicy::request(networkRestartHistory)) {
+      linkLossComplete(linkLossRecord, LinkLossCause::WorkerStall, now, d.wifiConnectFailures,
+                       static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
       ESP.restart();
     }
     remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
   }
+  // The STA retry loop alone never ends; after a bounded outage the same
+  // restart budget reboots the radio. Reported once per outage.
+  if (!wifiLinkDownTooLong(d, now)) { linkDownReported = false; return; }
+  if (linkDownReported) return;
+  linkDownReported = true;
+  remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu last_loss_reason=%u last_loss_rssi=%d restarts=%lu\n",
+      (unsigned long)(now - d.wifiDownSinceMs), d.wifiWasUp, (unsigned long)d.wifiConnectFailures,
+      d.wifiLastLossReason, d.wifiLastLossRssi, (unsigned long)networkRestartHistory.attempts);
+  if (NetworkRestartPolicy::request(networkRestartHistory)) {
+    linkLossComplete(linkLossRecord, LinkLossCause::WifiDown, now, d.wifiConnectFailures,
+                     static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
+    ESP.restart();
+  }
+  remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
 }
 }  // namespace
 
@@ -578,18 +692,19 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   bootId = esp_random(); requestSequence = esp_random();
   if (!remoteConsoleBegin(firmware, partition, bootId, !kTraining))
     remoteConsoleLogf("[remote] initialization failed; USB diagnostics remain available\n");
-  if (battery.configured()) {
-    analogReadResolution(12);
-    analogSetPinAttenuation(IOTGLOVE_BATTERY_PIN, ADC_11db);
-  }
+  // Raw ADC sampling of the battery pin runs regardless of calibration.
+  analogReadResolution(12);
+  analogSetPinAttenuation(IOTGLOVE_BATTERY_PIN, ADC_11db);
   remoteConsoleLogf("[glove] firmware=%d profile=%s\n", firmware, kTraining ? "training" : "origin");
   diagnosticLog.append("[diag] TTGO console ready: s/? status, p UART probe, b Beetle reset, u OTA\n");
-  if (!battery.configured()) remoteConsoleLogf("[battery] Disabled: configure measured ADC divider and battery range\n");
+  if (!battery.configured())
+    remoteConsoleLogf("[battery] Calibrated reporting disabled: configure measured ADC divider and battery range; raw adc_mv is still sampled\n");
   if (!kTraining) {
     const esp_reset_reason_t reason = esp_reset_reason();
     NetworkRestartPolicy::boot(networkRestartHistory, reason == ESP_RST_SW,
         reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT ||
         reason == ESP_RST_WDT || reason == ESP_RST_PANIC);
+    reportRetainedLinkLoss(reason);
     networkReady = networkBegin(firmware, partition);
     if (networkReady) {
       networkReportChip(sensorChipPresent());

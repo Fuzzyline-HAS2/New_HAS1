@@ -14,7 +14,7 @@ struct NetworkRestartHistory {
 class NetworkRestartPolicy {
  public:
   static constexpr uint32_t kMagic = 0x47575232U;
-  static constexpr uint32_t kMaxRestarts = 2;
+  static constexpr uint32_t kMaxRestarts = 3;
   static constexpr uint32_t kStableMs = 10U * 60U * 1000U;
   static constexpr uint32_t kMaxProgressGapMs = 180000U;
 

@@ -42,7 +42,7 @@
      void Setup(char *new_ssid, char *new_password);
 --- a/HAS2_Wifi/HAS2_Wifi.cpp
 +++ b/HAS2_Wifi/HAS2_Wifi.cpp
-@@ -99,6 +99,38 @@
+@@ -99,6 +99,41 @@
        wifiCandidatesInitialized(false)
  {
      _activeHost = host;
@@ -72,7 +72,10 @@
 +    if (String(candidate.ssid) != ssid) continue;
 +    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) return true;
 +    // Credentials stay in first_store. No NVS read, scan, ordering or fallback.
-+    if (TryConnect(candidate.ssid, candidate.password, WIFI_CONNECT_TIMEOUT_MS) &&
++    // Association plus DHCP can exceed the library's 3s default on a weak link,
++    // and every failed attempt restarts the radio; allow 10s per attempt.
++    const unsigned long fixedTimeoutMs = 10000;
++    if (TryConnect(candidate.ssid, candidate.password, fixedTimeoutMs) &&
 +        WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) return true;
 +    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true, true);
 +    return false;
