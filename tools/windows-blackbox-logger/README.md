@@ -358,14 +358,93 @@ Omada의 명시적인 `[site:...]`가 `HAS1`과 다르면 저장하지 않고 `s
 참고하십시오. 장치 uptime에는 자동 UTC 기준점을 만들지 않으며, 실측 기준점이
 없으면 장치 기록은 시간 미정렬 상태로 남습니다.
 
-`telemetry.sqlite3`는 **자동 삭제·보관 기간 제한이 없습니다.** 모든 요청을 기록하면
-빠르게 커질 수 있으므로 용량을 주기적으로 확인하고, 보관/내보내기 정책을 별도로
-운영해야 합니다. `telemetry.min_free_bytes` 기본값은 1 GiB입니다. 남은 디스크
+`telemetry.sqlite3`는 **수집기 자체에는 자동 삭제·보관 기간 제한이 없습니다.** 모든 요청을 기록하면
+빠르게 커지므로 아래 [텔레메트리 보존 정리](#텔레메트리-보존-정리-retentionpy)를 예약 작업으로
+운영하고 용량을 주기적으로 확인합니다. `telemetry.min_free_bytes` 기본값은 1 GiB입니다. 남은 디스크
 공간을 최대 1초 간격으로 확인하여 기준 아래에서는 추가 telemetry 저장을 보류하고
 `disk_reserve_blocks`를 기록합니다. 서버 파일은 다음에 재시도하지만 Omada UDP
 기록은 해당 시점에 유실될 수 있습니다. 기존 MQTT 저장은 이 제한과 독립적입니다.
 이 여유 공간 검사는 다른 프로세스의 디스크 소비를 막는 할당량이 아니며, 기존
 로그를 자동 삭제하지 않습니다. 서버 JSONL 8개 순환 공간도 별도로 필요합니다.
+
+### 텔레메트리 보존 정리 (retention.py)
+
+`retention.py`는 `telemetry.sqlite3`만 정리합니다. 장치 ACK 근거인 `blackbox.sqlite3`와
+사건 DB `incidents.sqlite3`는 건드리지 않습니다. 기준 시각은 수집기가 받은 시각(`observed_utc`)입니다.
+
+| 받은 지 | 남기는 기록 |
+| --- | --- |
+| 7일 이내 | 전부 (사건으로 잡히지 않은 문제를 나중에 조사할 수 있게) |
+| 7일~1년 | Omada·수집기 기록, 게임 서버의 요청·감시 스냅샷 외 이벤트(단절·복구, 크래시 보고, 시간 기준점, 장치 매핑), 장치 Boot·Crash·Recovery·Lost·Dropped, **사건 증거**, 운영자 보관 구간 |
+| 1년 초과 | 없음 |
+
+사건 증거는 `incidents.sqlite3`의 사건마다 시작 10분 전부터 종료 10분 후까지의 게임 감시
+스냅샷, 같은 구간의 그 장치(MAC 또는 장치 이름) 서버·게이트웨이 요청, 그 장치가 종료 후 6시간까지
+올린 MQTT 기록입니다. 글러브는 게임 중에는 업로드하지 않으므로 6시간 여유를 둡니다. 닫히지 않은
+사건은 마지막 갱신 후 2시간까지만 증거 구간으로 보고 `long_open_incidents`에 개수를 표시합니다.
+사건 감지를 꺼도 지난 사건은 증거로 남습니다.
+
+- 사건 감지가 아직 처리하지 않은 기록(`cursor` 이후)은 기간과 관계없이 지우지 않습니다.
+- 지운 장치 기록은 `pruned_before`로 표시해, 장치 가져오기가 `blackbox.sqlite3`에서 다시 넣지 않습니다.
+  가져오기가 한 번도 넣지 못한 기록과 항상 보관하는 종류(Boot·Crash 등)는 계속 가져옵니다.
+- 각 실행은 지난번 **끝까지 마친** 실행 이후 7일 경계를 넘은 기록만 분류합니다(중단된 실행은 다음에 다시
+  처리). 7일마다 한 번은 자동으로 전체를 다시 분류해 늦게 들어온 기록과 해제한 보관 구간을 반영합니다.
+  즉시 전체를 다시 분류하려면 `--rescan`을 씁니다.
+- 24시간 안에 PC 시계가 1시간 넘게 바뀐 기록(`clock_step`)이 있으면 `--apply`를 거부합니다. 시계를 확인한 뒤
+  `--allow-clock-step`으로 실행합니다. 일반적인 시간 동기화(수 초)는 막지 않습니다.
+- 삭제할 때마다 WAL을 비워, 수집기가 함께 쓰는 동안에도 `-wal` 파일이 커지지 않습니다.
+- 결과의 `kept_server_types`는 이벤트 종류별로 남긴 서버 기록 수입니다. 예상 밖으로 큰 종류가 있으면 확인합니다.
+
+관리자 PowerShell. 기본은 **삭제 없이 개수만 보고**하는 시험 실행입니다.
+
+```powershell
+$py = "$env:ProgramFiles\HAS1 BlackBox\.venv\Scripts\python.exe"
+$tool = "$env:ProgramFiles\HAS1 BlackBox\retention.py"
+$config = "$env:ProgramData\HAS1BlackBox\config.json"
+& $py -E -s $tool --config $config run            # 시험 실행: would_delete·kept 확인
+& $py -E -s $tool --config $config run --apply    # 실제 삭제
+```
+
+손님 불만 등 사건으로 잡히지 않은 문제는 7일 안에 보관 구간을 지정합니다(1년 보관). 시각은 오프셋을 포함합니다.
+
+```powershell
+& $py -E -s $tool --config $config keep --from 2026-11-01T19:30:00+09:00 --to 2026-11-01T20:30:00+09:00 --device G2P3 --note "G2P3 손님 불만"
+& $py -E -s $tool --config $config keeps
+& $py -E -s $tool --config $config unkeep --id 3   # 잘못 지정한 구간 삭제(다음 전체 분류 때 반영, 즉시는 run --apply --rescan)
+```
+
+`--mac`이나 `--device`를 주면 그 장치 기록만 보관합니다. 둘 다 없으면 그 시간의 전체 기록을 보관합니다.
+장치 MQTT 기록은 늦게 올라오므로 구간 끝 후 6시간까지 받은 기록을 포함합니다.
+
+삭제는 2,000행 단위의 짧은 트랜잭션이라 수집기를 멈추지 않고 실행합니다. 개발 PC 측정에서 초당 약
+1만 4천~1만 6천 행을 처리했고, 수집기가 함께 쓰는 동안 `-wal`은 최대 약 20MB였습니다. 현재 기록량 기준
+매일 실행하면 수 분, 주 1회면 30분 안팎입니다. 게임이 없는 시간에 매일 실행하는 예약 작업을 권장합니다.
+
+```powershell
+$taskArgs = "-E -s `"$tool`" --config `"$config`" --report `"$env:ProgramData\HAS1BlackBox\data\retention.log`" run --apply"
+Register-ScheduledTask -TaskName 'HAS1BlackBox Retention' -User SYSTEM -RunLevel Highest `
+  -Action (New-ScheduledTaskAction -Execute $py -Argument $taskArgs) `
+  -Trigger (New-ScheduledTaskTrigger -Daily -At 06:00)
+```
+
+**파일 크기.** SQLite는 지운 공간을 다시 쓰지만 기본 모드에서는 파일을 줄이지 않으므로, 정리만 하면
+파일은 가장 컸던 크기(약 7일치)에서 멈춥니다. 디스크로 돌려주려면 한 번만 증분 정리 모드로 바꿉니다.
+이 변환은 남은 데이터 전체를 다시 씁니다. WAL 모드에서는 임시 사본과 WAL에 한 번씩, **남은 데이터의 약
+2.2배** 여유 공간이 필요합니다(DB 드라이브와 임시 폴더 드라이브를 각각 확인하고 부족하면 거부). 먼저
+`run --apply`로 지울 기록을 지워 다시 쓸 양을 줄이고, **수집기를 멈춘 상태**에서 실행합니다(실행 중이면 거부).
+파일이 작을 때 해 두십시오.
+
+```powershell
+& $py -E -s $tool --config $config run --apply
+Stop-Service HAS1BlackBoxCollector
+& $py -E -s $tool --config $config enable-shrink
+Start-Service HAS1BlackBoxCollector
+```
+
+이후 `run --apply`는 삭제 뒤 비워진 공간을 짧은 단계로 디스크에 돌려주고 `storage`에 전후 크기
+(`data_mb` 실제 데이터, `disk_mb` 파일 크기, `wal_mb`)를 보고합니다.
+7일치 원본이 한 파일이므로 기록량 자체가 크면 파일도 큽니다. 서버 요청 기록량을 줄이는 것이 파일 크기를
+줄이는 가장 효과적인 방법입니다.
 
 ### 10/24 장애 증거 보완
 
