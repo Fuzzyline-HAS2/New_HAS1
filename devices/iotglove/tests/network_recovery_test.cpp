@@ -101,5 +101,9 @@ int main() {
   d.deadlineMs = 20000; d.idleDeadlineMs = 0;
   assert(!networkWorkerStalled(d, 219999));
   assert(networkWorkerStalled(d, 220000));
-  puts("PASS: primary transport recovery, bounded jitter/backoff, rollover and operation watchdog");
+
+  // Quick retries while the AP may still hold a lost session; then back off.
+  assert(wifiConnectRetryMs(1) == 1000 && wifiConnectRetryMs(3) == 1000);
+  assert(wifiConnectRetryMs(4) == 5000 && wifiConnectRetryMs(UINT32_MAX) == 5000);
+  puts("PASS: primary transport recovery, bounded jitter/backoff, rollover, operation watchdog and Wi-Fi retry pause");
 }

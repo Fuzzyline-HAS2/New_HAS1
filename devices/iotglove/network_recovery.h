@@ -38,6 +38,12 @@ inline bool wifiLinkDownTooLong(const NetworkDiagnostics& d, uint32_t now) {
   return uint32_t(now - d.wifiDownSinceMs) >= limit;
 }
 
+// A fixed-SSID attempt ends as soon as the driver reports failure, so this
+// pause alone spaces attempts. After a power cut the AP keeps the lost session
+// and can stay out of scans for tens of seconds: retry quickly first, then
+// back off for a real outage. `failures` counts this outage's failed attempts.
+inline uint32_t wifiConnectRetryMs(uint32_t failures) { return failures <= 3 ? 1000 : 5000; }
+
 inline bool networkWorkerStalled(const NetworkDiagnostics& d, uint32_t now) {
   // Legacy OTA owns its timeouts. Without a progress hook, the worker watchdog
   // cannot distinguish a healthy flash/download from a stalled OTA operation.
