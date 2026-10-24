@@ -286,6 +286,47 @@ class RetentionTests(unittest.TestCase):
         self.assertLess(storage["after"]["disk_mb"], storage["before"]["disk_mb"])
         self.store = TelemetryStore(self.path)
 
+    def test_enable_shrink_rerun_flushes_a_leftover_wal_or_refuses_while_read(self):
+        self.store.close()
+        with patch.object(retention, "collector_running", return_value=False):
+            enable_shrink(self.path)
+            # A connection that never checkpoints leaves pages only in the WAL,
+            # like a conversion whose final checkpoint was skipped.
+            self.store = TelemetryStore(self.path)
+            self.store.db.execute("PRAGMA wal_autocheckpoint=0")
+            for _ in range(500):
+                self.save("game_server", "request_finish", at(days=1), OTHER, "G2P8")
+            wal = Path(str(self.path) + "-wal")
+            self.assertGreater(wal.stat().st_size, 100000)
+            # A reader holding a snapshot blocks the TRUNCATE checkpoint: refuse, never report success.
+            reader = sqlite3.connect(self.path)
+            try:
+                reader.execute("BEGIN")
+                reader.execute("SELECT count(*) FROM telemetry_events").fetchone()
+                with patch.object(retention, "BUSY_MS", 200):
+                    with self.assertRaises(ValueError):
+                        enable_shrink(self.path)
+            finally:
+                reader.close()  # Before tearDown: Windows cannot delete a file still open.
+            rerun = enable_shrink(self.path)
+        self.assertFalse(rerun["changed"])
+        self.assertFalse(rerun["interrupted"])
+        self.assertEqual(rerun["storage"]["wal_mb"], 0)
+
+    def test_real_ctrl_c_during_rewrite_is_held_until_it_finishes(self):
+        signal = retention.signal
+        before = signal.getsignal(signal.SIGINT)
+        finished = []
+        with retention.deferred_interrupt("held") as interrupted:
+            signal.raise_signal(signal.SIGINT)
+            finished.append(True)
+        self.assertEqual(finished, [True])
+        self.assertTrue(interrupted)
+        self.assertEqual(signal.getsignal(signal.SIGINT), before)
+        with retention.deferred_interrupt("held") as quiet:
+            pass
+        self.assertFalse(quiet)
+
 
 if __name__ == "__main__":
     unittest.main()

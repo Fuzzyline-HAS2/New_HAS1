@@ -25,16 +25,18 @@ SQLite reuses freed pages but only returns them to the disk in incremental
 auto-vacuum mode; ``enable-shrink`` converts the file once (collector stopped).
 """
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from protocol import EVENT_NAMES, decode_record
@@ -379,6 +381,38 @@ def collector_running(service="HAS1BlackBoxCollector"):
     return result.returncode != 0 or "STOPPED" not in result.stdout  # Unknown counts as running.
 
 
+@contextmanager
+def deferred_interrupt(notice):
+    """Hold Ctrl+C until the block ends; an interrupted VACUUM leaves its result unflushed.
+
+    Yields a list that is non-empty if Ctrl+C was pressed, so the caller can still
+    report the finished work before stopping.
+    """
+    requested = []
+    if threading.current_thread() is not threading.main_thread():
+        yield requested
+        return
+    def hold(signum, frame):
+        requested.append(signum)
+        try:
+            print(notice, file=sys.stderr, flush=True)
+        except OSError:
+            pass
+    previous = signal.signal(signal.SIGINT, hold)
+    try:
+        yield requested
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def flush_wal(db):
+    """With the collector stopped nothing competes: move the WAL into the file and empty it."""
+    db.execute("PRAGMA busy_timeout=%d" % BUSY_MS)
+    busy = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+    if busy:
+        raise ValueError("the WAL was not emptied: another program still has the database open; close it and rerun enable-shrink")
+
+
 def enable_shrink(telemetry_path):
     """One-time VACUUM into incremental auto-vacuum. Needs the collector stopped."""
     path = Path(telemetry_path).resolve()
@@ -387,7 +421,10 @@ def enable_shrink(telemetry_path):
     with closing(open_telemetry(path, readonly=False)) as db:
         before = storage(db, path)
         if before["auto_vacuum"] == "incremental":
-            return {"changed": False, "storage": before}
+            # Already converted (e.g. an earlier run stopped before its checkpoint): only flush the WAL.
+            with deferred_interrupt("Ctrl+C held until the WAL is emptied.") as interrupted:
+                flush_wal(db)
+            return {"changed": False, "interrupted": bool(interrupted), "storage": storage(db, path)}
         # In WAL mode VACUUM writes the kept data twice: a temp copy and the new file in the WAL.
         live = before["data_mb"] * 1e6
         needs = {}
@@ -398,10 +435,15 @@ def enable_shrink(telemetry_path):
             if shutil.disk_usage(folder).free < needed:
                 raise ValueError("VACUUM needs about %.1f GB free on the drive of %s; run 'run --apply' first"
                                  % (needed / 1e9, folder))
-        db.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        db.execute("VACUUM")
-        checkpoint(db)
-        return {"changed": True, "before": before, "after": storage(db, path)}
+        print("Rewriting %.1f GB once into shrink mode. A few GB take several minutes with no output; "
+              "do not interrupt." % (live / 1e9), file=sys.stderr, flush=True)
+        with deferred_interrupt("Ctrl+C held until the rewrite finishes; the collector stays stopped until then.") as interrupted:
+            started = time.monotonic()
+            db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            db.execute("VACUUM")
+            flush_wal(db)
+        return {"changed": True, "interrupted": bool(interrupted), "seconds": round(time.monotonic() - started, 1),
+                "before": before, "after": storage(db, path)}
 
 
 def add_keep(telemetry_path, site_id, start, end, mac, note, device_id=None, now=None):
@@ -490,6 +532,8 @@ def main():
         with open(args.report, "a", encoding="utf-8") as report:
             report.write(json.dumps({"at": iso(datetime.now(timezone.utc)), "command": args.command,
                                      "result": result}, ensure_ascii=False) + "\n")
+    if isinstance(result, dict) and result.get("interrupted"):
+        raise SystemExit(130)  # Ctrl+C was held: the work finished, then stop as asked.
 
 
 if __name__ == "__main__":

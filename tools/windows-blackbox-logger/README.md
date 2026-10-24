@@ -432,14 +432,17 @@ Register-ScheduledTask -TaskName 'HAS1BlackBox Retention' -User SYSTEM -RunLevel
 이 변환은 남은 데이터 전체를 다시 씁니다. WAL 모드에서는 임시 사본과 WAL에 한 번씩, **남은 데이터의 약
 2.2배** 여유 공간이 필요합니다(DB 드라이브와 임시 폴더 드라이브를 각각 확인하고 부족하면 거부). 먼저
 `run --apply`로 지울 기록을 지워 다시 쓸 양을 줄이고, **수집기를 멈춘 상태**에서 실행합니다(실행 중이면 거부).
-파일이 작을 때 해 두십시오.
+파일이 작을 때 해 두십시오. 3.5 GB 기준 수 분 걸리며 끝날 때까지 결과가 출력되지 않습니다. 그 사이 Ctrl+C를
+눌러도 변환과 WAL 정리를 마친 뒤에 멈춥니다. 수집기가 어떤 경우에도 다시 켜지도록 `try`/`finally`로 실행합니다.
 
 ```powershell
 & $py -E -s $tool --config $config run --apply
 Stop-Service HAS1BlackBoxCollector
-& $py -E -s $tool --config $config enable-shrink
-Start-Service HAS1BlackBoxCollector
+try { & $py -E -s $tool --config $config enable-shrink } finally { Start-Service HAS1BlackBoxCollector }
 ```
+
+이미 변환된 파일에서 다시 실행하면 변환은 건너뛰고 남아 있는 WAL만 파일로 옮겨 비웁니다
+(`changed: false`, `storage.wal_mb` 확인).
 
 이후 `run --apply`는 삭제 뒤 비워진 공간을 짧은 단계로 디스크에 돌려주고 `storage`에 전후 크기
 (`data_mb` 실제 데이터, `disk_mb` 파일 크기, `wal_mb`)를 보고합니다.
