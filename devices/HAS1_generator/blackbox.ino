@@ -79,6 +79,10 @@ void BlackBoxBeforeRestart() {
   has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,1,0,0,0,"server.restart");
   // Existing explicit restart remains immediate; no watchdog feed or new wait.
 }
+void BlackBoxOtaRestart(uint32_t attempts) {
+  has1blackbox::blackbox.setUploadAllowed(false);
+  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,attempts,0,0,0,"ota.github.restart");
+}
 void BlackBoxDiagnostic(uint16_t event,uint8_t phase,uint32_t id,int32_t code,uint32_t elapsed,uint32_t detail) {
   // Sample matched operation pairs; a selected BEGIN survives even when an I/O
   // call never returns. Faults also have their own bounded gate. No strings/UIDs.

@@ -438,7 +438,8 @@ void AdminCardPollPending()
  *        ready에서는 일반 게임 태그(G#P#)를 받지 않도록 RfidLoop() 자체가 꺼져 있으므로,
  *        MMMM 관리자 카드만은 상태 무관으로 열려야 한다는 요구를 이 함수가 별도로 담당한다.
  *        MMMM이 아니면 CardChecking()으로 넘기지 않고 조용히 무시 — ready의 기존 "태그 비활성"
- *        동작은 MMMM 외에는 그대로 유지된다. rfid_tag/rfid_timer는 RfidLoop()과 동일한 디바운스
+ *        동작은 MMMM 외에는 그대로 유지된다. 단, device_state=ready이면 태그자 조회를 위해
+ *        일반 태그도 CardChecking()으로 넘긴다(열지는 않음). rfid_tag/rfid_timer는 RfidLoop()과 동일한 디바운스
  *        상태를 공유하지만, activate_bool로 loop()에서 상호 배타적으로만 호출되므로 안전하다.
  */
 void AdminCardPollReady()
@@ -462,11 +463,15 @@ void AdminCardPollReady()
 #if REVIVAL_RFID_RUNTIME_TRACE
   RfidTraceScanEnd(detected, detected ? data : nullptr);
 #endif
+  // device_state=ready이면 일반 태그도 CardChecking()에서 태그자 조회만 한다.
+  // 카드를 대고 있는 동안 매 스캔마다 조회하지 않도록 게임 태그와 같은 래치/제거 감지를 쓴다.
+  const bool readyLookup = (String)(const char *)my["device_state"] == "ready";
+  if (readyLookup) ObserveGameplayTagOutcome(rfid_last_outcome);
   if (!detected) return;
 
   String tagUser = "";
   for (int i = 0; i < 4; i++) tagUser += (char)data[i];
-  if (tagUser != "MMMM") return;  // ready 상태에서는 MMMM 외 태그는 계속 무시
+  if (tagUser != "MMMM" && !readyLookup) return;  // ready 상태에서는 MMMM 외 태그는 계속 무시
 
   CardChecking(data);
 }
@@ -507,6 +512,7 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   const unsigned long tagDetectedMs = millis();
 
   String game_state_now = (String)(const char *)my["game_state"];
+  const bool device_ready = (String)(const char *)my["device_state"] == "ready";
 
   if (game_state_now == "activate")
   {
@@ -535,6 +541,27 @@ void CardChecking(uint8_t rfidData[32]) // 어떤 카드가 들어왔는지 확�
   {
     Serial.println("[RFID] Setting tag - opening");
     SolenoidPulse();
+    return;
+  }
+
+  // device_state=ready: 태그한 사람이 누구인지 서버에 조회해 로그로 남기기만 한다.
+  // 열거나 Situation을 보내지 않으며, 같은 카드는 뗐다가 다시 대야 다시 조회한다.
+  if (device_ready)
+  {
+    if (game_state_now != "activate")  // activate는 위에서 이미 래치를 걸었다.
+    {
+      if (gameplay_tag_latched && gameplay_tag_user == tagUser) return;
+      gameplay_tag_latched = true;
+      gameplay_tag_user = tagUser;
+      gameplay_tag_missing = false;
+      gameplay_tag_miss_count = 0;
+    }
+    const unsigned long roleReceiveStartMs = millis();
+    has2wifi.Receive(tagUser);
+    Serial.println("[RFID] Tag while device_state=ready - " + tagUser +
+                   " role=" + String((const char *)tag["role"]) +
+                   " is_open=" + String((int)tag["is_open"]) +
+                   " (Receive took=" + String(millis() - roleReceiveStartMs) + "ms), no action");
     return;
   }
 

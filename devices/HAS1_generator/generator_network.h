@@ -1,6 +1,7 @@
 #ifndef GENERATOR_NETWORK_H
 #define GENERATOR_NETWORK_H
 #include <stdint.h>
+#include "generator_wire_protocol.h"
 #include <has2_bounded_transport.h>
 #include <utility>
 enum class NetworkDiscard:uint8_t {None,Cancelled,TagChanged,GameChanged,WireChanged,WireUnstable,QueueExpired,ResultExpired};
@@ -18,9 +19,11 @@ struct NetworkRequest {
   void (*callback)(const NetworkRequest &,const Has2BoundedTransport::Result &,bool);
 };
 
-// Existing Send/Situation server API. A timeout is ambiguous: queued work can
-// be cancelled locally, but an already dispatched mutation cannot be fenced by
-// the legacy server. Never automatically resend uncertain mutations.
+// Generic reports retain legacy at-most-once transmission. Generator completion
+// uses a durable, immutable conditional token and authoritative reconciliation.
+bool GeneratorNetworkCompletionPending();
+bool WireCompletionContext(GeneratorWireSnapshot &);
+void WireRequestContextRefresh();
 void GeneratorNetworkBegin();
 void GeneratorNetworkLoop();
 bool GeneratorNetworkRequestPoll();

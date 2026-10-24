@@ -8,6 +8,7 @@ void BlackBoxHttp(int kind,int error,int status,uint32_t elapsed,bool stale);
 void BlackBoxValidSnapshot(bool valid);
 void BlackBoxPollResult(bool valid);
 void BlackBoxBeforeRestart();
+void BlackBoxOtaRestart(uint32_t attempts);
 void BlackBoxDiagnostic(uint16_t event,uint8_t phase,uint32_t id,int32_t code,uint32_t elapsed,uint32_t detail);
 void NeoRetryPending();
 

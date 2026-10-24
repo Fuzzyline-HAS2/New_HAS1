@@ -68,6 +68,7 @@ Wi-Fi events remain transition-driven. Fields below are v[0..3].
 | `wifi.event` | Arduino event ID, disconnect reason where applicable, reserved |
 | `operation.sample` | diagnostic operation ID, `(event << 8) | phase`, result code, elapsed ms |
 | `server.restart` | server restart cause = 1, reserved fields |
+| `ota.github.restart` | GitHub OTA attempts so far (restart after an OTA without update), reserved fields |
 | `prior.rtc.event` | prior sequence, `(event << 8) | phase`, result code, detail |
 | `prior.rtc.time` | matching prior sequence, prior uptime ms, elapsed ms, operation ID |
 
