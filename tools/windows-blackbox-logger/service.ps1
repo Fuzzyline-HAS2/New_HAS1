@@ -11,6 +11,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Started from pwsh 7, Windows PowerShell inherits pwsh's PSModulePath and then
+# fails to autoload its own modules (Get-FileHash, Set-Acl). Use the machine default.
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
 # Windows PowerShell 5.1 can evaluate parameter defaults before PSScriptRoot is
 # populated under -File. Resolve the default only after script binding finishes.
 if (-not $PSBoundParameters.ContainsKey('Config')) {

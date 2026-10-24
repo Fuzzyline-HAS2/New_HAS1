@@ -4,6 +4,8 @@
 param([Parameter(Mandatory=$true)][string]$PythonExe)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Same as service.ps1: CI starts this from pwsh 7, whose PSModulePath hides Get-FileHash.
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
 $root = Split-Path -Parent $PSScriptRoot
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'service.ps1'), [ref]$null, [ref]$null)
 $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] }, $false) |
