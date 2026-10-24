@@ -122,18 +122,22 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(row["destination"],"notion")
         self.assertEqual(row["payload"]["status"],"monitoring_ended")
 
-    def test_bot_slack_followups_link_to_original_message(self):
+    def test_followups_link_to_original_slack_message_and_notion_page(self):
+        page = "abcdefab-1234-1234-1234-123456789abc"
         for ending,status in (("device_recovered","recovered"),("alarm_cleared","monitoring_ended")):
             incident = "incident-" + ending
             self.process(event(incident=incident,seq=self.seq+1))
             for _ in range(2):
                 row = self.claim()
-                ts = "1700000000.000100" if row["destination"] == "slack" else None
-                self.store.finish(row["id"],SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=ts),now_epoch=100,channels=["slack","notion"])
+                remote = "1700000000.000100" if row["destination"] == "slack" else page
+                self.store.finish(row["id"],SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=remote),now_epoch=100,channels=["slack","notion"])
             self.process(event(ending,incident=incident,seq=self.seq+1))
-            slack = self.store.db.execute("SELECT payload FROM incident_outbox WHERE incident_id=? AND destination='slack' AND version=2",(incident,)).fetchone()
-            payload = json.loads(slack[0])
-            self.assertEqual((payload["status"],payload["slack_ts"]),(status,"1700000000.000100"))
+            followups = dict(self.store.db.execute("SELECT destination,payload FROM incident_outbox WHERE incident_id=? AND version=2",(incident,)).fetchall())
+            slack, notion = json.loads(followups["slack"]), json.loads(followups["notion"])
+            self.assertEqual((slack["status"],slack["slack_ts"]),(status,"1700000000.000100"))
+            self.assertNotIn("notion_page_id",slack)
+            self.assertEqual((notion["status"],notion["notion_page_id"]),(status,page))
+            self.assertNotIn("slack_ts",notion)
             self.process(event(active=False,session=None,seq=self.seq+1))
             while (row := self.claim()):
                 self.delivered(row)

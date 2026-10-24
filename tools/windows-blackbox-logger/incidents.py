@@ -162,6 +162,8 @@ class IncidentStore:
                 # threads under it, so even monitoring_ended closes it out. Webhooks only post recoveries.
                 if channel == "slack" and delivered and delivered[0]:
                     linked = {"slack_ts": delivered[0]}
+                if channel == "notion" and delivered and delivered[0]:
+                    linked = {"notion_page_id": delivered[0]}
                 if not delivered or (status != "recovered" and channel != "notion" and not linked):
                     continue
             self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)", (row["incident_id"], channel, version, canonical_json(dict(payload, **linked))))

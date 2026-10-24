@@ -6,31 +6,47 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications import MAX_BODY, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, slack_message, validate_config
+from notifications import MAX_BODY, NOTION_EVENT_PROPERTIES, NOTION_SESSION_PROPERTIES, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, slack_message, validate_config
 
 SOURCE = '12345678-1234-1234-1234-123456789abc'
 PAGE = 'abcdefab-1234-1234-1234-123456789abc'
 # Deliberately synthetic, no live endpoint or credential is used by these tests.
 CREDS = {'slack_webhook_url': 'https://hooks.slack.com/services/TEST/TEST/TEST', 'notion_token': 'synthetic_token_123'}
-PAYLOAD = {'incident_id': 'incident-1', 'site_id': 'store-1', 'device_mac': 'AA:BB:CC:DD:EE:FF',
+SESSION_SOURCE = '87654321-4321-4321-4321-cba987654321'
+SESSION_PAGE = 'fedcbafe-4321-4321-4321-cba987654321'
+PAYLOAD = {'incident_id': 'incident-1', 'site_id': 'store-1', 'device_mac': 'AA:BB:CC:DD:EE:FF', 'device_id': 'G2P5',
            'game_session_id': 'game-1', 'status': 'recovered', 'summary': '<!channel> test', 'occurred_at': '2026-10-24T00:00:00Z'}
 
 
-def schema(kind='rich_text', names=('Not started', 'In progress', 'Done')):
-    properties = {name: {'type': field_type, field_type: {}} for name, field_type in
-                  (('Name', 'title'), ('Incident ID', 'rich_text'), ('Summary', 'rich_text'), ('Status', kind))}
-    if kind == 'status':
-        properties['Status']['status']['options'] = [{'name': name} for name in names]
+def schema(names=('장애중', '복구됨', '미복구 종료'), relation=SESSION_SOURCE):
+    properties = {name: {'type': kind, kind: {}} for name, kind in NOTION_EVENT_PROPERTIES.items()}
+    properties['상태']['status']['options'] = [{'name': name} for name in names]
+    properties['게임 세션']['relation'] = {'data_source_id': relation} if relation else {}
     return {'status': 200, 'body': json.dumps({'object': 'data_source', 'id': SOURCE, 'properties': properties})}
 
 
+def session_schema(missing=None):
+    properties = {name: {'type': kind, kind: {}} for name, kind in NOTION_SESSION_PROPERTIES.items() if name != missing}
+    return {'status': 200, 'body': json.dumps({'object': 'data_source', 'id': SESSION_SOURCE, 'properties': properties})}
+
+
+def found(*ids):
+    return {'status': 200, 'body': json.dumps({'results': [{'id': page} for page in ids], 'has_more': False})}
+
+
+def created(page):
+    return {'status': 200, 'body': json.dumps({'id': page})}
+
+
 class NotificationsTests(unittest.TestCase):
-    def sender(self, responses, schema_response=None):
+    def sender(self, responses, schema_response=None, session_response=None):
         calls = []
         def transport(request, timeout):
             calls.append(request)
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 10)
+            if request['method'] == 'GET' and request['url'].endswith('/v1/data_sources/' + SESSION_SOURCE):
+                return session_schema() if session_response is None else session_response
             if request['method'] == 'GET' and '/v1/data_sources/' in request['url']:
                 return schema() if schema_response is None else schema_response
             return responses.pop(0)
@@ -212,32 +228,133 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertNotIn('secret token', repr(result))
 
-    def test_notion_create_uses_datasource_and_incident_filter(self):
-        sender, calls = self.sender([{'status': 200, 'body': '{"results":[],"has_more":false}'},
-                                    {'status': 200, 'body': json.dumps({'id': PAGE})}])
-        result = sender.send('notion', PAYLOAD)
-        self.assertEqual(result.remote_id, PAGE)
-        self.assertEqual(calls[1]['body']['filter']['rich_text']['equals'], 'incident-1')
-        self.assertEqual(calls[2]['body']['parent'], {'type': 'data_source_id', 'data_source_id': SOURCE})
-        self.assertEqual(calls[2]['body']['properties']['Status']['rich_text'][0]['text']['content'], 'recovered')
+    def test_notion_create_makes_session_then_links_event(self):
+        payload = dict(PAYLOAD, status='offline', opened_at='2026-10-24T19:58:00Z', occurred_at='2026-10-24T19:58:00Z', role='player')
+        sender, calls = self.sender([found(), found(), created(SESSION_PAGE), created(PAGE)])
+        result = sender.send('notion', payload)
+        self.assertEqual((result.state, result.remote_id), ('delivered', PAGE))
+        self.assertEqual([(c['method'], c['url'].rsplit('/v1/', 1)[1]) for c in calls], [
+            ('GET', 'data_sources/' + SOURCE), ('POST', f'data_sources/{SOURCE}/query'),
+            ('GET', 'data_sources/' + SESSION_SOURCE), ('POST', f'data_sources/{SESSION_SOURCE}/query'),
+            ('POST', 'pages'), ('POST', 'pages')])
+        self.assertEqual(calls[1]['body']['filter'], {'property': '사건 ID', 'rich_text': {'equals': 'incident-1'}})
+        lookup = calls[3]['body']
+        self.assertEqual(lookup['filter'], {'property': '세션 키', 'rich_text': {'equals': 'store-1/game-1'}})
+        self.assertEqual(lookup['page_size'], 100)
+        session = calls[4]['body']
+        self.assertEqual(session['parent'], {'type': 'data_source_id', 'data_source_id': SESSION_SOURCE})
+        self.assertEqual(session['properties']['장애']['title'][0]['text']['content'], 'store-1 · 10/25 04:58 · 세션 game-1')
+        self.assertEqual(session['properties']['처음 발생'], {'date': {'start': '2026-10-24T19:58:00+00:00'}})
+        event = calls[5]['body']
+        self.assertEqual(event['parent'], {'type': 'data_source_id', 'data_source_id': SOURCE})
+        props = event['properties']
+        self.assertEqual(props['게임 세션'], {'relation': [{'id': SESSION_PAGE}]})
+        self.assertEqual(props['상태'], {'status': {'name': '장애중'}})
+        self.assertEqual(props['이벤트']['title'][0]['text']['content'], 'G2P5 연결 끊김')
+        self.assertEqual((props['장치'], props['역할']), ({'select': {'name': 'G2P5'}}, {'select': {'name': 'player'}}))
+        self.assertNotIn('종료 시각', props)
+        self.assertEqual(props['요약']['rich_text'][0]['text']['content'], '<!channel> test')
 
-    def test_notion_update_does_not_create_duplicate(self):
-        sender, calls = self.sender([{'status': 200, 'body': json.dumps({'results': [{'id': PAGE}]})},
-                                    {'status': 200, 'body': json.dumps({'id': PAGE})}])
+    def test_notion_session_resolved_once_per_process(self):
+        # Two devices of one session drop together: the second must not query (and miss) the new page.
+        sender, calls = self.sender([found(), found(), created(SESSION_PAGE), created(PAGE), found(), created(PAGE)])
+        for incident in ('incident-1', 'incident-2'):
+            self.assertEqual(sender.send('notion', dict(PAYLOAD, incident_id=incident)).state, 'delivered')
+        session_writes = [c for c in calls if c['url'].endswith(f'{SESSION_SOURCE}/query') or
+                          (c['method'] == 'POST' and c['body'].get('parent', {}).get('data_source_id') == SESSION_SOURCE)]
+        self.assertEqual(len(session_writes), 2)
+        self.assertEqual(calls[-1]['body']['properties']['게임 세션'], {'relation': [{'id': SESSION_PAGE}]})
+
+    def test_notion_duplicate_sessions_resolve_deterministically(self):
+        older, newer = SESSION_PAGE, 'aaaaaaaa-4321-4321-4321-cba987654321'
+        rows = {'status': 200, 'body': json.dumps({'results': [
+            {'id': newer, 'created_time': '2026-10-24T19:59:00.000Z'},
+            {'id': older, 'created_time': '2026-10-24T19:58:00.000Z'}]})}
+        sender, calls = self.sender([found(), rows, created(PAGE)])
+        sender.send('notion', PAYLOAD)
+        self.assertEqual(calls[-1]['body']['properties']['게임 세션'], {'relation': [{'id': older}]})
+        tie = {'status': 200, 'body': json.dumps({'results': [
+            {'id': older, 'created_time': '2026-10-24T19:58:00.000Z'},
+            {'id': newer, 'created_time': '2026-10-24T19:58:00.000Z'}]})}
+        sender, calls = self.sender([found(), tie, created(PAGE)])
+        sender.send('notion', PAYLOAD)
+        self.assertEqual(calls[-1]['body']['properties']['게임 세션'], {'relation': [{'id': newer}]})
+
+    def test_notion_failed_event_create_forgets_cached_session(self):
+        sender, calls = self.sender([found(), found(SESSION_PAGE), {'status': 400}, found(), found(SESSION_PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', PAYLOAD).code, 'http_400')
         self.assertEqual(sender.send('notion', PAYLOAD).state, 'delivered')
-        self.assertEqual(calls[2]['method'], 'PATCH')
+        self.assertEqual(sum(c['url'].endswith(f'{SESSION_SOURCE}/query') for c in calls), 2)
+
+    def test_notion_followup_patches_linked_page_without_query(self):
+        sender, calls = self.sender([created(PAGE)])
+        self.assertEqual(sender.send('notion', dict(PAYLOAD, notion_page_id=PAGE)).state, 'delivered')
+        self.assertEqual([(c['method'], c['url'].rsplit('/v1/', 1)[1]) for c in calls],
+                         [('GET', 'data_sources/' + SOURCE), ('PATCH', 'pages/' + PAGE)])
+        sender, calls = self.sender([found(PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', dict(PAYLOAD, notion_page_id='not-a-uuid')).state, 'delivered')
+        self.assertEqual([c['method'] for c in calls], ['GET', 'POST', 'PATCH'])
+
+    def test_notion_create_needs_budget_reserve(self):
+        sender, calls = self.sender([found(), found(SESSION_PAGE)])
+        # Five calls at 1 s each leave 4 s, under the 5 s reserve, so the event create is never attempted.
+        with patch('notifications.time.monotonic', side_effect=[100, 101, 102, 103, 104, 106]):
+            result = sender.send('notion', PAYLOAD)
+        self.assertEqual((result.state, result.code), ('retryable', 'budget_exhausted'))
+        self.assertFalse(any(c['method'] == 'POST' and c['url'].endswith('/v1/pages') for c in calls))
+
+    def test_notion_conflict_is_retried(self):
+        sender, _ = self.sender([found(PAGE), {'status': 409}])
+        self.assertEqual(sender.send('notion', PAYLOAD).state, 'retryable')
+        sender, _ = self.sender([found(), found(), {'status': 409}])
+        self.assertEqual(sender.send('notion', PAYLOAD).state, 'retryable')
+
+    def test_notion_existing_session_is_reused(self):
+        sender, calls = self.sender([found(), found(SESSION_PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', PAYLOAD).state, 'delivered')
+        self.assertEqual([c['method'] for c in calls], ['GET', 'POST', 'GET', 'POST', 'POST'])
+        self.assertEqual(calls[4]['body']['properties']['게임 세션'], {'relation': [{'id': SESSION_PAGE}]})
+
+    def test_notion_update_does_not_create_duplicate_or_touch_session(self):
+        sender, calls = self.sender([found(PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', PAYLOAD).state, 'delivered')
+        self.assertEqual([c['method'] for c in calls], ['GET', 'POST', 'PATCH'])
         self.assertNotIn('parent', calls[2]['body'])
+        self.assertNotIn('게임 세션', calls[2]['body']['properties'])
 
     def test_notion_duplicate_records_fail_closed(self):
-        sender, calls = self.sender([{'status': 200, 'body': json.dumps({'results': [{'id': PAGE}, {'id': PAGE}]})}])
+        sender, calls = self.sender([found(PAGE, PAGE)])
         self.assertEqual(sender.send('notion', PAYLOAD).code, 'duplicate_incident_records')
         self.assertEqual(len(calls), 2)
 
     def test_notion_unknown_create_and_safe_query_retry(self):
-        sender, _ = self.sender([{'status': 200, 'body': '{"results":[]}'}, {'network_error': True}])
+        sender, _ = self.sender([found(), found(SESSION_PAGE), {'network_error': True}])
         self.assertEqual(sender.send('notion', PAYLOAD).state, 'unknown')
         sender, _ = self.sender([{'network_error': True}])
         self.assertEqual(sender.send('notion', PAYLOAD).state, 'retryable')
+
+    def test_notion_lost_session_create_retries_without_event_write(self):
+        for response in ({'network_error': True}, {'status': 503}, {'status': 200, 'body': 'not-json'}):
+            with self.subTest(response=response):
+                sender, calls = self.sender([found(), found(), response])
+                self.assertEqual(sender.send('notion', PAYLOAD).state, 'retryable')
+                self.assertEqual(len(calls), 5)
+
+    def test_notion_session_schema_checked_before_any_create(self):
+        for response in (session_schema(missing='세션 키'), {'status': 403}):
+            with self.subTest(response=response):
+                sender, calls = self.sender([found()], session_response=response)
+                self.assertEqual(sender.send('notion', PAYLOAD).state, 'permanent')
+                self.assertEqual([c['method'] for c in calls], ['GET', 'POST', 'GET'])
+
+    def test_notion_requires_game_session_and_sanitizes_select_names(self):
+        for missing in ('site_id', 'game_session_id'):
+            sender, calls = self.sender([])
+            self.assertEqual(sender.send('notion', dict(PAYLOAD, **{missing: ''})).code, 'missing_game_session')
+            self.assertEqual(calls, [])
+        sender, calls = self.sender([found(PAGE), created(PAGE)])
+        sender.send('notion', dict(PAYLOAD, device_id='G2,P5'))
+        self.assertEqual(calls[2]['body']['properties']['장치'], {'select': {'name': 'G2 P5'}})
 
     def test_http_child_fixed_host_headers_and_no_redirect(self):
         class Response:
@@ -260,8 +377,7 @@ class NotificationsTests(unittest.TestCase):
             connection.close.assert_called_once()
 
     def test_notion_update_timeout_is_retryable_but_create_is_unknown(self):
-        sender, _ = self.sender([{'status': 200, 'body': json.dumps({'results': [{'id': PAGE}]})},
-                                {'network_error': True}])
+        sender, _ = self.sender([found(PAGE), {'network_error': True}])
         self.assertEqual(sender.send('notion', PAYLOAD).state, 'retryable')
 
     def test_oversized_query_does_not_create(self):
@@ -300,39 +416,44 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(result.state, 'permanent')
         self.assertNotIn(CREDS['notion_token'], repr(result))
 
-    def test_native_status_create_update_all_transitions_and_raw_summary(self):
-        for status, name in (('offline', 'In progress'), ('recovered', 'Done'), ('monitoring_ended', 'Not started')):
-            for existing in (False, True):
-                with self.subTest(status=status, existing=existing):
-                    sender, calls = self.sender([
-                        {'status': 200, 'body': json.dumps({'results': [{'id': PAGE}] if existing else []})},
-                        {'status': 200, 'body': json.dumps({'id': PAGE})}], schema_response=schema('status'))
-                    result = sender.send('notion', dict(PAYLOAD, status=status))
-                    self.assertEqual(result.state, 'delivered')
-                    self.assertEqual([c['method'] for c in calls], ['GET', 'POST', 'PATCH' if existing else 'POST'])
-                    self.assertEqual(calls[0]['url'], 'https://api.notion.com/v1/data_sources/' + SOURCE)
-                    props = calls[2]['body']['properties']
-                    self.assertEqual(props['Status'], {'status': {'name': name}})
-                    self.assertIn('status: ' + status, props['Summary']['rich_text'][0]['text']['content'])
+    def test_all_transitions_set_status_and_outage_times(self):
+        payload = dict(PAYLOAD, opened_at='2026-10-24T00:00:00Z', occurred_at='2026-10-24T00:05:07.600Z', close_reason='reconnected')
+        for status, name in (('offline', '장애중'), ('recovered', '복구됨'), ('monitoring_ended', '미복구 종료')):
+            with self.subTest(status=status):
+                sender, calls = self.sender([found(PAGE), created(PAGE)])
+                self.assertEqual(sender.send('notion', dict(payload, status=status)).state, 'delivered')
+                props = calls[2]['body']['properties']
+                self.assertEqual(props['상태'], {'status': {'name': name}})
+                self.assertEqual(props['발생 시각'], {'date': {'start': '2026-10-24T00:00:00+00:00'}})
+                if status == 'offline':
+                    self.assertNotIn('종료 시각', props)
+                    self.assertNotIn('종료 사유', props)
+                    self.assertNotIn('지속(초)', props)
+                else:
+                    self.assertEqual(props['종료 시각'], {'date': {'start': '2026-10-24T00:05:07+00:00'}})
+                    self.assertEqual(props['종료 사유'], {'select': {'name': '장치 재연결'}})
+                    self.assertEqual(props['지속(초)'], {'number': 308})
 
-    def test_legacy_status_all_transitions(self):
-        for status in ('offline', 'recovered', 'monitoring_ended'):
-            sender, calls = self.sender([{'status': 200, 'body': '{"results":[]}'},
-                                        {'status': 200, 'body': json.dumps({'id': PAGE})}])
-            self.assertEqual(sender.send('notion', dict(PAYLOAD, status=status)).state, 'delivered')
-            self.assertEqual(calls[2]['body']['properties']['Status']['rich_text'][0]['text']['content'], status)
+    def test_legacy_payload_without_structured_fields(self):
+        # Queued before opened_at/role existed: only the offline event knows its start time.
+        sender, calls = self.sender([found(PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', PAYLOAD).state, 'delivered')
+        props = calls[2]['body']['properties']
+        self.assertNotIn('발생 시각', props)
+        self.assertNotIn('지속(초)', props)
+        self.assertNotIn('역할', props)
+        self.assertEqual(props['종료 시각'], {'date': {'start': '2026-10-24T00:00:00+00:00'}})
 
     def test_invalid_schema_never_queries_or_writes(self):
-        cases = [schema('select'), schema('status', ('Not started', 'In progress')),
-                 schema('status', ('Not started', 'In progress', 'Done', 'Done')),
-                 schema('status', ('Not started', 'in progress', 'Done'))]
-        for name in ('Name', 'Incident ID', 'Summary', 'Status'):
+        cases = [schema(('장애중', '복구됨')), schema(('장애중', '복구됨', '미복구 종료', '복구됨')),
+                 schema(('장애중', '복구됨', '미복구  종료')), schema(relation=None), schema(relation='not-a-uuid')]
+        for name in NOTION_EVENT_PROPERTIES:
             for missing in (False, True):
                 data = json.loads(schema()['body'])
                 if missing:
                     del data['properties'][name]
                 else:
-                    data['properties'][name] = {'type': 'number', 'number': {}}
+                    data['properties'][name] = {'type': 'checkbox', 'checkbox': {}}
                 cases.append({'status': 200, 'body': json.dumps(data)})
         for response in cases:
             with self.subTest(response=response):
@@ -350,8 +471,8 @@ class NotificationsTests(unittest.TestCase):
                  ({'status': 200, 'oversized': True}, 'permanent')]
         for body in ('not-json-secret', '[]', '{}', '{"object":"data_source","id":"bad"}'):
             cases.append(({'status': 200, 'body': body}, 'retryable'))
-        malformed = json.loads(schema('status')['body'])
-        malformed['properties']['Status']['status']['options'] = [None]
+        malformed = json.loads(schema()['body'])
+        malformed['properties']['상태']['status']['options'] = [None]
         cases.append(({'status': 200, 'body': json.dumps(malformed)}, 'retryable'))
         for response, expected in cases:
             with self.subTest(response=response):
@@ -368,8 +489,7 @@ class NotificationsTests(unittest.TestCase):
             self.assertEqual(calls, [])
 
     def test_schema_read_query_write_share_total_budget(self):
-        sender, calls = self.sender([{'status': 200, 'body': '{"results":[]}'},
-                                    {'status': 200, 'body': json.dumps({'id': PAGE})}])
+        sender, calls = self.sender([found(PAGE), created(PAGE)])
         timeouts = []
         transport = sender.transport
         def timed(request, timeout):
@@ -385,19 +505,20 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_read_only_schema_preflight_all_mapping_options_required(self):
-        for kind in ('status', 'rich_text'):
+        def preflight(event=None, session=None):
             calls = []
             def transport(request, timeout):
                 calls.append(request)
-                return schema(kind)
-            result = check_notion_schema(SOURCE, CREDS['notion_token'], transport=transport)
-            self.assertEqual(result.code, 'schema_valid_' + kind)
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0]['method'], 'GET')
-            self.assertIsNone(calls[0]['body'])
-        result = check_notion_schema(SOURCE, CREDS['notion_token'],
-                                    transport=lambda *_: schema('status', ('In progress', 'Done')))
-        self.assertEqual(result.code, 'notion_status_options_mismatch')
+                if request['url'].endswith(SESSION_SOURCE):
+                    return session or session_schema()
+                return event or schema()
+            return check_notion_schema(SOURCE, CREDS['notion_token'], transport=transport), calls
+        result, calls = preflight()
+        self.assertEqual(result.code, 'schema_valid_status')
+        self.assertEqual([(c['method'], c['url'][-36:], c['body']) for c in calls],
+                         [('GET', SOURCE, None), ('GET', SESSION_SOURCE, None)])
+        self.assertEqual(preflight(event=schema(('장애중', '복구됨')))[0].code, 'notion_status_options_mismatch')
+        self.assertEqual(preflight(session=session_schema(missing='처음 발생'))[0].code, 'notion_schema_mismatch')
         result = check_notion_schema(SOURCE, CREDS['notion_token'],
                                     transport=lambda *_: {'status': 403, 'body': CREDS['notion_token']})
         self.assertEqual(result.code, 'http_403')
