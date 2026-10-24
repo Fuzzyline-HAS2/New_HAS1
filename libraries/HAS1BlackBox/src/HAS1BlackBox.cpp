@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdio>
 #include <esp_core_dump.h>
+#include <esp_flash.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_partition.h>
@@ -144,23 +145,42 @@ void markFailure(uint32_t ticket) {
   uint32_t zero = 0;
   firstFailed.compare_exchange_strong(zero, ticket);
 }
+// Image checksum of the last coredump already logged. Survives panic and
+// software resets, not power loss: a kept image is re-logged at most once per
+// power cycle (as older), and a new crash always differs.
+constexpr uint32_t ReportedCoreMagic = 0x43524431; // "CRD1"
+RTC_NOINIT_ATTR uint32_t reportedCore[2];
 // One-shot task: summarize the coredump the panic handler saved in flash.
 // Parsing runs on its own stack (the writer's has little headroom) and the
-// image is kept for USB analysis, so an older crash is re-reported on later
-// boots with crashState 2. Records use the "prior." prefix: they describe a
-// previous boot and are not copied into the RTC evidence slots.
+// image is kept for USB analysis. Records use the "prior." prefix: they
+// describe a previous boot and are not copied into the RTC evidence slots.
 void coreDumpTask(void *) {
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
   esp_core_dump_summary_t summary{};
-  while (paused || xSemaphoreTake(flashGuard, pdMS_TO_TICKS(5)) != pdTRUE)
-    vTaskDelay(pdMS_TO_TICKS(5));
+  for (;;) {
+    while (paused || xSemaphoreTake(flashGuard, pdMS_TO_TICKS(5)) != pdTRUE)
+      vTaskDelay(pdMS_TO_TICKS(5));
+    if (!paused)
+      break;
+    xSemaphoreGive(flashGuard); // an OTA pause began after the check
+  }
+  size_t address = 0, size = 0;
+  uint32_t checksum = 0;
+  // The image ends with its CRC32, which differs for every crash instance.
   const bool found = esp_core_dump_image_check() == ESP_OK &&
-                     esp_core_dump_get_summary(&summary) == ESP_OK;
+                     esp_core_dump_get_summary(&summary) == ESP_OK &&
+                     esp_core_dump_image_get(&address, &size) == ESP_OK && size >= 4 &&
+                     esp_flash_read(nullptr, &checksum, uint32_t(address + size - 4), 4) == ESP_OK;
   xSemaphoreGive(flashGuard);
-  if (found) {
+  if (!found) {
+    crashState = 3;
+  } else {
     const esp_reset_reason_t reason = esp_reset_reason();
-    const bool fresh = reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT ||
-                       reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT;
+    const bool seen = reportedCore[0] == ReportedCoreMagic && reportedCore[1] == checksum;
+    // A task/interrupt watchdog panics with CONFIG_ESP_TASK_WDT_PANIC and so
+    // writes a dump; the RTC watchdog (ESP_RST_WDT) never does.
+    const bool fresh = !seen && (reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT ||
+                                 reason == ESP_RST_INT_WDT);
     size_t n = 0;
     for (; n + 1 < sizeof(crashTask) && summary.exc_task[n]; ++n) {
       const char c = summary.exc_task[n];
@@ -177,26 +197,34 @@ void coreDumpTask(void *) {
     crashPc = summary.exc_pc;
     crashCause = cause;
     crashState = fresh ? 1 : 2;
-    const uint32_t depth = summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth;
-    char text[28];
-    std::snprintf(text, sizeof(text), "prior.core:%s", crashTask);
-    // v[3]: backtrace depth | corrupted 0x100 | fresh 0x200 | reset reason << 16
-    blackbox.log(EventType::Crash, int32_t(summary.exc_pc), int32_t(cause), int32_t(vaddr),
-                 int32_t(depth | (summary.exc_bt_info.corrupted ? 0x100U : 0U) |
-                         (fresh ? 0x200U : 0U) | (uint32_t(reason) << 16)),
-                 text);
-    for (uint32_t i = 0; i < depth; i += 4) {
-      std::snprintf(text, sizeof(text), "prior.core.bt%lu", (unsigned long)(i / 4));
-      const uint32_t *bt = summary.exc_bt_info.bt;
-      blackbox.log(EventType::Crash, int32_t(bt[i]), int32_t(i + 1 < depth ? bt[i + 1] : 0),
-                   int32_t(i + 2 < depth ? bt[i + 2] : 0),
-                   int32_t(i + 3 < depth ? bt[i + 3] : 0), text);
+    if (!seen) { // not logged since the last power-on
+      const uint32_t depth = summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth;
+      char text[28];
+      std::snprintf(text, sizeof(text), "prior.core:%s", crashTask);
+      // v[3]: backtrace depth | corrupted 0x100 | fresh 0x200 | reset reason << 16
+      blackbox.log(EventType::Crash, int32_t(summary.exc_pc), int32_t(cause), int32_t(vaddr),
+                   int32_t(depth | (summary.exc_bt_info.corrupted ? 0x100U : 0U) |
+                           (fresh ? 0x200U : 0U) | (uint32_t(reason) << 16)),
+                   text);
+      for (uint32_t i = 0; i < depth; i += 4) {
+        std::snprintf(text, sizeof(text), "prior.core.bt%lu", (unsigned long)(i / 4));
+        const uint32_t *bt = summary.exc_bt_info.bt;
+        blackbox.log(EventType::Crash, int32_t(bt[i]), int32_t(i + 1 < depth ? bt[i + 1] : 0),
+                     int32_t(i + 2 < depth ? bt[i + 2] : 0),
+                     int32_t(i + 3 < depth ? bt[i + 3] : 0), text);
+      }
+      // Matches esp_app_get_elf_sha256() of the build that crashed; v[1] is
+      // the image checksum that identifies this crash instance.
+      std::snprintf(text, sizeof(text), "prior.core.elf:%.9s",
+                    reinterpret_cast<const char *>(summary.app_elf_sha256));
+      blackbox.log(EventType::Crash, int32_t(summary.core_dump_version), int32_t(checksum), 0,
+                   0, text);
+      reportedCore[0] = ReportedCoreMagic;
+      reportedCore[1] = checksum;
     }
-    // Matches esp_app_get_elf_sha256() of the build that crashed.
-    std::snprintf(text, sizeof(text), "prior.core.elf:%.9s",
-                  reinterpret_cast<const char *>(summary.app_elf_sha256));
-    blackbox.log(EventType::Crash, int32_t(summary.core_dump_version), 0, 0, 0, text);
   }
+#else
+  crashState = 3;
 #endif
   vTaskDelete(nullptr);
 }
@@ -353,12 +381,14 @@ void writer(void *) {
             int32_t(uxTaskGetStackHighWaterMark(nullptr)), "erase/lost/stack");
         if (summaryOk)
           summaryOk = ring.append(flashStats) == AppendResult::Persisted;
-        Record uploadStats = Record::make(
-            EventType::Logger, bootId, millis(), int32_t(uploaderStackFree.load()),
-            int32_t(uploaded.load()), int32_t(uploadFailures.load()), 0,
-            "upload/stack");
-        if (summaryOk)
+        // Flash-only builds create no uploader; skip the all-zero record.
+        if (summaryOk && broker[0]) {
+          Record uploadStats = Record::make(
+              EventType::Logger, bootId, millis(), int32_t(uploaderStackFree.load()),
+              int32_t(uploaded.load()), int32_t(uploadFailures.load()), 0,
+              "upload/stack");
           summaryOk = ring.append(uploadStats) == AppendResult::Persisted;
+        }
         if (!summaryOk) {
           ++flashErrors;
           degraded = true;

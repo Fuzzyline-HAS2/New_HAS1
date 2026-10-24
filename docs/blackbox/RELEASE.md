@@ -36,11 +36,20 @@ unchanged `HMAC_SECRET` secret and validation. No credentials appear in command
 arguments or public build configuration. The normal release assets and OTA
 structure remain unchanged.
 
-Every deploy also keeps `firmware-elf-<device>-v<version>-<run_id>` (the sketch
-`.ino.elf` and `.map`, 90 days) and prints the ELF SHA256 in the log, so device
-coredump PCs logged as `prior.core*` records can be decoded with addr2line. The
-ELF holds the same compiled-in secrets as `update.bin`; it is deliberately not a
-public Release asset. Download it only to decode a crash.
+Every deploy prints the ELF SHA256 in its log and, when the repository secret
+`ELF_ARCHIVE_KEY` is set, keeps `firmware-elf-<device>-v<version>-<run_id>`: the
+sketch `.ino.elf` and `.map` as `firmware-elf.tar.gz.enc` (AES-256-CBC, PBKDF2,
+200,000 iterations, 90 days). Without the secret a warning is logged and no ELF is
+kept. This repository is public, so any signed-in GitHub user can download Actions
+artifacts; the ELF holds the compiled-in secrets and full symbols, hence only the
+encrypted file is uploaded. Keep the key outside GitHub. To decode a crash:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:ELF_ARCHIVE_KEY -in firmware-elf.tar.gz.enc | tar -xz
+xtensa-esp32-elf-addr2line -pfiaC -e <sketch>.ino.elf <pc> <backtrace pcs...>
+```
+
+Match the ELF to a device crash by the 9 hex digits in its `prior.core.elf:` record.
 
 After deployment, verify one idle device produces a stored SQLite batch and ACK
 before rolling out broadly. Games/photo/OTA intentionally suppress upload;

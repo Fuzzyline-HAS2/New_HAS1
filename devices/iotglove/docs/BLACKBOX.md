@@ -27,8 +27,9 @@ have that 192 KiB partition table are accepted too: the ring uses the first 128 
 
 The remote console status (`s`, and on connect) prints `[blackbox] ready status
 partition flash_errors uploaded upload_failures dropped upload_stack` and
-`[crash] state task pc cause` from the coredump the last panic saved (state 1 =
-this reset, 2 = an older crash; decode per the library README). `status` is the library
+`[crash] state task pc cause` from the coredump the last panic saved (state 0 =
+not checked yet, 1 = this reset, 2 = an older crash, 3 = none; decode per the
+library README). `status` is the library
 `RingStatus` (1 ready, 2 bad size, 5 foreign data left untouched; see the library
 README) and `partition` the spiffs size in bytes, so a silent logger is diagnosable
 without USB.

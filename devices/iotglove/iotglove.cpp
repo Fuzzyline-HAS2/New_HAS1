@@ -304,7 +304,7 @@ void printDiagnostics(uint32_t now) {
       unsigned(bb.ready), unsigned(bb.ringStatus), (unsigned long)bb.partitionSize, (unsigned long)bb.flashErrors,
       (unsigned long)bb.uploaded, (unsigned long)bb.uploadFailures, (unsigned long)bb.dropped,
       (unsigned long)bb.uploaderStackFree);
-  remoteConsoleLogf("[crash] state=%u task=%.15s pc=0x%08lx cause=%lu (coredump saved by the last panic; 1=this reset, 2=older)\n",
+  remoteConsoleLogf("[crash] state=%u task=%.15s pc=0x%08lx cause=%lu (coredump: 0=not checked 1=this reset 2=older 3=none)\n",
       unsigned(bb.crashState), bb.crashTask[0] ? bb.crashTask : "-",
       (unsigned long)bb.crashPc, (unsigned long)bb.crashCause);
   diagnosticLog.append(

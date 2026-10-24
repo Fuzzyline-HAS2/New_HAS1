@@ -274,14 +274,30 @@ jobs:
 
       # 장치 coredump의 PC/백트레이스를 함수·줄로 바꾸려면 같은 빌드의 ELF가 필요하다.
       # 블랙박스 "prior.core.elf:<sha>"는 이 ELF의 app ELF SHA256 앞 9자리와 맞춘다.
-      # update.bin과 같은 비밀값이 들어 있으므로 Release가 아닌 Actions artifact로만 둔다.
-      - name: 크래시 해석용 ELF 보관
+      # 공개 저장소의 Actions artifact는 로그인한 누구나 받을 수 있고 ELF에는 컴파일된
+      # 비밀값과 심볼이 있으므로 ELF_ARCHIVE_KEY로 암호화한 파일만 올린다. 키가 없으면
+      # 경고만 남기고 보관하지 않는다(배포는 계속).
+      - name: 크래시 해석용 ELF 암호화
+        env:
+          ELF_ARCHIVE_KEY: ${{ secrets.ELF_ARCHIVE_KEY }}
+        run: |
+          if [ -z "$ELF_ARCHIVE_KEY" ]; then
+            echo "::warning::ELF_ARCHIVE_KEY secret is not set; firmware ELF was not archived."
+            exit 0
+          fi
+          cd "$RUNNER_TEMP/build-out"
+          tar -czf "$RUNNER_TEMP/firmware-elf.tar.gz" *.ino.elf *.ino.map
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ELF_ARCHIVE_KEY \
+            -in "$RUNNER_TEMP/firmware-elf.tar.gz" -out "$RUNNER_TEMP/firmware-elf.tar.gz.enc"
+          rm "$RUNNER_TEMP/firmware-elf.tar.gz"
+          echo "ELF_ARCHIVED=1" >> "$GITHUB_ENV"
+
+      - name: 암호화된 ELF 보관
+        if: env.ELF_ARCHIVED == '1'
         uses: actions/upload-artifact@v4
         with:
           name: firmware-elf-${{ inputs.device }}-v${{ steps.bump.outputs.NEW_VER }}-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/build-out/*.ino.elf
-            ${{ runner.temp }}/build-out/*.ino.map
+          path: ${{ runner.temp }}/firmware-elf.tar.gz.enc
           retention-days: 90
           if-no-files-found: error
 
