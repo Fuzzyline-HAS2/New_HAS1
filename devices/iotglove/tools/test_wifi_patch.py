@@ -92,7 +92,7 @@ int main() {
   HAS2_Wifi success; success.succeed = true;
   assert(success.TrySetupFixed("badland", "badland_shoot"));
   context(success);
-  assert(success.attempts == 1 && success.timeout == WIFI_CONNECT_TIMEOUT_MS);
+  assert(success.attempts == 1 && success.timeout == 10000);  // Fixed-SSID attempts outlast the 3s library default.
   assert(success.attemptSsid == badland_wifi_candidates[1].ssid);
   assert(success.attemptPassword == badland_wifi_candidates[1].password);
   assert(success.TrySetupFixed("badland", "badland_shoot") && success.attempts == 1);
