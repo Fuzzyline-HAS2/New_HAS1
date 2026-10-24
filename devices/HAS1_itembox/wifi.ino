@@ -21,8 +21,16 @@ SecureOTA ota(
     FIRMWARE_VER
 );
 
+// Loop 폴링 주기 — PRD대로 다른 HAS1 장치(wifi_timer 2000ms)와 같은 2초.
+// 주기 없이 돌리면 응답 직후 바로 다음 요청이 나가 박스당 초당 ~35회 서버를 두드린다.
+static const uint32_t WIFI_POLL_INTERVAL_MS = 2000;
+// 폴링 사이 송신·role 조회 큐 확인 간격 — 태그 반응·이벤트 송신은 기존처럼 즉시 처리
+static const TickType_t WIFI_QUEUE_IDLE_TICKS = pdMS_TO_TICKS(10);
+
 // ── Core 0 태스크 — 모든 has2wifi.* / ota.* 호출은 여기서만 ─────────────────
 void WifiTaskFunc(void*) {
+    bool polledOnce = false;
+    uint32_t lastPollMs = 0;
     for (;;) {
         // OTA 트리거 확인 — ota.check()는 블로킹, 성공 시 ESP.restart() 호출
         if (otaRequested) {
@@ -30,15 +38,24 @@ void WifiTaskFunc(void*) {
             ota.check();
         }
 
-        // MaintainWifi + HTTP GET shift_machine + (shift>=1이면 ReceiveMine 포함)
-        has2wifi.Loop();
+        // MaintainWifi + HTTP GET shift_machine + (shift>=1이면 ReceiveMine 포함) — 2초 주기.
+        // 재연결은 Loop() 안의 MaintainWifi만 하므로 링크가 끊기면 주기를 기다리지 않고
+        // 바로 폴링한다 — 끊긴 채로 아래 큐를 비우면 재시도 없는 Send/Receive가 유실된다.
+        uint32_t now = millis();
+        if (!polledOnce || WiFi.status() != WL_CONNECTED ||
+            now - lastPollMs >= WIFI_POLL_INTERVAL_MS) {
+            polledOnce = true;
+            lastPollMs = now;
+            has2wifi.Loop();
 
-        // shift_machine >= 1 → Loop()가 ReceiveMine() 호출 완료, my 갱신됨
-        // → 직렬화 후 Core1으로 전달
-        if ((int)shift_machine["shift_machine"] >= 1) {
-            char buf[512];
-            serializeJson(my, buf, sizeof(buf));
-            xQueueSend(receiveQueue, buf, 0);
+            // shift_machine >= 1 → Loop()가 ReceiveMine() 호출 완료, my 갱신됨
+            // → 직렬화 후 Core1으로 전달. 폴링한 회차에만 확인해야 직전 응답의
+            // shift_machine 값으로 같은 데이터를 큐에 반복해서 넣지 않는다.
+            if ((int)shift_machine["shift_machine"] >= 1) {
+                char buf[512];
+                serializeJson(my, buf, sizeof(buf));
+                xQueueSend(receiveQueue, buf, 0);
+            }
         }
 
         // role 조회 요청 처리 (Core1 ActivateState/PausedState/TaggerState에서 투입)
@@ -61,6 +78,8 @@ void WifiTaskFunc(void*) {
         SendMsg msg;
         while (xQueueReceive(sendQueue, &msg, 0))
             has2wifi.Send(msg.deviceName, msg.key, msg.value);
+
+        vTaskDelay(WIFI_QUEUE_IDLE_TICKS);
     }
 }
 
