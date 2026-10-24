@@ -15,3 +15,5 @@ struct NetworkRequest;
 namespace Has2BoundedTransport {struct Result;}
 void BlackBoxHttpDetail(const NetworkRequest &,const Has2BoundedTransport::Result &,bool stale,int discard);
 void BlackBoxRecoveryState(unsigned depth,bool mailbox,bool scanPending,bool driverFault,bool maintenance);
+
+void BlackBoxOfflineRecovery(int stage,uint32_t outageMs,uint32_t attempts,uint32_t detail);

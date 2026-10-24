@@ -7,7 +7,7 @@ import os, subprocess, tempfile
 ROOT=Path(__file__).resolve().parents[1]
 LIB=ROOT.parents[1]/'libraries/HAS2_Wifi'
 JSON=Path(os.environ['ARDUINOJSON_INCLUDE'])
-network=(ROOT/'network.ino').read_text().replace('#include <esp_task_wdt.h>','')
+network=(ROOT/'network.ino').read_text().replace('#include <esp_task_wdt.h>','').replace('#include <esp_attr.h>','').replace('#include <esp_system.h>','')
 contrib=(ROOT/'contrib.ino').read_text()
 wifi=(ROOT/'wifi.ino').read_text()
 actual_activate=wifi[wifi.index('void ActivateFunc(void)'):wifi.index('// game_state == \"ready\"')].replace('void ActivateFunc(void)', 'void ProductionActivateFunc(void)')
@@ -50,6 +50,7 @@ void BlackBoxRecoveryState(unsigned,bool,bool,bool,bool) {assert(depth==0);}
 void BlackBoxValidSnapshot(bool) {assert(depth==0);}
 void BlackBoxPollResult(bool) {assert(depth==0);}
 void BlackBoxBeforeRestart() {assert(depth==0);}
+void BlackBoxOfflineRecovery(int,uint32_t,uint32_t,uint32_t) {assert(depth==0);}
 uint32_t millis(){return now;}
 using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_TYPE=int;
 #define portMUX_INITIALIZER_UNLOCKED 0
@@ -59,6 +60,9 @@ using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_
 #define pdPASS 1
 #define ESP_OK 0
 #define WL_CONNECTED 3
+#define RTC_NOINIT_ATTR
+#define ESP_RST_SW 3
+int esp_reset_reason(){return 1;}
 #define FIRMWARE_VER 27
 struct Yield{};
 void vTaskDelay(uint32_t ms){assert(worker&&depth==0);now+=ms;throw Yield();}
@@ -67,7 +71,8 @@ int esp_task_wdt_add(void*){return failWatchdog?-1:0;}
 int esp_task_wdt_reset(){assert(worker||!worker);return 0;}
 int esp_task_wdt_delete(void*){return 0;}
 int xTaskCreatePinnedToCore(void(*)(void*),const char*,unsigned,void*,int,TaskHandle_t *task,int){*task=(void*)1;return pdPASS;}
-struct Wifi{int status(){return online?3:0;}}WiFi;
+static int wifiStatusCalls=0;static bool reconnectOnRecheck=false;
+struct Wifi{int status(){if(reconnectOnRecheck&&++wifiStatusCalls==2)online=true;return online?3:0;}}WiFi;
 struct Esp{void restart(){assert(!worker);++restarts;}}ESP;
 struct Ota{void check(){assert(!worker);++otaChecks;}}ota;
 JsonDocument my,tag,shift_machine;
@@ -186,6 +191,9 @@ static int used(){
  return count;
 }
 static void reset(){
+ networkRecoveryPolicy=GeneratorOfflineRecovery::Policy{};networkRecoveryHistory=GeneratorOfflineRecovery::Retained{};
+ GeneratorOfflineRecovery::seal(networkRecoveryHistory);networkRecoveryFence=false;networkRecoverySalt=networkRecoveryLastLog=0;networkRecoveryBlockedLogged=false;
+ reconnectOnRecheck=false;wifiStatusCalls=0;
  now=100;serverWireBypass=false;online=true;worker=false;failWatchdog=false;requestCalls=restarts=dataChanges=otaChecks=0;depth=0;
  batteryFinishDone=batteryFinishAudioPlayed=starterRfidNeedsValidation=false;displayedGaugeNeoCnt=-1;
  exerciseActualDataChanged=false;receiveMineOn=false;ptrCurrentMode=WaitFunc;cur.clear();gameTimerDeletes=0;
@@ -518,6 +526,72 @@ int main(){
  reply("{\"device_name\":\"TG\",\"game_state\":\"activate\",\"device_state\":\"battery_max\",\"left_generator\":\"3\"}");assert(NetworkApplySnapshot(nextReply,false));
  assert(ptrCurrentMode==BatteryFinish&&!serverWireBypass);BatteryFinish();assert(ptrCurrentMode==StarterActivate);
  pass("confirmed local battery transaction cannot swallow later authoritative tagger return");
+
+ // Prior association is sampled from the current link, not boot-ready game state.
+ reset();mainTurn();assert(networkRecoveryPolicy.hadConnection);
+ online=false;mainTurn();const uint32_t disconnectedAt=now;
+ now=disconnectedAt+29999;mainTurn();assert(restarts==0);
+ now=disconnectedAt+30000;mainTurn();assert(restarts==1&&networkRecoveryHistory.outageMs==30000);
+ pass("previously associated Wi-Fi recovers after 30 seconds of continuous outage");
+
+ reset();mainTurn();online=false;mainTurn();now+=29000;mainTurn();assert(restarts==0);
+ online=true;mainTurn();online=false;mainTurn();const uint32_t secondDropAt=now;
+ now=secondDropAt+29999;mainTurn();assert(restarts==0);
+ now=secondDropAt+30000;mainTurn();assert(restarts==1);
+ pass("brief reconnection restarts the continuous-outage timer while retaining per-boot prior association");
+
+ reset();GeneratorOfflineRecovery::requested(networkRecoveryHistory,30000);
+ assert(GeneratorOfflineRecovery::boot(networkRecoveryHistory,true));mainTurn();
+ online=false;mainTurn();const uint32_t retryAt=now;
+ now=retryAt+30000;mainTurn();assert(restarts==0);
+ now=retryAt+299999;mainTurn();assert(restarts==0);
+ now=retryAt+300000;mainTurn();assert(restarts==1&&networkRecoveryHistory.attempts==2);
+ pass("repeated recovery boot keeps storm backoff even after a brief online observation");
+
+ // Overall outage recovery: failed association returns normally, so neither
+ // task watchdog need fire; the independent outage timer must still act.
+ reset();online=false;mainTurn();
+ for(int i=0;i<17;++i){now+=10000;workerTurn();mainTurn();assert(restarts==0);}
+ now+=11000;workerTurn();mainTurn();assert(restarts==1&&networkRecoveryFence&&networkRecoveryHistory.pending==1);
+ assert(networkRecoveryHistory.attempts==1&&networkRecoveryHistory.outageMs>=180000);
+ pass("healthy worker returning offline still triggers a fenced restart after the sustained outage deadline");
+
+ reset();online=true;reply("{}",503);
+ for(int i=0;i<30;++i){GeneratorNetworkRequestPoll();workerTurn();mainTurn();now+=60000;}
+ assert(restarts==0);
+ pass("long HTTP server errors while Wi-Fi remains associated never trigger outage restarts");
+
+ reset();online=false;assert(!NetworkOfflineRecoveryService());now+=180000;
+ networkMaintenance=true;assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
+ networkMaintenance=false;networkDriverFault=true;assert(!NetworkOfflineRecoveryService()&&restarts==0);
+ networkDriverFault=false;networkSlots[0].occupied=true;networkSlots[0].active=true;
+ assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
+ networkSlots[0].occupied=false;networkMailboxReady=true;
+ assert(!NetworkOfflineRecoveryService()&&restarts==0);
+ networkMailboxReady=false;assert(NetworkOfflineRecoveryService()&&restarts==1);
+ pass("OTA, failed worker, active request and unread mailbox defer recovery without taking the dispatch fence");
+
+ reset();serverWireBypass=true;assert(!GeneratorNetworkComplete("repaired"));
+ failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();
+ assert(networkCompletionSent&&networkCompletionDispatched&&!networkCompletionConfirmed);
+ online=false;mainTurn();now+=180000;workerTurn();mainTurn();
+ assert(restarts==0&&!networkRecoveryFence&&sendCount()==1);
+ now+=3600000;workerTurn();mainTurn();assert(restarts==0&&sendCount()==1);
+ pass("possibly delivered completion retains read-only confirmation even through a long outage; no restart/replay");
+
+ reset();online=false;assert(!NetworkOfflineRecoveryService());now+=180000;
+ reconnectOnRecheck=true;wifiStatusCalls=0;
+ assert(!NetworkOfflineRecoveryService()&&online&&restarts==0&&!networkRecoveryFence&&networkRecoveryPolicy.hadConnection);
+ pass("live association recheck after fencing prevents a stale-offline restart");
+
+ reset();assert(GeneratorNetworkRequestPoll());networkRecoveryFence=true;workerTurn();
+ assert(requestCalls==0);assert(!GeneratorNetworkContribution("G1P1",1));
+ pass("restart fence prevents worker selection and new enqueue");
+
+ reset();serverWireBypass=false;assert(!GeneratorNetworkComplete("battery_max"));
+ duringWireSnapshot=[](){networkRecoveryFence=true;};workerTurn();mainTurn();
+ assert(requestCalls==0);
+ pass("restart fence published after preflight still wins at the final dispatch boundary");
  return 0;
 }
 '''

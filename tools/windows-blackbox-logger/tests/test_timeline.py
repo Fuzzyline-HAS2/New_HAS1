@@ -337,7 +337,7 @@ class StorageAndTimelineTests(unittest.TestCase):
         reopened = TelemetryStore(self.root / "telemetry.sqlite3")
         try:
             self.assertEqual(next(reopened.events("store-1")).to_dict(), original.to_dict())
-            self.assertEqual(reopened.db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(reopened.db.execute("PRAGMA user_version").fetchone()[0], 3)
             output = io.StringIO()
             self.assertEqual(export_timeline(reopened, output, "store-1", window_start=NOW, window_end=NOW), 1)
         finally:

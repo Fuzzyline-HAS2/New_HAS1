@@ -37,6 +37,19 @@
       "host": "127.0.0.1",
       "port": 5515,
       "source_id": "store-1-php-gateway"
+    },
+    "incidents": {
+      "enabled": false,
+      "database": "data/incidents.sqlite3",
+      "notifications": {
+        "enabled": false,
+        "slack": {
+          "enabled": false
+        },
+        "notion": {
+          "enabled": false
+        }
+      }
     }
   }
 }

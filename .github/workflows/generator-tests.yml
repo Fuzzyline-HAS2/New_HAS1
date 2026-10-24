@@ -61,6 +61,8 @@ jobs:
         env:
           ARDUINOJSON_INCLUDE: ${{ github.workspace }}/.testdeps/ArduinoJson/src
         run: python devices/HAS1_generator/tests/run_network_tests.py
+      - name: Bounded offline recovery policy and retained restart backoff
+        run: python devices/HAS1_generator/tests/run_offline_recovery_tests.py
       - name: DFPlayer ACK deadline and recovery with actual driver
         run: python devices/HAS1_generator/tests/run_dfplayer_tests.py
       - name: HTTP response deadlines and protocol handling

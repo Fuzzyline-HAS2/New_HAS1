@@ -52,14 +52,22 @@ int xQueueSend(Queue* q, const void* in, int) {
 int xQueueOverwrite(Queue* q, const void* in) {
   memcpy(q->data, in, q->size); q->full = true; return pdTRUE;
 }
+unsigned traceCalls = 0;
+GameEvent traced;
+int tracedStage = -1, tracedStatus = -1;
 namespace iotglove {
+void blackBoxButtonCommand(const GameEvent& event, int stage, int status) {
+  ++traceCalls; traced = event; tracedStage = stage; tracedStatus = status;
+}
 // PRODUCTION_FUNCTIONS
 }
 int main() {
-  GameEvent event; event.sequence = 42;
+  GameEvent event; event.sequence = 42; event.pressId = 0x80000001U; event.traceButton = true;
   assert(networkSubmit(event));
   cancelQueuedCommand();
   assert(!commandQueue.full && commandBusy.load());
+  assert(traceCalls == 1 && traced.sequence == 42 && traced.pressId == 0x80000001U && traced.traceButton);
+  assert(tracedStage == 6 && tracedStatus == int(GameResult::Status::Unknown));
   assert(!networkSubmit(event)); // No replay while the main loop owns token42.
   GameResult result;
   assert(networkPollResult(result));
@@ -67,6 +75,7 @@ int main() {
   assert(!commandBusy.load());
   assert(!networkPollResult(result));
   cancelQueuedCommand(); // Empty cancellation cannot create phantom results.
+  assert(traceCalls == 1);
   assert(!networkPollResult(result));
   event.sequence = 43;
   assert(networkSubmit(event));
@@ -74,6 +83,7 @@ int main() {
   GameEvent dequeued;
   assert(xQueueReceive(commands, &dequeued, 0));
   cancelQueuedCommand(); // An already-running mutation belongs to execute().
+  assert(traceCalls == 1 && dequeued.pressId == 0x80000001U && dequeued.traceButton);
   assert(!networkPollResult(result));
   GameResult unresolved{dequeued.sequence, GameResult::Status::Unknown};
   xQueueOverwrite(results, &unresolved);

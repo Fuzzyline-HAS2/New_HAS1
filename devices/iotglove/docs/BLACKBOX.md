@@ -4,7 +4,9 @@ The separate `libraries/HAS1BlackBox` logger records a bounded recent history on
 the existing `min_spiffs` data partition. TTGO production and training builds use
 the `iotglove` device identifier; `device.boot` v[3] distinguishes training.
 Beetle does not link or run the logger. Game HTTP, shared libraries, deployed OTA
-protocol, partition table and restart budgets are unchanged.
+protocol and partition table are unchanged. Current automatic restart pacing is
+documented in `NETWORK_RECOVERY.md`: the former three-restart cap has been
+replaced by continuing retries with backoff. Logging itself does not delay recovery.
 
 ## Configuration
 
@@ -79,9 +81,8 @@ only after an actual show. Motor GPIO updates are not gated. OTA sets a logger
 pause flag and retains the existing OTA calls and watchdog exemption. Already
 running flash operations cannot be preempted by that flag.
 
-Restart deadlines and budgets are not extended. The final restart record is
-best-effort RAM enqueue with **no wait** because the existing recovery deadline
-has already expired; it can be lost. Previously stored records survive according
+The final restart record is best-effort RAM enqueue with **no wait** once the
+current recovery policy, including any repeated-failure backoff, is due; it can be lost. Previously stored records survive according
 to the library's flash guarantees. RTC retained loss evidence is copied on warm
 boot but is not reliable after power removal.
 
@@ -137,8 +138,9 @@ when no later operation occurs.
 `ap:<12 hex BSSID>` records event ID, reason, channel (`INT32_MIN` when not provided),
 reserved. `wifi.ip.gw.mask` records IPv4, gateway, netmask canonical big-endian numeric uint32 values and IP-changed flag. Event payloads are copied directly, with no new scans.
 `worker.stall` gives phase/operation/operation-age/progress-age; `wifi.down.threshold`
-gives down-age/failures/was-up/reason. Existing restart budgets and OTA exemptions
-are unchanged; `http.force_reconnect` records the actual policy decision.
+gives down-age/failures/was-up/reason. These are initial fault-threshold records,
+not a promise of an immediate reboot during repeated-failure backoff. OTA
+exemptions remain; `http.force_reconnect` records the actual policy decision.
 
 `adc.min.age.n.batt_age` gives minimum **ADC pin mV** in the summary window, age of
 last raw ADC sample, sample count and age of the last valid calibrated battery
@@ -148,3 +150,113 @@ lit pixels, brightness8 and number of coalesced output changes; edges are limite
 to one record per 500 ms and periodic output summaries still record final state.
 These slow samples cannot prove or rule out a fast supply droop. No voltage sensor,
 ADC calibration or additional blocking ADC I/O was introduced.
+
+## Button and motor causal evidence (GPIO27)
+
+These observation fields do not change the 30 ms debouncer, role checks, game
+queue, haptic priorities, HTTP request order or OTA. Restart pacing is separately
+described in `NETWORK_RECOVERY.md`.
+`GameModel::buttonPressed` returns the disposition from its actual action branch;
+logging does not reimplement the conditions for accepting a press. The same
+boot-local `press_id` is copied into the accepted game event and button haptic.
+Zero means no known press identity. Join identifiers with the logger's device and
+boot ID, never across boots. All uint32 IDs use the existing signed int32 wire
+slots: reinterpret the bits as unsigned, including IDs with the high bit set.
+
+| Text subtype | v[0..3] |
+|---|---|
+| `button.edge` | press ID, debounced down (0/1), disposition, queued command sequence or 0 |
+| `button.context` | same press ID, packed state, queue depth after handling, current in-flight command sequence or 0 |
+| `button.suppressed` | untraced press count, window ms (10000), press trace limit (4), reserved |
+| `button.command` | press ID, command sequence, stage, stage-specific result |
+| `motor.applied` | actual applied GPIO level (0/1), active output source, verified active button-pattern press ID or 0, reserved |
+| `motor.suppressed` | unrecorded GPIO edge count, final applied level, window ms (1000), edge limit (16) |
+
+Button disposition: 0 release; 1 local Training/Academy acceptance (no button
+count write); 2 count command queued; 3 role/state does not accept this button
+(including a local non-ghost); 4 unsynchronized; 5 queue full. Queue full keeps the
+existing fail-closed resynchronization behavior. `button.context` packed state:
+phase in bits 0–7, role in 8–15, device state in 16–23, synchronized in bit 24,
+chip present in bit 25. Enums are in `game_state.h`. Unsynchronized context may
+contain the last observed server state; it is not a fresh server assertion.
+
+Command stages: 0 admitted to worker queue; 1 start authoritative precheck;
+2 enter count write; 3 write call returned; 4 start readback; 5 final worker result;
+6 queued command cancelled by connection invalidation. Result is -1 unless it
+applies: stage 3 is the existing write-return boolean (0/1), stages 5/6 use
+`GameResult::Status` (0 success, 1 unknown, 2 rejected). A write-return boolean is
+not independently sufficient to prove server application. A stage begin means
+execution reached the existing wrapper, not proof that TCP bytes were sent.
+Stage 0 is logged by the main task after nonblocking enqueue; the worker may
+record stage 1 before that record. Use IDs and stage meaning, not record receipt
+order, to reconstruct the command. Local queued events may also be discarded by
+existing state/session reconciliation before submission: `button.edge` without
+`button.command` alone is not evidence of a worker freeze. The low-level 3–5 HTTP
+operations and server transactions are not individually correlated by this change.
+
+Motor source: 0 no active/known pattern, 1 state pattern, 2 explicit event,
+3 operator command, 4 proximity, 5 forced level/mute. Only an active event with a
+verified press ID is attributed to the button; chip events have ID 0. Forced
+vibration, mute and proximity do not inherit a prior button ID. A pattern's OFF
+gap retains its active button ID. Once a pattern expires or is cancelled, OFF
+has ID 0: do not infer that a zero-ID OFF identifies which earlier pattern ended.
+The initial `motor.applied` is a baseline. Subsequent records represent GPIO
+edges, not every pattern/source change while the GPIO remains unchanged.
+
+The first four presses in each fixed 10-second window are traced; their releases
+and associated worker command stages are retained when reached, while gameplay
+continues for every accepted press. A held button at boot is not a new debounced
+press and has no trace identity until released and pressed again. Suppressed
+presses are counted and reported at the next loop after the window ends, even if
+chatter stops. Motor logging has a separate fixed-window limit of 16 physical
+transitions per second (including the initial baseline). Normal Found double
+pulses (150 ms ON / 100 ms OFF / 150 ms ON) preserve every edge independent of the
+older 500 ms `output.applied` gate. A motor event for an untraced press can still
+contain its valid ID; the missing button row is not evidence of a malformed ID.
+
+All producer calls only enqueue fixed numeric records. There is no new flash,
+MQTT, socket or ADC call in sensor or motor handling. This is a bounded trace,
+not a lossless recorder: the queue or flash ring can still drop/overwrite records,
+and power removal can lose RAM data. Burst admission is fixed-window, not a strict
+sliding-window rate. Added button activity reduces the approximate retention time
+quoted above. Voltage-droop diagnosis still needs external measurement; no ADC
+burst sampling or power-sag fix is included here.
+
+Host `button_trace_test.cpp` exercises accepted/ignored/unsynchronized/full queue,
+local Academy/Training events, automatic timer event attribution, debounce and
+release, noisy input admission and summaries, unsigned timer wrap, all double
+pulse edges, forced/muted/proximity source separation, and gameplay waveform/queue
+parity with observation metadata enabled or disabled. Physical voltage, device
+latency and abrupt-power-loss acceptance tests remain outstanding.
+
+
+## Continuing restart backoff
+
+The former three-attempt permanent stop and its watchdog-registration inhibition
+are removed. The main loop calls the production restart policy each iteration,
+independent of one-shot fault-log latches. First thresholds stay 20 seconds for a
+normal HTTP worker stall, 30 seconds for an established Wi-Fi link loss and 180
+seconds if this boot never connected. After prior recovery restarts, total wait
+from the observed continuous fault origin is `max(original threshold, 300/900/1800
+seconds)` plus 0–5 seconds jitter. The delay remains capped at 1800 seconds plus
+jitter after that; retry count itself does not disable recovery. Actual main-loop
+hangs retain their separate 60-second TWDT and cannot honor main-loop backoff.
+
+| Text subtype | v[0..3] |
+|---|---|
+| `restart.wait` | cause (2 worker/3 link), retained previous attempts, total wait ms, remaining ms at enqueue |
+| `restart.wait_cancel` | previous cause, retained previous attempts, elapsed ms since continuous fault origin, reserved |
+| `restart.backoff_reset` | previous attempts, healthy interval ms (600000), worker sequence, reserved |
+| `restart.request` | cause (1 server/2 worker/3 link), attempts including this request, reserved, reserved |
+
+Wait is logged once when scheduled, cancellation once when no fault qualifies or
+OTA protection starts. The origin may be moved earlier when another continuous
+fault source is observed, never later merely because the cause changes. A wait
+record's remaining value is a sample, not a live countdown. Backoff reset requires
+actual Wi-Fi connection and progressing worker for ten minutes; disconnected
+retry-loop progress alone does not reset it. Attempts and worker sequences are
+uint32 values carried in signed numeric wire slots. Attempt count saturates at
+`UINT32_MAX`; the older `LinkLossRecord.restartAttempt` field saturates at 255,
+meaning **at least 255**. RTC history magic changes to `GWR3`; this does not change
+the separate link-loss record layout or OTA protocol. No new flash persistence is
+introduced for restart accounting.

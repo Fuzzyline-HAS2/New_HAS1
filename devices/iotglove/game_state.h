@@ -46,10 +46,21 @@ struct ServerSnapshot {
   bool resetRequested = false;
 };
 
+// Observation only: decisions are returned by the same branch that acts on input.
+enum class ButtonDisposition : uint8_t {
+  Release = 0, LocalAccepted = 1, Queued = 2, NotGhost = 3, Unsynchronized = 4, QueueFull = 5
+};
+struct ButtonDecision {
+  ButtonDisposition disposition = ButtonDisposition::NotGhost;
+  uint32_t sequence = 0;
+};
+
 struct GameEvent {
   enum class Kind : uint8_t { SetCount };
   Kind kind = Kind::SetCount;
   uint32_t sequence = 0;
+  uint32_t pressId = 0;  // Boot-local diagnostic identity; never sent to the game server.
+  bool traceButton = false;
   char session[40] = {};
   char deviceName[24] = {};
   uint8_t value = 0;
@@ -59,6 +70,7 @@ struct Feedback {
   Display display = Display::Setting;
   uint8_t lit = 4;
   Haptic haptic = Haptic::None;
+  uint32_t hapticPressId = 0;
   // Semantic identity excludes physical chip and progress changes.
   Role role = Role::Neutral;
   DeviceState deviceState = DeviceState::Other;
@@ -87,7 +99,7 @@ class GameModel {
   void begin(bool chipPresent, uint32_t now);
   void applyServer(const ServerSnapshot& snapshot, uint32_t now);
   void chipChanged(bool present, uint32_t now);
-  void buttonPressed(uint32_t now);
+  ButtonDecision buttonPressed(uint32_t now, uint32_t pressId = 0, bool trace = false);
   void tick(uint32_t now);
   bool peekEvent(GameEvent& out) const;
   void consumeEvent();
@@ -97,6 +109,7 @@ class GameModel {
   bool chipPresent() const { return chipPresent_; }
   bool synchronized() const { return haveServer_ && !needsSync_; }
   bool queueOverflowed() const { return overflow_; }
+  size_t queuedEvents() const { return size_; }
   bool canUseLifeDevice() const;
   uint8_t count() const { return count_; }
   const ServerSnapshot& server() const { return server_; }
@@ -124,7 +137,8 @@ class GameModel {
   bool overflow_ = false;
   bool countPending_ = false;
   Haptic haptic_ = Haptic::None;
-  bool emit(GameEvent::Kind kind, uint8_t value = 0);
+  uint32_t hapticPressId_ = 0;
+  bool emit(GameEvent::Kind kind, uint8_t value = 0, uint32_t pressId = 0, bool trace = false);
   void resetQueue();
   bool activeGhost() const;
   bool academyPlayer() const;

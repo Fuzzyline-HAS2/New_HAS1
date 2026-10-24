@@ -164,6 +164,10 @@ try {
             if ($loaded.telemetry.database -ne (Join-Path $StateDir 'data\telemetry.sqlite3')) {
                 throw 'Retained telemetry configuration must use service data/telemetry.sqlite3.'
             }
+            if ($loaded.telemetry.PSObject.Properties.Name -contains 'incidents' -and
+                $loaded.telemetry.incidents.database -ne (Join-Path $StateDir 'data\incidents.sqlite3')) {
+                throw 'Retained incident configuration must use service data/incidents.sqlite3.'
+            }
         }
         $ca = $null
         if ($loaded.PSObject.Properties.Name -contains 'tls_ca' -and $loaded.tls_ca) {
@@ -194,7 +198,8 @@ try {
             foreach ($file in @('collector.py','storage.py','protocol.py','service_runtime.py',
                 'service_definition.py','requirements.txt','export.py','decode_flash.py',
                 'omada.py','telemetry.py','telemetry_runtime.py','timeline.py',
-                'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py')) {
+                'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py',
+                'incidents.py','notifications.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')) {
                 Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $AppDir $file) -Force
             }
             Copy-Item -LiteralPath $candidate -Destination $Wrapper -Force
@@ -205,6 +210,9 @@ try {
                 $loaded.database = $database
                 if ($loaded.PSObject.Properties.Name -contains 'telemetry' -and $null -ne $loaded.telemetry) {
                     $loaded.telemetry.database = Join-Path $StateDir 'data\telemetry.sqlite3'
+                    if ($loaded.telemetry.PSObject.Properties.Name -contains 'incidents') {
+                        $loaded.telemetry.incidents | Add-Member -NotePropertyName database -NotePropertyValue (Join-Path $StateDir 'data\incidents.sqlite3') -Force
+                    }
                 }
                 if ($ca) {
                     Copy-Item -LiteralPath $ca -Destination (Join-Path $StateDir 'broker-ca.pem') -Force
