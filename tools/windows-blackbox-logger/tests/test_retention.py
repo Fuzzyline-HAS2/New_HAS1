@@ -81,24 +81,26 @@ class RetentionTests(unittest.TestCase):
         gateway = self.save("game_gateway", "gateway_request_finished", at(days=10, minutes=5), GLOVE, "G2P7")
         other_request = self.save("game_server", "request_finish", at(days=10, minutes=5), OTHER, "G2P8")
         late_upload = self.save("device", "Progress", at(days=10, hours=-5), GLOVE)
+        pre_game = self.save("device", "Progress", at(days=10, hours=1), GLOVE)
         too_late = self.save("device", "Progress", at(days=10, hours=-8), GLOVE)
         other_device = self.save("device", "Progress", at(days=10, hours=-1), OTHER)
         expired = self.save("game_server", "device_offline", at(days=400), GLOVE, "G2P7")
 
         dry = prune(self.path, "store-1", incidents_path=self.incidents, now=NOW)
         self.assertEqual(dry["would_delete"], 7)
-        self.assertEqual(len(self.remaining()), 16)
+        self.assertEqual(len(self.remaining()), 17)
 
         result = self.apply(page=3)
         self.assertEqual(result["deleted"], 7)
-        self.assertEqual(self.remaining(), {recent, alarm, omada, crash, snapshot, own_request, by_key, gateway, late_upload})
+        self.assertEqual(self.remaining(), {recent, alarm, omada, crash, snapshot, own_request, by_key, gateway,
+                                            late_upload, pre_game})
         for gone in (old_request, old_snapshot, health, other_request, too_late, other_device, expired):
             self.assertNotIn(gone, self.remaining())
-        self.assertEqual(result["kept"]["incident"], 5)
+        self.assertEqual(result["kept"]["incident"], 6)
         self.assertEqual(result["kept_server_types"], {"device_offline": 1})
         # Every derived table loses exactly the same identities.
         for table in ("event_times", "telemetry_ingest"):
-            self.assertEqual(self.store.db.execute("SELECT count(*) FROM " + table).fetchone()[0], 9)
+            self.assertEqual(self.store.db.execute("SELECT count(*) FROM " + table).fetchone()[0], 10)
         with closing(sqlite3.connect(self.path)) as db:
             self.assertEqual(pruned_before(db, "store-1"), NOW - timedelta(days=7))
 

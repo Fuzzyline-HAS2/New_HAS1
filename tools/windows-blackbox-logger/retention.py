@@ -11,7 +11,8 @@ small and kept):
 - device Boot/Crash/Recovery/Lost/Dropped records;
 - incident evidence: monitoring snapshots during each incident (+/- 10 minutes),
   that device's server/gateway requests in the same window, and that device's MQTT
-  records received until six hours after it (gloves upload only after the game);
+  records received from two hours before until six hours after it (gloves upload
+  only outside games; the evidence summary reads both sides);
 - operator keep ranges added with ``keep`` (device records get the same 6 hours).
 
 The default is a dry run. ``--apply`` deletes in short transactions so the running
@@ -44,6 +45,9 @@ INCIDENT_APP_ID = 0x48424931
 FULL_DAYS = 7
 EVIDENCE_DAYS = 365
 WINDOW = timedelta(minutes=10)
+# Device records: gloves upload only outside games, so the evidence summary
+# (incident_evidence.py) reads uploads from before the game and up to 6 h after.
+DEVICE_BEFORE = timedelta(hours=2)
 DEVICE_UPLOAD = timedelta(hours=6)
 OPEN_INCIDENT_CAP = timedelta(hours=2)
 CLOCK_STEP_GUARD = timedelta(hours=24)
@@ -183,7 +187,7 @@ def windows(incidents, keeps, now, lower, upper):
         result.append(("snapshot", None, None, start, end))
         result.append(("server", mac, device_id, start, end))
         if mac:
-            result.append(("device", mac, None, start, end + DEVICE_UPLOAD))
+            result.append(("device", mac, None, opened - DEVICE_BEFORE, end + DEVICE_UPLOAD))
     for start, end, mac, device_id in keeps:
         start, end = parse_utc(start), parse_utc(end)
         result.append(("manual", mac, device_id, start, end))
