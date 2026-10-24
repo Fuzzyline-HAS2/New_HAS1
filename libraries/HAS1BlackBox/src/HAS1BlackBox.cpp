@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <esp_core_dump.h>
 #include <esp_flash.h>
 #include <esp_mac.h>
@@ -86,8 +87,6 @@ PartitionFlash flash;
 Ring ring(flash);
 std::atomic<bool> connected{false}, subscribed{false}, mqttTaskStarted{false};
 std::atomic<uint32_t> mqttStartTimeouts{0};
-// Only the uploader task encodes into it; static to keep it off that stack.
-char uploadPayload[PayloadCapacity];
 // Only MQTT task touches these reassembly fields; callbacks only copy to the
 // ACK queue.
 AckMessage assembling{};
@@ -95,8 +94,10 @@ size_t received = 0;
 char ackTopic[80]{};
 void mqttEvent(void *, esp_event_base_t, int32_t id, void *data) {
   auto *e = static_cast<esp_mqtt_event_handle_t>(data);
-  // Dispatched by mqtt_task itself, after it has set client->run.
-  if (id == MQTT_EVENT_BEFORE_CONNECT) { mqttTaskStarted = true; return; }
+  // Every event is dispatched by mqtt_task itself after it set client->run;
+  // BEFORE_CONNECT is the first.
+  mqttTaskStarted = true;
+  if (id == MQTT_EVENT_BEFORE_CONNECT) return;
   if (id == MQTT_EVENT_PUBLISHED) { publishedMessage = e->msg_id; return; }
   if (id == MQTT_EVENT_CONNECTED) {
     connected = true;
@@ -408,6 +409,12 @@ void writer(void *) {
   }
 }
 void uploader(void *) {
+  // Off this stack, and only allocated on builds that upload at all.
+  char *uploadPayload = static_cast<char *>(std::malloc(PayloadCapacity));
+  if (!uploadPayload) {
+    ++uploadFailures;
+    vTaskDelete(nullptr);
+  }
   char topic[80];
   std::snprintf(topic, sizeof(topic), "has1/blackbox/v1/%s/batch", mac);
   std::snprintf(ackTopic, sizeof(ackTopic), "has1/blackbox/v1/%s/ack", mac);
@@ -440,7 +447,7 @@ void uploader(void *) {
       nextAt = millis() + 5000;
       continue;
     }
-    size_t bytes = encodeBatch(batch, device, mac, uploadPayload, sizeof(uploadPayload));
+    size_t bytes = encodeBatch(batch, device, mac, uploadPayload, PayloadCapacity);
     if (!bytes) {
       ++uploadFailures;
       nextAt = millis() + 60000;
@@ -453,6 +460,8 @@ void uploader(void *) {
     cfg.credentials.authentication.password = password[0] ? password : nullptr;
     cfg.network.timeout_ms = 250;
     cfg.network.disable_auto_reconnect = true;
+    // stop() after a failed connect waits out half of this in WAIT_RECONNECT.
+    cfg.network.reconnect_timeout_ms = 100;
     cfg.task.priority = 1;
     cfg.task.stack_size = 4096;
     cfg.buffer.size = 512;
@@ -467,9 +476,11 @@ void uploader(void *) {
     received = 0;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
     if (client) {
-      esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqttEvent,
-                                     nullptr);
-      attempted = esp_mqtt_client_start(client) == ESP_OK;
+      // Without the handler no event would confirm the task start; never
+      // start one then.
+      attempted = esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqttEvent,
+                                                 nullptr) == ESP_OK &&
+                  esp_mqtt_client_start(client) == ESP_OK;
       bool subscribedRequest = false, sent = false, probed = false;
       int probeMessage = -1;
       uint32_t acknowledgedAt = 0;
@@ -523,20 +534,28 @@ void uploader(void *) {
       // once and destroy() free the client under the starting task: field
       // panics, LoadProhibited at esp_mqtt_task/run_event_loop with a NULL
       // client->config. Wait for the task's first event; then stop() waits for
-      // it to finish. The bound only covers a task that exits before that
-      // event (transport allocation failure), which has already stopped.
+      // it to finish.
       if (attempted) {
         const uint32_t waitFrom = millis();
         while (!mqttTaskStarted && uint32_t(millis() - waitFrom) < 10000)
           vTaskDelay(pdMS_TO_TICKS(5));
-        if (!mqttTaskStarted)
-          ++mqttStartTimeouts;
       }
-      // SDK stop/destroy can exceed the session target. Only this task waits;
-      // neither device task nor OTA ever waits for it. Stop discards bounded
-      // RAM outbox.
-      esp_mqtt_client_stop(client);
-      esp_mqtt_client_destroy(client);
+      if (attempted && !mqttTaskStarted) {
+        // Either starved or exited early (transport allocation failure); it
+        // cannot be told apart, so never free a client a task may still use.
+        // Leaking is bounded: the uploader stops after three.
+        if (++mqttStartTimeouts >= 3) {
+          ++uploadFailures;
+          for (;;)
+            vTaskDelay(pdMS_TO_TICKS(60000));
+        }
+      } else {
+        // SDK stop/destroy can exceed the session target. Only this task
+        // waits; neither device task nor OTA ever waits for it. Stop discards
+        // bounded RAM outbox.
+        esp_mqtt_client_stop(client);
+        esp_mqtt_client_destroy(client);
+      }
     }
     // Lifetime minimum: covers the payload buffer and publish/subscribe paths.
     uploaderStackFree = uint32_t(uxTaskGetStackHighWaterMark(nullptr));
@@ -628,7 +647,7 @@ bool BlackBox::begin(const Config &c) {
   }
   if (broker[0] &&
       // 8 KiB with the 4 KiB payload on the stack left 200-360 bytes in the
-      // field; with it static, 6 KiB leaves about 2 KiB.
+      // field; with it on the heap, 6 KiB leaves about 2 KiB.
       xTaskCreate(uploader, "bb-upload", 6144, nullptr, 1, nullptr) != pdPASS)
     ++uploadFailures;
   const auto reset=esp_reset_reason();
