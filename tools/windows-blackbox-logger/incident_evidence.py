@@ -260,7 +260,15 @@ def summarize(raw, incident, now, limit=MAX_ROWS):
     pending = bool(incident["mac"]) and _first_upload_since_outage(raw, incident) is None
     return {"rows": [[str(cell)[:300] for cell in row] for row in rows[:limit]], "truncated": cut or len(rows) > limit,
             "device_pending": pending, "collected_utc": now, "incident_id": incident["incident_id"],
-            "highlights": _highlights(device, pending)}
+            "highlights": _safe_highlights(device, pending)}
+
+
+def _safe_highlights(events, pending):
+    # The chat one-liner is optional; it must never cost the Notion table itself.
+    try:
+        return _highlights(events, pending)
+    except Exception:
+        return []
 
 
 def _wifi_reason(event):
@@ -269,9 +277,11 @@ def _wifi_reason(event):
     if event.get("event_type") != "WifiEvent" or not isinstance(values, list) or len(values) != 4 \
             or not all(type(v) is int for v in values):
         return None
-    decoded = named_values(SimpleNamespace(kind=EVENT_KINDS["WifiEvent"], text=fields.get("text") or "", values=tuple(values)))
+    text = fields["text"] if isinstance(fields.get("text"), str) else ""
+    decoded = named_values(SimpleNamespace(kind=EVENT_KINDS["WifiEvent"], text=text, values=tuple(values)))
     item = decoded.get("fields", {}).get("disconnect_reason") or {}
-    return _value("disconnect_reason", item) if item.get("value") else None
+    # Codes outside WIFI_REASONS come back as bare ints; the highlight is always text.
+    return str(_value("disconnect_reason", item)) if item.get("value") else None
 
 
 def _highlights(events, pending):
