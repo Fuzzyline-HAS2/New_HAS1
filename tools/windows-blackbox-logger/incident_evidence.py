@@ -22,6 +22,7 @@ GIVE_UP_SECONDS = 6 * 3600  # a device that never returns gets server/Omada evid
 PADDING = timedelta(seconds=60)
 
 EVENT_KINDS = {name: kind for kind, name in EVENT_NAMES.items()}
+UNAVAILABLE = -2147483648
 DEVICE_LABELS = {"Boot": "부팅", "Crash": "크래시", "WifiEvent": "와이파이 이벤트", "WifiTry": "와이파이 재시도",
                  "WifiSummary": "와이파이 요약", "HttpSummary": "HTTP 요약", "Recovery": "복구 동작",
                  "State": "상태", "Health": "상태 점검", "Progress": "진행", "Peer": "보조 장치",
@@ -98,7 +99,10 @@ def describe_device(event):
         shown = [(name, _value(name, item)) for name, item in decoded.get("fields", {}).items()]
         parts += [f"{FIELD_LABELS.get(name, name)} {value}" for name, value in shown if value not in (None, "")]
         if decoded.get("schema") == "unknown":
-            parts.append("값 " + " ".join(str(v) for v in values))
+            # INT32_MIN is the firmware's "no value" marker, not a reading.
+            shown_values = [str(v) for v in values if v != UNAVAILABLE]
+            if shown_values:
+                parts.append("값 " + " ".join(shown_values))
     return " · ".join(str(part) for part in parts)
 
 
@@ -130,10 +134,12 @@ def _device_rows(events):
         fields = first.get("fields") or {}
         uptime, received = _uptime(fields.get("uptime_ms")), _kst(first.get("observed_utc"))
         if last is not None:
-            last_fields = last.get("fields") or {}
-            uptime += "~" + _uptime(last_fields.get("uptime_ms"))
-            if _kst(last.get("observed_utc")) != received:
-                received += "~" + _kst(last.get("observed_utc"))
+            # A range only when its ends differ; several changes within one second show one time.
+            last_uptime, last_received = _uptime((last.get("fields") or {}).get("uptime_ms")), _kst(last.get("observed_utc"))
+            if last_uptime != uptime:
+                uptime += "~" + last_uptime
+            if last_received != received:
+                received += "~" + last_received
         return f"부팅 {boots[fields.get('boot')]} · 켜진 뒤 {uptime} (수신 {received})"
 
     def flush():
