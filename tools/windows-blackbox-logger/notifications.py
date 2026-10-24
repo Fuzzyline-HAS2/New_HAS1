@@ -45,6 +45,8 @@ class DeliveryResult:
     code: str
     retry_after: int = 0
     remote_id: str | None = None
+    # The game-session object this delivery wrote under: Slack card ts or Notion session page id.
+    parent_id: str | None = None
 
 
 def _uuid(value):
@@ -366,12 +368,99 @@ def slack_message(payload):
     return {"text": _fallback(title), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
 
 
-def slack_reply(payload):
-    """Short thread reply under the original outage card; the card itself carries the details."""
-    outage = _outage(payload)
-    text = " · ".join(part for part in ("🟢 복구됨", outage and outage + " 만에", _close_reason(payload)) if part)
-    return {"text": _fallback(text), "blocks": [{"type": "section", "text": {"type": "plain_text", "text": text}}],
-            "unfurl_links": False, "unfurl_media": False}
+SESSION_STATES = {"open": "🔴", "recovered": "🟢", "closed": "⚪"}
+SESSION_LINES = 12
+
+
+def _notion_link(page_id, label):
+    # The only mrkdwn the collector sends: a fixed label and a URL built from a validated UUID.
+    try:
+        return {"type": "mrkdwn", "text": f"<https://www.notion.so/{_uuid(page_id).replace('-', '')}|{label}>"}
+    except ValueError:
+        return None
+
+
+def _session_item_line(item):
+    device = _text(item.get("device_id"), 40) or "알 수 없는 장치"
+    opened, updated = _parse_time(item.get("opened_utc")), _parse_time(item.get("updated_utc"))
+    line = f"{SESSION_STATES.get(item.get('state'), '❔')} {device} · {_kst(item.get('opened_utc')) or '?'} 끊김"
+    if item.get("state") == "recovered":
+        outage = _duration((updated - opened).total_seconds()) if opened and updated else None
+        return line + (f" → {outage} 만에 복구" if outage else " → 복구")
+    return line + (" → 미복구 종료" if item.get("state") == "closed" else " → 장애중")
+
+
+def _session_counts(session):
+    """(open, recovered, unrecovered) over the whole session, not just the listed lines."""
+    counts = session.get("counts")
+    if not isinstance(counts, dict):
+        states = [item.get("state") for item in session.get("incidents") or [] if isinstance(item, dict)]
+        counts = {state: states.count(state) for state in set(states)}
+    def number(state):
+        value = counts.get(state, 0)
+        return value if type(value) is int and value >= 0 else 0
+    return number("open"), number("recovered"), number("closed")
+
+
+def slack_session_card(payload, session):
+    """One incident card per game session, edited in place like PagerDuty/Opsgenie alerts.
+
+    plain_text only, except the Notion link whose URL and label the collector builds itself.
+    """
+    items = [item for item in session.get("incidents") or [] if isinstance(item, dict)]
+    open_count, recovered, unrecovered = _session_counts(session)
+    total = open_count + recovered + unrecovered
+    site = _text(session.get("site_id") or payload.get("site_id"), 60)
+    game = _text(session.get("session_id") or payload.get("game_session_id"), 80)
+    if open_count:
+        overall = f"🔴 장애 진행 중 {open_count}건"
+    elif unrecovered:
+        overall = "🟠 미복구 종료 포함"
+    else:
+        overall = "🟢 모두 복구"
+    title = " · ".join(part for part in (overall, f"세션 {game}" if game else None, site) if part)
+    opened = [stamp for stamp in (_parse_time(item.get("opened_utc")) for item in items) if stamp]
+    counts = f"{total}건 (복구 {recovered} · 미복구 {unrecovered} · 진행 중 {open_count})"
+    # Same automatic rule as the Notion incident DB; SEV1 (game stopped, refund) is set by people.
+    severity = "SEV2 · 미복구 있음" if unrecovered else "SEV3 · 자동 판정"
+    fields = [("매장", site), ("게임 세션", game), ("처음 끊김", _kst(min(opened).isoformat()) if opened else None),
+              ("장애", counts), ("심각도", severity)]
+    # The collector lists unresolved incidents first, then the newest.
+    lines = [_session_item_line(item) for item in items[:SESSION_LINES]]
+    if total > len(lines):
+        lines.append(f"외 {total - len(lines)}건")
+    context = [{"type": "plain_text", "text": "원인은 아직 확정되지 않았습니다. 장치별 경과는 스레드에 있습니다."}]
+    link = _notion_link(session.get("notion_page"), "📒 노션 장애 페이지")
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
+              {"type": "section", "fields": [{"type": "plain_text", "text": f"{label}\n{value}"} for label, value in fields if value]},
+              {"type": "section", "text": {"type": "plain_text", "text": ("\n".join(lines) or "장치 정보 없음")[:2900]}},
+              {"type": "context", "elements": ([link] if link else []) + context}]
+    return {"text": _fallback(title), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+
+
+def slack_event_reply(payload, session):
+    """One device event in the session card's thread."""
+    status, device = payload.get("status"), _text(payload.get("device_id"), 60) or "알 수 없는 장치"
+    try:
+        gap = _duration(int(payload.get("gap_ms")) / 1000)
+    except (ValueError, TypeError, OverflowError):
+        gap = None
+    if status == "offline":
+        role = _text(payload.get("role"), 40)
+        parts = [f"🔴 {device} 연결 끊김", _kst(payload.get("last_seen_utc")) and "마지막 수신 " + _kst(payload.get("last_seen_utc")),
+                 gap and "무응답 " + gap, role and role != "unknown" and "역할 " + role]
+    elif status == "recovered":
+        outage = _outage(payload)
+        parts = [f"🟢 {device} 복구", outage and outage + " 만에", _close_reason(payload)]
+    else:
+        parts = [f"⚪ {device} 미복구 종료", _close_reason(payload),
+                 _kst(payload.get("opened_at")) and "끊긴 시각 " + _kst(payload.get("opened_at"))]
+    text = " · ".join(part for part in parts if part)
+    blocks = [{"type": "section", "text": {"type": "plain_text", "text": text}}]
+    link = _notion_link(session.get("event_page"), "📒 노션 이벤트")
+    if link:
+        blocks.append({"type": "context", "elements": [link]})
+    return {"text": _fallback(text), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
 
 
 def _slack_api(call, token, method, body):
@@ -398,31 +487,51 @@ def _slack_api(call, token, method, body):
     return data, None
 
 
-def _send_slack_bot(call, token, channel_id, payload):
-    message = slack_message(payload)
-    def post():
-        data, failure = _slack_api(call, token, "chat.postMessage", dict(message, channel=channel_id))
+def _send_slack_session(call, token, channel_id, payload):
+    """Edit (or open) the game session's card; only an unrecovered device is also posted to its thread.
+
+    Drops and recoveries live on the card, so the thread stays free for people working the incident.
+    """
+    session = payload.get("slack_session")
+    if not isinstance(session, dict):
+        # Without the collector's session context, the card covers this event alone.
+        state = {"offline": "open", "recovered": "recovered"}.get(payload.get("status"), "closed")
+        session = {"incidents": [{"device_id": payload.get("device_id"), "state": state,
+                                  "opened_utc": payload.get("opened_at") or payload.get("occurred_at"),
+                                  "updated_utc": payload.get("occurred_at")}]}
+    card = slack_session_card(payload, session)
+    # A pre-upgrade follow-up still carries its per-device card: take it over as the session card.
+    parent = next((ts for ts in (session.get("ts"), payload.get("slack_ts")) if isinstance(ts, str) and SLACK_TS.fullmatch(ts)), None)
+    edited = False
+    if parent:
+        # Edit first: a failed edit retries without leaving a duplicate reply.
+        _, failure = _slack_api(call, token, "chat.update", {"channel": channel_id, "ts": parent,
+                                "text": card["text"], "blocks": card["blocks"]})
+        if failure and failure.code not in SLACK_ORIGINAL_GONE:
+            return failure
+        if failure:
+            parent = None  # Card deleted or no longer editable: open a new one for the session.
+        else:
+            edited = True
+    if not parent:
+        data, failure = _slack_api(call, token, "chat.postMessage", dict(card, channel=channel_id))
         if failure:
             return failure
-        ts = data.get("ts")
-        if not isinstance(ts, str) or not SLACK_TS.fullmatch(ts):
+        parent = data.get("ts")
+        if not isinstance(parent, str) or not SLACK_TS.fullmatch(parent):
             return DeliveryResult("unknown", "invalid_write_response")
-        return DeliveryResult("delivered", "ok", remote_id=ts)
-    original = payload.get("slack_ts")
-    if not isinstance(original, str) or not SLACK_TS.fullmatch(original):
-        return post()
-    # Edit the original card first: a failed edit retries without leaving a duplicate reply.
-    _, failure = _slack_api(call, token, "chat.update", {"channel": channel_id, "ts": original,
-                            "text": message["text"], "blocks": message["blocks"]})
-    if failure and failure.code in SLACK_ORIGINAL_GONE:
-        return post()  # Card deleted or no longer editable: announce the outcome on its own.
+    open_count, recovered, unrecovered = _session_counts(session)
+    # Edits notify nobody. Thread and surface what needs a person: a device unrecovered at game end,
+    # or a new drop on a card that had settled (everything else had already ended).
+    reopened = payload.get("status") == "offline" and edited and open_count == 1 and recovered + unrecovered > 0
+    if payload.get("status") != "monitoring_ended" and not reopened:
+        return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
+    reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent, reply_broadcast=True)
+    _, failure = _slack_api(call, token, "chat.postMessage", reply)
     if failure:
-        return failure
-    if payload.get("status") == "recovered":
-        _, failure = _slack_api(call, token, "chat.postMessage", dict(slack_reply(payload), channel=channel_id, thread_ts=original))
-        if failure:
-            return failure
-    return DeliveryResult("delivered", "ok", remote_id=original)
+        # The card exists either way; keep its ts so the retry threads under it.
+        return DeliveryResult(failure.state, failure.code, failure.retry_after, parent, parent)
+    return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
 
 
 def _rich(text):
@@ -617,7 +726,7 @@ class NotificationSender:
                     token = credentials.get("slack_bot_token")
                     if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
                         return DeliveryResult("permanent", "invalid_credentials")
-                    return _send_slack_bot(call, token, channel_id, payload)
+                    return _send_slack_session(call, token, channel_id, payload)
                 if payload.get("slack_ts") and payload.get("status") != "recovered":
                     # Queued while in bot mode; webhooks never announce monitoring_ended.
                     return DeliveryResult("permanent", "webhook_mode_skips_monitoring_end")
@@ -654,7 +763,7 @@ class NotificationSender:
                 if failure:
                     return failure
             properties = _event_properties(payload, status, incident_id)
-            session_key = None
+            session_key = session_page = None
             if page_id:
                 # The session relation was set when the page was created; updates leave it alone.
                 response = call("https://api.notion.com/v1/pages/" + page_id, "PATCH", {"properties": properties}, token)
@@ -683,7 +792,7 @@ class NotificationSender:
                 remote_id = _uuid(json.loads(response.get("body", ""))["id"])
             except (ValueError, KeyError, TypeError):
                 return DeliveryResult("unknown", "invalid_write_response")
-            return DeliveryResult("delivered", "ok", remote_id=remote_id)
+            return DeliveryResult("delivered", "ok", remote_id=remote_id, parent_id=session_page)
         except (ValueError, TypeError, KeyError, OSError, RuntimeError):
             # Never include exception text: it can contain a webhook URL or credential.
             return DeliveryResult("permanent", "configuration_or_credentials")
