@@ -245,6 +245,18 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual((attempts,state,next_attempt),(0,"pending",160))
         self.assertIsNone(self.claim())
 
+    def test_slack_evidence_notice_only_for_announced_devices_and_once(self):
+        self.process(event())
+        self.store.queue_slack_evidence("incident-1",["x"])
+        self.assertNotIn((3,"slack","pending"),self.states())  # Slack never announced it yet
+        while (row := self.claim()):
+            self.delivered(row)
+        for _ in range(2):
+            self.store.queue_slack_evidence("incident-1",["재부팅 1번",7,"a"*200])
+        notices = self.store.db.execute("SELECT payload FROM incident_outbox WHERE destination='slack' AND version=3").fetchall()
+        self.assertEqual(len(notices),1)
+        self.assertEqual(json.loads(notices[0][0]),{"incident_id":"incident-1","evidence_notice":True,"device_id":"glove-1","highlights":["재부팅 1번","a"*120]})
+
     def test_session_links_feed_the_slack_session_card(self):
         card, session_page, event_page = "1700000000.000100", "fedcbafe-4321-4321-4321-cba987654321", "abcdefab-1234-1234-1234-123456789abc"
         self.process(event())
@@ -426,6 +438,49 @@ class RuntimeTests(unittest.TestCase):
                 finally:
                     if not stopped:
                         runtime.stop()  # release incidents.db before the folder is removed
+                    raw.close()
+
+    def test_bot_mode_threads_the_blackbox_link_after_notion_has_it(self):
+        page="abcdefab-1234-1234-1234-123456789abc"
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder)
+            telemetry_path=folder/"telemetry.db"
+            raw=TelemetryStore(telemetry_path)
+            opened=(parse_utc(utc_now())-timedelta(seconds=300)).isoformat()
+            raw.save(event(seq=1,when=utc_now(),active_incidents=[{"device_id":"glove-1","mac":MAC,"incident_id":"incident-1","opened_utc":opened}]))
+            settings={"database":str(folder/"incidents.db"),"notifications":{"enabled":True,"notion":{"enabled":True},
+                      "slack":{"enabled":True,"channel_id":"C0123456789"}}}
+            runtime=IncidentRuntime(settings,telemetry_database=telemetry_path,site_id="store-1",source_id="server-1")
+            calls=[]
+            def send(channel,payload):
+                calls.append((channel,payload))
+                return SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=page)
+            def wait_for(count):
+                end=time.monotonic()+15
+                while time.monotonic()<end and len(calls)<count:
+                    time.sleep(.01)
+                self.assertEqual(len(calls),count)
+            with patch("notifications.NotificationSender") as sender:
+                sender.return_value.send.side_effect=send
+                runtime.start()
+                stopped=False
+                try:
+                    wait_for(2)
+                    self.assertEqual([channel for channel,_ in calls],["notion","slack"])  # Notion first in bot mode
+                    closed=(parse_utc(utc_now())-timedelta(seconds=200)).isoformat()
+                    uploaded=(parse_utc(utc_now())-timedelta(seconds=150)).isoformat()
+                    raw.save(Event(site_id="store-1",source="device",source_id=MAC,event_id="r1:9",observed_utc=uploaded,clock_quality="uptime_only",mac=MAC,event_type="WifiEvent",fields={"ring":"r1","seq":9,"boot":3,"uptime_ms":5000,"values":[21,200,6,0],"text":"ap:112233445566"}))
+                    raw.save(event("alarm_cleared",seq=2,when=closed))
+                    raw.save(event(seq=3,when=utc_now(),active=False,session=None))
+                    wait_for(6)
+                    channel,notice=calls[-1]
+                    self.assertEqual((channel,notice["evidence_notice"],notice["highlights"]),("slack",True,["와이파이 끊김 원인 200 BEACON_TIMEOUT"]))
+                    self.assertEqual(notice["slack_session"]["event_page"],page)
+                    stopped=runtime.stop()
+                    self.assertTrue(stopped)
+                finally:
+                    if not stopped:
+                        runtime.stop()
                     raw.close()
 
     def test_notion_event_page_receives_blackbox_summary_after_backlog(self):

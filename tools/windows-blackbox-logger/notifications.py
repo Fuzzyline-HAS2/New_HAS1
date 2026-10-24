@@ -534,6 +534,24 @@ def _send_slack_session(call, token, channel_id, payload):
     return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
 
 
+def _send_slack_evidence(call, token, channel_id, payload):
+    """Quiet thread reply: the device's Notion blackbox table is ready, with its highlights."""
+    session = payload.get("slack_session") if isinstance(payload.get("slack_session"), dict) else {}
+    card = session.get("ts")
+    if not isinstance(card, str) or not SLACK_TS.fullmatch(card):
+        return DeliveryResult("permanent", "no_session_card")
+    device = _text(payload.get("device_id"), 60) or "알 수 없는 장치"
+    highlights = [_text(item, 120) for item in payload.get("highlights") or [] if isinstance(item, str)][:4]
+    text = " · ".join([f"📦 {device} 블랙박스 기록"] + highlights)
+    blocks = [{"type": "section", "text": {"type": "plain_text", "text": text}}]
+    link = _notion_link(session.get("event_page"), "📒 노션 블랙박스 표")
+    if link:
+        blocks.append({"type": "context", "elements": [link]})
+    _, failure = _slack_api(call, token, "chat.postMessage", {"channel": channel_id, "thread_ts": card, "text": _fallback(text),
+                            "blocks": blocks, "unfurl_links": False, "unfurl_media": False})
+    return failure or DeliveryResult("delivered", "ok", remote_id=card)
+
+
 def _rich(text):
     return [{"type": "text", "text": {"content": _text(text)}}]
 
@@ -726,7 +744,12 @@ class NotificationSender:
                     token = credentials.get("slack_bot_token")
                     if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
                         return DeliveryResult("permanent", "invalid_credentials")
+                    if payload.get("evidence_notice"):
+                        return _send_slack_evidence(call, token, channel_id, payload)
                     return _send_slack_session(call, token, channel_id, payload)
+                if payload.get("evidence_notice"):
+                    # Queued while in bot mode; a webhook has no card to thread under.
+                    return DeliveryResult("permanent", "webhook_mode_skips_evidence_notice")
                 if payload.get("slack_ts") and payload.get("status") != "recovered":
                     # Queued while in bot mode; webhooks never announce monitoring_ended.
                     return DeliveryResult("permanent", "webhook_mode_skips_monitoring_end")

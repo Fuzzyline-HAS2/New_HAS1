@@ -243,6 +243,27 @@ class NotificationsTests(unittest.TestCase):
         self.assertTrue(any(text.endswith('외 58건') for kind, text in self.texts(card) if kind == 'plain_text'))
         self.assertIn(('plain_text', '장애\n70건 (복구 70 · 미복구 0 · 진행 중 0)'), self.texts(card))
 
+    def test_slack_evidence_notice_is_a_quiet_reply_with_the_notion_link(self):
+        notice = dict(PAYLOAD, evidence_notice=True, device_id='G2P1',
+                      highlights=['재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)', '와이파이 끊김 원인 202 AUTH_FAIL'])
+        sender, calls = self.bot_sender([self.slack_ok(ts='1700000700.000700')])
+        result = sender.send('slack', dict(notice, slack_session=self.session(self.CARD, 'recovered')))
+        self.assertEqual((result.state, result.remote_id), ('delivered', self.CARD))
+        self.assertEqual(len(calls), 1)
+        body = calls[0]['body']
+        self.assertEqual((calls[0]['url'], body['thread_ts']), ('https://slack.com/api/chat.postMessage', self.CARD))
+        self.assertNotIn('reply_broadcast', body)
+        self.assertEqual(body['blocks'][0]['text'], {'type': 'plain_text', 'text':
+                         '📦 G2P1 블랙박스 기록 · 재부팅 1번(리셋 원인 1 POWERON 전원 켜짐) · 와이파이 끊김 원인 202 AUTH_FAIL'})
+        self.assertIn(('mrkdwn', f"<https://www.notion.so/{PAGE.replace('-', '')}|📒 노션 블랙박스 표>"), self.texts(body))
+        # No card to thread under, or a webhook: nothing is sent.
+        sender, calls = self.bot_sender([])
+        self.assertEqual(sender.send('slack', dict(notice, slack_session=self.session(None))).code, 'no_session_card')
+        self.assertEqual(calls, [])
+        sender, calls = self.sender([])
+        self.assertEqual(sender.send('slack', notice).code, 'webhook_mode_skips_evidence_notice')
+        self.assertEqual(calls, [])
+
     def test_slack_session_card_keeps_device_names_inert(self):
         session = self.session(site_id='<!here>', incidents=[{'device_id': '<!channel>', 'state': 'open', 'opened_utc': 'bad', 'updated_utc': None}])
         card = slack_session_card(PAYLOAD, session)

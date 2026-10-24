@@ -73,6 +73,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("끊김 시간 3분 15초 · 시도 7", device_rows[6][2])
         self.assertFalse(result["device_pending"])
         self.assertFalse(result["truncated"])
+        self.assertEqual(result["highlights"], ["와이파이 끊김 원인 200 BEACON_TIMEOUT"])
         self.assertTrue(summarize(self.raw, INCIDENT, CLOSED, limit=3)["truncated"])
 
     def test_waits_for_device_backlog_then_gives_up(self):
@@ -84,6 +85,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(wait_seconds(self.raw, dict(INCIDENT, mac=None), CLOSED), 0)
         result = summarize(self.raw, silent, "2026-10-24T09:03:20.000000+00:00")
         self.assertTrue(result["device_pending"])
+        self.assertEqual(result["highlights"], ["장치 기록 아직 없음"])
         self.assertFalse(any(row[0] == "장치" for row in result["rows"]))
 
     def test_backlog_arriving_before_server_recovery_still_counts(self):
@@ -107,8 +109,10 @@ class EvidenceTests(unittest.TestCase):
         store.save(device(35, "2026-10-24T03:03:35.000000+00:00", "State", "motor.applied", (0, 0, 0, 0), **new_boot))
         store.close()
         with closing(_open_telemetry(path)) as raw:
-            full = [row for row in summarize(raw, INCIDENT, CLOSED)["rows"] if row[0] == "장치"]
+            result = summarize(raw, INCIDENT, CLOSED)
+            full = [row for row in result["rows"] if row[0] == "장치"]
             tight = summarize(raw, INCIDENT, CLOSED, limit=5)  # exactly the five key rows
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)", "와이파이 끊김 원인 202 AUTH_FAIL", "크래시 기록 1건"])
         texts = [row[2] for row in full]
         self.assertEqual(texts[1], "모터·LED 출력 변경 30건")
         self.assertEqual(full[1][1], "부팅 1 · 켜진 뒤 0:01:02~0:01:31 (수신 12:03:30)")
@@ -135,7 +139,10 @@ class EvidenceTests(unittest.TestCase):
         store.save(device(5, "2026-10-24T03:03:30.000000+00:00", "Boot", "blank", (-2147483648,) * 4))
         store.close()
         with closing(_open_telemetry(path)) as raw:
-            rows = [row for row in summarize(raw, INCIDENT, CLOSED)["rows"] if row[0] == "장치"]
+            result = summarize(raw, INCIDENT, CLOSED)
+            rows = [row for row in result["rows"] if row[0] == "장치"]
+        # Game 1658: the glove logged no reboot, Wi-Fi drop or crash; say so rather than nothing.
+        self.assertEqual(result["highlights"], ["재부팅·와이파이 끊김·크래시 기록 없음"])
         self.assertEqual(rows[1], ["장치", "부팅 1 · 켜진 뒤 0:06:53 (수신 12:03:30)", "모터·LED 출력 변경 2건"])
         self.assertEqual(rows[2][2], "부팅 · 22 · 값 1")
         self.assertEqual(rows[3][2], "부팅 · blank")
