@@ -74,7 +74,7 @@ class ConfigTests(unittest.TestCase):
     def test_service_nested_serialization_and_module_copy_contract(self):
         script = (ROOT / "service.ps1").read_text()
         self.assertIn("ConvertTo-Json -Depth 12", script)
-        for module in ("omada.py", "telemetry.py", "telemetry_runtime.py", "timeline.py"):
+        for module in ("omada.py", "telemetry.py", "telemetry_runtime.py", "timeline.py", "incidents.py", "incident_evidence.py"):
             self.assertIn("'" + module + "'", script)
             self.assertTrue((ROOT / module).is_file())
         self.assertIn("$loaded.telemetry.database = Join-Path $StateDir 'data\\telemetry.sqlite3'", script)

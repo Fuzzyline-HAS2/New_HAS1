@@ -122,6 +122,26 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(row["destination"],"notion")
         self.assertEqual(row["payload"]["status"],"monitoring_ended")
 
+    def test_followups_link_to_original_slack_message_and_notion_page(self):
+        page = "abcdefab-1234-1234-1234-123456789abc"
+        for ending,status in (("device_recovered","recovered"),("alarm_cleared","monitoring_ended")):
+            incident = "incident-" + ending
+            self.process(event(incident=incident,seq=self.seq+1))
+            for _ in range(2):
+                row = self.claim()
+                remote = "1700000000.000100" if row["destination"] == "slack" else page
+                self.store.finish(row["id"],SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=remote),now_epoch=100,channels=["slack","notion"])
+            self.process(event(ending,incident=incident,seq=self.seq+1))
+            followups = dict(self.store.db.execute("SELECT destination,payload FROM incident_outbox WHERE incident_id=? AND version=2",(incident,)).fetchall())
+            slack, notion = json.loads(followups["slack"]), json.loads(followups["notion"])
+            self.assertEqual((slack["status"],slack["slack_ts"]),(status,"1700000000.000100"))
+            self.assertNotIn("notion_page_id",slack)
+            self.assertEqual((notion["status"],notion["notion_page_id"]),(status,page))
+            self.assertNotIn("slack_ts",notion)
+            self.process(event(active=False,session=None,seq=self.seq+1))
+            while (row := self.claim()):
+                self.delivered(row)
+
     def test_missed_end_snapshot_and_next_samegroup_newsession(self):
         self.process(event())
         self.process(event(seq=2,incident="incident-2",session="game-2"))
@@ -207,6 +227,23 @@ class PolicyTests(unittest.TestCase):
         self.store.db.execute("UPDATE incident_outbox SET attempts=12 WHERE id=?",(row["id"],))
         self.store.finish(row["id"],SimpleNamespace(state="retryable",retry_after=30,code="http_429",remote_id=None),now_epoch=100,channels=["notion"])
         self.assertEqual(self.states()[1][2],"manual_review")
+
+    def test_notion_evidence_follows_closed_event_and_waiting_is_not_an_attempt(self):
+        page = "abcdefab-1234-1234-1234-123456789abc"
+        self.process(event())
+        for _ in range(2):
+            row = self.claim()
+            remote = page if row["destination"] == "notion" else None
+            self.store.finish(row["id"],SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=remote),now_epoch=100,channels=["slack","notion"])
+        self.process(event("device_recovered",seq=2))
+        self.assertIn((3,"notion","pending"),self.states())
+        while (row := self.claim())["version"] != 3:
+            self.delivered(row)
+        self.assertEqual(row["payload"],{"incident_id":"incident-1","evidence":True,"notion_page_id":page})
+        self.store.defer(row["id"],now_epoch=100,delay=60)
+        attempts,state,next_attempt = self.store.db.execute("SELECT attempts,state,next_attempt FROM incident_outbox WHERE id=?",(row["id"],)).fetchone()
+        self.assertEqual((attempts,state,next_attempt),(0,"pending",160))
+        self.assertIsNone(self.claim())
 
     def test_unknown_mac_and_delayed_flash_are_not_certain_correlations(self):
         self.process(event())
@@ -361,6 +398,49 @@ class RuntimeTests(unittest.TestCase):
                 finally:
                     if not stopped:
                         runtime.stop()  # release incidents.db before the folder is removed
+                    raw.close()
+
+    def test_notion_event_page_receives_blackbox_summary_after_backlog(self):
+        page="abcdefab-1234-1234-1234-123456789abc"
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder)
+            telemetry_path=folder/"telemetry.db"
+            raw=TelemetryStore(telemetry_path)
+            # Outage began 300 s ago; the current snapshot still reports it.
+            opened=(parse_utc(utc_now())-timedelta(seconds=300)).isoformat()
+            raw.save(event(seq=1,when=utc_now(),active_incidents=[{"device_id":"glove-1","mac":MAC,"incident_id":"incident-1","opened_utc":opened}]))
+            settings={"database":str(folder/"incidents.db"),"notifications":{"enabled":True,"notion":{"enabled":True}}}
+            runtime=IncidentRuntime(settings,telemetry_database=telemetry_path,site_id="store-1",source_id="server-1")
+            calls=[]
+            def send(channel,payload):
+                calls.append(payload)
+                return SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=page)
+            def wait_for(count):
+                end=time.monotonic()+15
+                while time.monotonic()<end and len(calls)<count:
+                    time.sleep(.01)
+                self.assertEqual(len(calls),count)
+            with patch("notifications.NotificationSender") as sender:
+                sender.return_value.send.side_effect=send
+                runtime.start()
+                stopped=False
+                try:
+                    wait_for(1)
+                    # Closed 200 s ago; the device backlog arrived 150 s ago, past the settle time.
+                    closed=(parse_utc(utc_now())-timedelta(seconds=200)).isoformat()
+                    uploaded=(parse_utc(utc_now())-timedelta(seconds=150)).isoformat()
+                    raw.save(Event(site_id="store-1",source="device",source_id=MAC,event_id="r1:9",observed_utc=uploaded,clock_quality="uptime_only",mac=MAC,event_type="WifiEvent",fields={"ring":"r1","seq":9,"boot":3,"uptime_ms":5000,"values":[21,200,6,0],"text":"ap:112233445566"}))
+                    raw.save(event("alarm_cleared",seq=2,when=closed))
+                    raw.save(event(seq=3,when=utc_now(),active=False,session=None))
+                    wait_for(3)
+                    evidence=next(payload["evidence"] for payload in calls if "evidence" in payload)
+                    self.assertTrue(any("BEACON_TIMEOUT" in row[2] for row in evidence["rows"]))
+                    self.assertFalse(evidence["device_pending"])
+                    stopped=runtime.stop()
+                    self.assertTrue(stopped)
+                finally:
+                    if not stopped:
+                        runtime.stop()
                     raw.close()
 
     def test_config_requires_server_and_distinct_databases(self):

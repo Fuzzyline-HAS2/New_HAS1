@@ -4,6 +4,7 @@ Called only by the durable outbox worker; never by MQTT ingestion/ACK handling.
 HTTP runs in an isolated short-lived child so DNS and slow reads also have a deadline.
 """
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 import http.client
 import json
 from pathlib import Path
@@ -19,7 +20,23 @@ from service_runtime import read_machine_password
 NOTION_VERSION = "2025-09-03"
 MAX_BODY = 65536
 TOTAL_TIMEOUT = 10.0
-NOTION_STATUS_NAMES = {"offline": "In progress", "recovered": "Done", "monitoring_ended": "Not started"}
+NOTION_STATUS_NAMES = {"offline": "장애중", "recovered": "복구됨", "monitoring_ended": "미복구 종료"}
+# Device-event DB (configured data source) and the incident DB its "게임 세션" relation points to.
+NOTION_EVENT_PROPERTIES = {"이벤트": "title", "사건 ID": "rich_text", "상태": "status", "게임 세션": "relation",
+                           "장치": "select", "역할": "select", "매장": "select", "발생 시각": "date",
+                           "종료 시각": "date", "종료 사유": "select", "지속(초)": "number",
+                           "MAC": "rich_text", "요약": "rich_text"}
+NOTION_SESSION_PROPERTIES = {"장애": "title", "세션 키": "rich_text", "매장": "select",
+                             "게임 세션 ID": "rich_text", "처음 발생": "date"}
+NOTION_CREATE_RESERVE = 5.0  # seconds left in the budget before an event create is attempted
+EVIDENCE_HEADING = "📦 블랙박스 증거"
+NOTION_SESSION_CACHE = 256
+SLACK_TOKEN = re.compile(r"xoxb-[A-Za-z0-9-]{10,250}")
+SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,20}")
+SLACK_TS = re.compile(r"\d{1,12}\.\d{1,8}")
+# Slack documents these as transient; all but service_unavailable may have partially completed.
+SLACK_TRANSIENT = {"internal_error", "fatal_error", "request_timeout", "service_unavailable"}
+SLACK_ORIGINAL_GONE = {"slack_message_not_found", "slack_cant_update_message"}
 
 
 @dataclass(frozen=True)
@@ -47,12 +64,17 @@ def validate_config(value, base_path):
         raise ValueError("Invalid notifications enabled flag")
     for channel in ("slack", "notion"):
         entry = value.get(channel, {})
-        keys = {"enabled"} | ({"data_source_id"} if channel == "notion" else set())
+        keys = {"enabled"} | ({"data_source_id"} if channel == "notion" else {"channel_id"})
         if not isinstance(entry, dict) or set(entry) - keys or type(entry.get("enabled", False)) is not bool:
             raise ValueError("Invalid notification channel configuration")
         result[channel] = {"enabled": entry.get("enabled", False)}
         if channel == "notion" and result["enabled"] and entry.get("enabled"):
             result[channel]["data_source_id"] = _uuid(entry.get("data_source_id"))
+        if channel == "slack" and "channel_id" in entry:
+            # Present only for the bot-token mode that threads recoveries; absent means webhook.
+            if not isinstance(entry["channel_id"], str) or not SLACK_CHANNEL.fullmatch(entry["channel_id"]):
+                raise ValueError("Invalid Slack channel ID")
+            result[channel]["channel_id"] = entry["channel_id"]
     if result["enabled"]:
         path = value.get("credential_file")
         if not isinstance(path, str) or not path.strip() or "\0" in path:
@@ -71,11 +93,13 @@ def _allowed_url(url, method):
             raise ValueError()
         if parsed.hostname == "hooks.slack.com":
             valid = method == "POST" and re.fullmatch(r"/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+", parsed.path)
+        elif parsed.hostname == "slack.com":
+            valid = method == "POST" and parsed.path in ("/api/chat.postMessage", "/api/chat.update")
         elif parsed.hostname == "api.notion.com":
             valid = ((method == "POST" and (parsed.path == "/v1/pages" or
                      re.fullmatch(r"/v1/data_sources/[0-9a-f-]{36}/query", parsed.path))) or
-                     (method == "PATCH" and re.fullmatch(r"/v1/pages/[0-9a-f-]{36}", parsed.path)) or
-                     (method == "GET" and re.fullmatch(r"/v1/(?:databases|data_sources)/[0-9a-f-]{36}", parsed.path)))
+                     (method == "PATCH" and re.fullmatch(r"/v1/(?:pages/[0-9a-f-]{36}|blocks/[0-9a-f-]{36}/children)", parsed.path)) or
+                     (method == "GET" and re.fullmatch(r"/v1/(?:databases/[0-9a-f-]{36}|data_sources/[0-9a-f-]{36}|blocks/[0-9a-f-]{36}/children)", parsed.path)))
         else:
             valid = False
         if not valid:
@@ -97,6 +121,11 @@ def _http_child(request):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
             raise ValueError("Invalid credential")
         headers.update({"Authorization": "Bearer " + token, "Notion-Version": NOTION_VERSION})
+    elif parsed.hostname == "slack.com":
+        token = request["token"]
+        if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
+            raise ValueError("Invalid credential")
+        headers.update({"Authorization": "Bearer " + token, "Content-Type": "application/json; charset=utf-8"})
     connection = http.client.HTTPSConnection(parsed.hostname, timeout=TOTAL_TIMEOUT)
     try:
         connection.request(request["method"], parsed.path, data, headers)
@@ -142,7 +171,8 @@ def _classify(response, *, safe_retry=False):
         return DeliveryResult("retryable", "rate_limited", delay)
     if 200 <= status < 300:
         return None
-    if status >= 500 or status == 408:
+    # Notion documents 409 conflict_error as a collision to retry.
+    if status >= 500 or status in (408, 409):
         return DeliveryResult("retryable" if safe_retry else "unknown", "remote_unavailable", 30)
     return DeliveryResult("permanent", "http_" + str(status))
 
@@ -187,8 +217,8 @@ def resolve_notion_database(database_url, token, *, transport=_transport):
         return DeliveryResult("permanent", "invalid_database_or_credentials")
 
 
-def _notion_schema(response, source_id):
-    """Validate only the supported properties; never repair a remote schema."""
+def _schema_properties(response, source_id, expected):
+    """Validate only the properties the collector writes; never repair a remote schema."""
     failure = _classify(response, safe_retry=True)
     if failure:
         return None, failure
@@ -202,39 +232,52 @@ def _notion_schema(response, source_id):
         properties = data["properties"]
     except (ValueError, TypeError):
         return None, DeliveryResult("retryable", "invalid_schema_response", 30)
-    for name, kind in (("Name", "title"), ("Incident ID", "rich_text"), ("Summary", "rich_text")):
+    for name, kind in expected.items():
         prop = properties.get(name)
         if not isinstance(prop, dict) or prop.get("type") != kind or not isinstance(prop.get(kind), dict):
             return None, DeliveryResult("permanent", "notion_schema_mismatch")
-    prop = properties.get("Status")
-    if not isinstance(prop, dict):
-        return None, DeliveryResult("permanent", "notion_schema_mismatch")
-    kind = prop.get("type")
-    if kind == "rich_text" and isinstance(prop.get(kind), dict):
-        return kind, None
-    if kind != "status" or not isinstance(prop.get("status"), dict):
-        return None, DeliveryResult("permanent", "notion_schema_mismatch")
-    options = prop["status"].get("options")
+    return properties, None
+
+
+def _notion_schema(response, source_id):
+    """Validate the device-event source; returns the incident (game session) source it relates to."""
+    properties, failure = _schema_properties(response, source_id, NOTION_EVENT_PROPERTIES)
+    if failure:
+        return None, failure
+    options = properties["상태"]["status"].get("options")
     if not isinstance(options, list) or any(not isinstance(option, dict) or not isinstance(option.get("name"), str) for option in options):
         return None, DeliveryResult("retryable", "invalid_schema_response", 30)
     # Validate all transitions during setup as well as delivery. No case folding,
-    # option creation or fallback to Done: monitoring ended is not recovery.
+    # option creation or fallback to 복구됨: monitoring ended is not recovery.
     names = [option["name"] for option in options]
     if any(names.count(name) != 1 for name in NOTION_STATUS_NAMES.values()):
         return None, DeliveryResult("permanent", "notion_status_options_mismatch")
-    return kind, None
+    try:
+        return _uuid(properties["게임 세션"]["relation"].get("data_source_id")), None
+    except ValueError:
+        return None, DeliveryResult("permanent", "notion_schema_mismatch")
+
+
+def _read_notion_schemas(call, source_id, token):
+    response = call(f"https://api.notion.com/v1/data_sources/{source_id}", "GET", None, token)
+    session_source, failure = _notion_schema(response, source_id)
+    if failure:
+        return None, failure
+    response = call(f"https://api.notion.com/v1/data_sources/{session_source}", "GET", None, token)
+    _, failure = _schema_properties(response, session_source, NOTION_SESSION_PROPERTIES)
+    return (None, failure) if failure else (session_source, None)
 
 
 def check_notion_schema(data_source_id, token, *, transport=_transport):
-    """Read-only installation preflight, with no credentials in the result."""
+    """Read-only installation preflight of both sources, with no credentials in the result."""
     try:
         source_id = _uuid(data_source_id)
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
             return DeliveryResult("permanent", "invalid_credentials")
-        response = transport({"url": "https://api.notion.com/v1/data_sources/" + source_id,
-                              "method": "GET", "body": None, "token": token}, TOTAL_TIMEOUT)
-        kind, failure = _notion_schema(response, source_id)
-        return failure or DeliveryResult("delivered", "schema_valid_" + kind)
+        def call(url, method, body, token):
+            return transport({"url": url, "method": method, "body": body, "token": token}, TOTAL_TIMEOUT)
+        _, failure = _read_notion_schemas(call, source_id, token)
+        return failure or DeliveryResult("delivered", "schema_valid_status")
     except (ValueError, TypeError, AttributeError, KeyError, OSError, RuntimeError):
         return DeliveryResult("permanent", "invalid_schema_or_credentials")
 
@@ -244,11 +287,310 @@ def _text(value, limit=1800):
     return str(value or "").replace("\0", "")[:limit]
 
 
+KST = timezone(timedelta(hours=9), "KST")
+SLACK_HEADERS = {"offline": "🔴 장치 연결 끊김", "recovered": "🟢 장치 복구됨",
+                 "monitoring_ended": "⚪ 모니터링 종료 (복구 확인 안 됨)"}
+CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active": "게임 종료 또는 서버 목록에서 제외"}
+
+
+def _parse_time(value):
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _kst(value):
+    try:
+        stamp = _parse_time(value)
+        return stamp.astimezone(KST).strftime("%m/%d %H:%M:%S") if stamp else None
+    except OverflowError:
+        return None
+
+
+def _fallback(text):
+    # Top-level text is mrkdwn even when blocks are plain_text; keep values inert there too.
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")[:300]
+
+
+def _duration(seconds):
+    if seconds is None or seconds < 0:
+        return None
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}초"
+    if seconds < 3600:
+        return f"{seconds // 60}분 {seconds % 60}초"
+    return f"{seconds // 3600}시간 {seconds % 3600 // 60}분"
+
+
+def _outage(payload):
+    opened, occurred = _parse_time(payload.get("opened_at")), _parse_time(payload.get("occurred_at"))
+    return _duration((occurred - opened).total_seconds()) if opened and occurred else None
+
+
+def _close_reason(payload):
+    reason = _text(payload.get("close_reason"), 80)
+    return CLOSE_REASONS.get(reason, reason)
+
+
+def slack_message(payload):
+    """Human-readable card. plain_text only, so payload values can never mention or link."""
+    status = payload.get("status")
+    header = SLACK_HEADERS.get(status, "HAS1 장치 장애")
+    device = _text(payload.get("device_id"), 60) or "알 수 없는 장치"
+    site = _text(payload.get("site_id"), 60)
+    try:
+        gap = _duration(int(payload.get("gap_ms")) / 1000)
+    except (ValueError, TypeError, OverflowError):
+        gap = None
+    fields = [("매장", site), ("장치", device), ("역할", _text(payload.get("role"), 60)),
+              ("MAC", _text(payload.get("device_mac"), 40))]
+    if status == "offline":
+        fields += [("끊긴 시각", _kst(payload.get("occurred_at"))),
+                   ("마지막 수신", _kst(payload.get("last_seen_utc"))), ("무응답 시간", gap)]
+    else:
+        fields += [("끊긴 시각", _kst(payload.get("opened_at"))),
+                   ("복구 시각" if status == "recovered" else "종료 시각", _kst(payload.get("occurred_at"))),
+                   ("장애 지속", _outage(payload)), ("종료 사유", _close_reason(payload))]
+    fields.append(("게임 세션", _text(payload.get("game_session_id"), 80)))
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"{header} · {device}"[:150]}},
+              {"type": "section", "fields": [{"type": "plain_text", "text": f"{label}\n{value}"[:2000]}
+                                             for label, value in fields if value and value != "unknown"][:10]}]
+    note = "원인은 아직 확정되지 않았습니다." if status == "offline" else ""
+    blocks.append({"type": "context", "elements": [{"type": "plain_text",
+                   "text": f"{note} 사건 ID {_text(payload.get('incident_id'), 160)}".strip()}]})
+    title = " ".join(part for part in (header, site, device) if part)
+    return {"text": _fallback(title), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+
+
+def slack_reply(payload):
+    """Short thread reply under the original outage card; the card itself carries the details."""
+    outage = _outage(payload)
+    text = " · ".join(part for part in ("🟢 복구됨", outage and outage + " 만에", _close_reason(payload)) if part)
+    return {"text": _fallback(text), "blocks": [{"type": "section", "text": {"type": "plain_text", "text": text}}],
+            "unfurl_links": False, "unfurl_media": False}
+
+
+def _slack_api(call, token, method, body):
+    # chat.update rewrites the same message, so only it is safe to retry blindly.
+    safe = method == "chat.update"
+    response = call("https://slack.com/api/" + method, "POST", body, token)
+    failure = _classify(response, safe_retry=safe)
+    if failure:
+        return None, failure
+    try:
+        data = json.loads(response.get("body", ""))
+        if not isinstance(data, dict):
+            raise ValueError()
+    except ValueError:
+        return None, DeliveryResult("retryable" if safe else "unknown", "unexpected_response", 30)
+    if data.get("ok") is not True:
+        error = data.get("error")
+        error = error if isinstance(error, str) and re.fullmatch(r"[a-z_]{1,48}", error) else "error"
+        if error in SLACK_TRANSIENT:
+            # A possibly-posted message must not be resent; an edit or an unprocessed request can be.
+            retry = safe or error == "service_unavailable"
+            return None, DeliveryResult("retryable" if retry else "unknown", "slack_" + error, 30)
+        return None, DeliveryResult("permanent", "slack_" + error)
+    return data, None
+
+
+def _send_slack_bot(call, token, channel_id, payload):
+    message = slack_message(payload)
+    def post():
+        data, failure = _slack_api(call, token, "chat.postMessage", dict(message, channel=channel_id))
+        if failure:
+            return failure
+        ts = data.get("ts")
+        if not isinstance(ts, str) or not SLACK_TS.fullmatch(ts):
+            return DeliveryResult("unknown", "invalid_write_response")
+        return DeliveryResult("delivered", "ok", remote_id=ts)
+    original = payload.get("slack_ts")
+    if not isinstance(original, str) or not SLACK_TS.fullmatch(original):
+        return post()
+    # Edit the original card first: a failed edit retries without leaving a duplicate reply.
+    _, failure = _slack_api(call, token, "chat.update", {"channel": channel_id, "ts": original,
+                            "text": message["text"], "blocks": message["blocks"]})
+    if failure and failure.code in SLACK_ORIGINAL_GONE:
+        return post()  # Card deleted or no longer editable: announce the outcome on its own.
+    if failure:
+        return failure
+    if payload.get("status") == "recovered":
+        _, failure = _slack_api(call, token, "chat.postMessage", dict(slack_reply(payload), channel=channel_id, thread_ts=original))
+        if failure:
+            return failure
+    return DeliveryResult("delivered", "ok", remote_id=original)
+
+
+def _rich(text):
+    return [{"type": "text", "text": {"content": _text(text)}}]
+
+
+def _select_name(value):
+    # Notion select option names cannot contain commas; unknown names become new options.
+    return _text(value, 100).replace(",", " ").strip()
+
+
+def _iso(stamp):
+    # Notion keeps date-times to the minute; sub-second digits only risk a rejected write.
+    return stamp.isoformat(timespec="seconds") if stamp else None
+
+
+def _notion_find(call, token, source_id, prop, value, *, unique):
+    """Look up a page by a collector-owned text key. Reads are always safe to retry."""
+    body = {"filter": {"property": prop, "rich_text": {"equals": value}}, "page_size": 2}
+    if not unique:
+        # Duplicated session pages are possible; every lookup must settle on the same one.
+        body["page_size"] = 100
+    response = call(f"https://api.notion.com/v1/data_sources/{source_id}/query", "POST", body, token)
+    failure = _classify(response, safe_retry=True)
+    if failure:
+        return None, failure
+    if response.get("oversized"):
+        return None, DeliveryResult("permanent", "oversized_query_response")
+    try:
+        found = json.loads(response.get("body", ""))
+        pages = found["results"]
+        if not isinstance(pages, list):
+            raise ValueError()
+        if unique and (len(pages) > 1 or found.get("has_more")):
+            return None, DeliveryResult("permanent", "duplicate_incident_records")
+        if not pages:
+            return None, None
+        # created_time is minute-granular, so the page id breaks ties deterministically.
+        oldest = min(pages, key=lambda page: (str(page.get("created_time", "")), _uuid(page["id"])))
+        return _uuid(oldest["id"]), None
+    except (ValueError, KeyError, TypeError):
+        return None, DeliveryResult("retryable", "invalid_query_response", 30)
+
+
+def _opened_at(payload, status):
+    # Payloads queued before opened_at existed only carry the outage start on the offline event.
+    return _parse_time(payload.get("opened_at") or (payload.get("occurred_at") if status == "offline" else None))
+
+
+def _event_properties(payload, status, incident_id):
+    """Device-event columns. Missing values are omitted so an update never clears them."""
+    device = _select_name(payload.get("device_id")) or "알 수 없는 장치"
+    properties = {"이벤트": {"title": _rich(device + " 연결 끊김")}, "사건 ID": {"rich_text": _rich(incident_id)},
+                  "상태": {"status": {"name": NOTION_STATUS_NAMES[status]}},
+                  "매장": {"select": {"name": _select_name(payload.get("site_id"))}},
+                  "장치": {"select": {"name": device}}}
+    role, mac, summary = _select_name(payload.get("role")), _text(payload.get("device_mac"), 40), _text(payload.get("summary"))
+    opened = _opened_at(payload, status)
+    if role:
+        properties["역할"] = {"select": {"name": role}}
+    if mac:
+        properties["MAC"] = {"rich_text": _rich(mac)}
+    if summary:
+        properties["요약"] = {"rich_text": _rich(summary)}
+    if opened:
+        properties["발생 시각"] = {"date": {"start": _iso(opened)}}
+    if status != "offline":
+        ended, reason = _parse_time(payload.get("occurred_at")), _select_name(_close_reason(payload))
+        if ended:
+            properties["종료 시각"] = {"date": {"start": _iso(ended)}}
+        if reason:
+            properties["종료 사유"] = {"select": {"name": reason}}
+        if opened and ended:
+            # Notion stores date-times to the minute, so the duration cannot be derived from the dates there.
+            seconds = round((ended - opened).total_seconds())
+            if seconds >= 0:
+                properties["지속(초)"] = {"number": seconds}
+    return properties
+
+
+def _notion_session(call, token, source_id, site, session, payload, cache):
+    """Find or create the incident page for one game session (key: site/session)."""
+    key = f"{site}/{session}"
+    if (source_id, key) in cache:
+        # Devices of one session often drop together; a query right after the create
+        # may not see the new page yet, so reuse what this process already resolved.
+        return cache[source_id, key], None
+    page_id, failure = _notion_find(call, token, source_id, "세션 키", key, unique=False)
+    if failure:
+        return None, failure
+    if not page_id:
+        opened = _iso(_opened_at(payload, payload.get("status")))
+        when = _kst(opened)
+        properties = {"장애": {"title": _rich(" · ".join(part for part in (site, when and when[:11], "세션 " + session) if part))},
+                      "세션 키": {"rich_text": _rich(key)}, "매장": {"select": {"name": site}},
+                      "게임 세션 ID": {"rich_text": _rich(session)}}
+        if opened:
+            properties["처음 발생"] = {"date": {"start": opened}}
+        response = call("https://api.notion.com/v1/pages", "POST", {
+            "parent": {"type": "data_source_id", "data_source_id": source_id}, "properties": properties}, token)
+        # A retry looks the key up again before creating, so a lost response can at worst leave
+        # one extra empty session page; it never duplicates or drops the device event itself.
+        failure = _classify(response, safe_retry=True)
+        if failure:
+            return None, failure
+        try:
+            page_id = _uuid(json.loads(response.get("body", ""))["id"])
+        except (ValueError, KeyError, TypeError):
+            return None, DeliveryResult("retryable", "invalid_write_response", 30)
+    cache[source_id, key] = page_id
+    while len(cache) > NOTION_SESSION_CACHE:
+        cache.pop(next(iter(cache)))
+    return page_id, None
+
+
+def _evidence_blocks(evidence):
+    rows = evidence["rows"]
+    if not isinstance(rows, list) or len(rows) > 98 or any(not isinstance(row, list) or len(row) != 3 for row in rows):
+        raise ValueError("Invalid evidence rows")
+    note = ["후보 기록이며 원인은 확정되지 않았습니다.",
+            "장치 시각은 실제 시각이 아니라 부팅 회차와 켜진 뒤 경과 시간입니다.",
+            f"수집 {_kst(evidence.get('collected_utc')) or '-'} · 원본은 매장 PC에서 "
+            f"incidents.py --incident-id {_text(evidence.get('incident_id'), 160)}로 확인합니다."]
+    if evidence.get("truncated"):
+        note.append("일부만 표시했습니다.")
+    if evidence.get("device_pending"):
+        note.append("장치 기록이 아직 올라오지 않았습니다.")
+    table = [["출처", "시각", "내용"]] + (rows or [["-", "-", "관련 기록 없음"]])
+    return [{"type": "heading_3", "heading_3": {"rich_text": _rich(EVIDENCE_HEADING + " (후보 · 원인 미확정)")}},
+            {"type": "paragraph", "paragraph": {"rich_text": _rich(" ".join(note))}},
+            {"type": "table", "table": {"table_width": 3, "has_column_header": True, "has_row_header": False,
+             "children": [{"type": "table_row", "table_row": {"cells": [_rich(_text(cell, 300) or "-") for cell in row]}}
+                          for row in table]}}]
+
+
+def _append_evidence(call, token, payload):
+    """Append the blackbox table to the device-event page body exactly once."""
+    page_id = _uuid(payload.get("notion_page_id"))
+    blocks = _evidence_blocks(payload["evidence"])
+    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    # Appending is not idempotent, so every attempt first looks for an earlier append.
+    response = call(url, "GET", None, token)
+    failure = _classify(response, safe_retry=True)
+    if failure:
+        return failure
+    if response.get("oversized"):
+        return DeliveryResult("permanent", "oversized_page_response")
+    try:
+        children = json.loads(response.get("body", ""))["results"]
+        if not isinstance(children, list):
+            raise ValueError()
+        # Only the first 100 blocks are checked; the summary is the collector's first append.
+        if any(block.get("type") == "heading_3" and "".join(part.get("plain_text", "") for part in
+               block["heading_3"].get("rich_text", [])).startswith(EVIDENCE_HEADING) for block in children):
+            return DeliveryResult("delivered", "already_attached", remote_id=page_id)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return DeliveryResult("retryable", "invalid_children_response", 30)
+    response = call(url, "PATCH", {"children": blocks}, token)
+    failure = _classify(response, safe_retry=True)
+    return failure or DeliveryResult("delivered", "ok", remote_id=page_id)
+
+
 class NotificationSender:
     def __init__(self, config, *, credential_reader=read_machine_password, transport=_transport):
         self.config = config
         self.credential_reader = credential_reader
         self.transport = transport
+        self.notion_sessions = {}
 
     def send(self, channel, payload):
         if channel not in ("slack", "notion") or not self.config.get("enabled") or not self.config.get(channel, {}).get("enabled"):
@@ -269,14 +611,18 @@ class NotificationSender:
                 if remaining <= 0:
                     return {"network_error": True}
                 return self.transport({"url": url, "method": method, "body": body, "token": token}, remaining)
-            summary = "\n".join(f"{key}: {_text(payload.get(key), 300)}" for key in
-                                ("incident_id", "site_id", "device_mac", "game_session_id", "status", "occurred_at"))
-            summary += "\n" + _text(payload.get("summary"), 800)
             if channel == "slack":
+                channel_id = self.config["slack"].get("channel_id")
+                if channel_id:
+                    token = credentials.get("slack_bot_token")
+                    if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
+                        return DeliveryResult("permanent", "invalid_credentials")
+                    return _send_slack_bot(call, token, channel_id, payload)
+                if payload.get("slack_ts") and payload.get("status") != "recovered":
+                    # Queued while in bot mode; webhooks never announce monitoring_ended.
+                    return DeliveryResult("permanent", "webhook_mode_skips_monitoring_end")
                 url = credentials.get("slack_webhook_url")
-                response = call(url, "POST", {"text": "HAS1 incident " + incident_id,
-                    "blocks": [{"type": "section", "text": {"type": "plain_text", "text": summary[:2900]}}],
-                    "unfurl_links": False, "unfurl_media": False})
+                response = call(url, "POST", slack_message(payload))
                 failure = _classify(response)
                 if failure:
                     return failure
@@ -284,46 +630,54 @@ class NotificationSender:
             token = credentials.get("notion_token")
             if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
                 return DeliveryResult("permanent", "invalid_credentials")
+            if "evidence" in payload:
+                if not isinstance(payload["evidence"], dict):
+                    return DeliveryResult("permanent", "evidence_not_built")
+                return _append_evidence(call, token, payload)
             source_id = _uuid(self.config["notion"]["data_source_id"])
             status = payload.get("status")
             if not isinstance(status, str) or status not in NOTION_STATUS_NAMES:
                 return DeliveryResult("permanent", "unsupported_incident_status")
+            site, session = _select_name(payload.get("site_id")), _text(payload.get("game_session_id"), 80)
+            if not site or not session:
+                return DeliveryResult("permanent", "missing_game_session")
             response = call(f"https://api.notion.com/v1/data_sources/{source_id}", "GET", None, token)
-            status_kind, failure = _notion_schema(response, source_id)
+            session_source, failure = _notion_schema(response, source_id)
             if failure:
                 return failure
-            response = call(f"https://api.notion.com/v1/data_sources/{source_id}/query", "POST",
-                            {"filter": {"property": "Incident ID", "rich_text": {"equals": incident_id}}, "page_size": 2}, token)
-            failure = _classify(response, safe_retry=True)
-            if failure:
-                return failure
-            if response.get("oversized"):
-                return DeliveryResult("permanent", "oversized_query_response")
             try:
-                found = json.loads(response.get("body", ""))
-                pages = found["results"]
-                if not isinstance(pages, list):
-                    raise ValueError()
-                if len(pages) > 1 or found.get("has_more"):
-                    return DeliveryResult("permanent", "duplicate_incident_records")
-                page_id = _uuid(pages[0]["id"]) if pages else None
-            except (ValueError, KeyError, TypeError):
-                return DeliveryResult("retryable", "invalid_query_response", 30)
-            def rich(text):
-                return [{"type": "text", "text": {"content": _text(text)}}]
-            properties = {"Name": {"title": rich("HAS1 " + incident_id)},
-                          "Incident ID": {"rich_text": rich(incident_id)},
-                          "Status": ({"status": {"name": NOTION_STATUS_NAMES[status]}} if status_kind == "status"
-                                     else {"rich_text": rich(status)}),
-                          "Summary": {"rich_text": rich(summary)}}
-            body = {"properties": properties}
+                # The follow-up of a delivered event carries its page id: a query issued right
+                # after that create may not see the page yet and would create a duplicate.
+                page_id = _uuid(payload["notion_page_id"])
+            except (KeyError, ValueError):
+                page_id, failure = _notion_find(call, token, source_id, "사건 ID", incident_id, unique=True)
+                if failure:
+                    return failure
+            properties = _event_properties(payload, status, incident_id)
+            session_key = None
             if page_id:
-                response = call("https://api.notion.com/v1/pages/" + page_id, "PATCH", body, token)
+                # The session relation was set when the page was created; updates leave it alone.
+                response = call("https://api.notion.com/v1/pages/" + page_id, "PATCH", {"properties": properties}, token)
             else:
-                body["parent"] = {"type": "data_source_id", "data_source_id": source_id}
-                response = call("https://api.notion.com/v1/pages", "POST", body, token)
+                response = call(f"https://api.notion.com/v1/data_sources/{session_source}", "GET", None, token)
+                _, failure = _schema_properties(response, session_source, NOTION_SESSION_PROPERTIES)
+                if failure:
+                    return failure
+                session_page, failure = _notion_session(call, token, session_source, site, session, payload, self.notion_sessions)
+                if failure:
+                    return failure
+                if deadline - time.monotonic() < NOTION_CREATE_RESERVE:
+                    # Nothing sent yet: retrying re-reads both keys, whereas a create cut off by
+                    # the budget would be an unknown outcome needing manual review.
+                    return DeliveryResult("retryable", "budget_exhausted", 30)
+                session_key = (session_source, f"{site}/{session}")
+                properties["게임 세션"] = {"relation": [{"id": session_page}]}
+                response = call("https://api.notion.com/v1/pages", "POST", {
+                    "parent": {"type": "data_source_id", "data_source_id": source_id}, "properties": properties}, token)
             failure = _classify(response, safe_retry=bool(page_id))
             if failure:
+                # A cached session page may have been deleted by an operator; look it up again next time.
+                self.notion_sessions.pop(session_key, None)
                 return failure
             try:
                 remote_id = _uuid(json.loads(response.get("body", ""))["id"])
