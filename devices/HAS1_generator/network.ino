@@ -5,6 +5,7 @@
 #include <esp_task_wdt.h>
 #include <esp_attr.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include "generator_offline_recovery.h"
 #include "generator_completion_store.h"
 #include "generator_wire_protocol.h"
@@ -32,8 +33,23 @@ static uint32_t networkWorkerActiveId=0,networkWorkerStarted=0,networkWorkerProg
 static bool networkRefreshPending=true,networkRefreshInFlight=false,networkBootReady=false,networkResetCyclePending=false;
 static bool networkVersionSent=false,networkWatchdogPending=false,networkWatchdogRequested=false;
 static bool networkMaintenance=false,networkMaintenanceLegacy=false;
+static bool networkOtaRestartPending=false;
+static uint32_t networkOtaRestartSince=0;
 static bool networkWasConnected=false;
 RTC_NOINIT_ATTR static GeneratorOfflineRecovery::Retained networkRecoveryHistory;
+// GitHub OTA attempts started while the server stayed at github. Counted before
+// the check, so a panic or watchdog reset inside it counts too. Survives those
+// and software resets; power-on and any other device_state clear it.
+struct NetworkOtaRetained { uint32_t magic,attempts,check; };
+RTC_NOINIT_ATTR static NetworkOtaRetained networkOtaRetained;
+static constexpr uint32_t kNetworkOtaMagic=0x4f544131u,kNetworkOtaMaxAttempts=3;
+static uint32_t NetworkOtaAttempts() {
+  const NetworkOtaRetained &r=networkOtaRetained;
+  return r.magic==kNetworkOtaMagic&&r.check==(r.attempts^0x5a17c3e9u)&&r.attempts<=kNetworkOtaMaxAttempts?r.attempts:0;
+}
+static void NetworkOtaAttemptsSet(uint32_t attempts) {
+  networkOtaRetained={kNetworkOtaMagic,attempts,attempts^0x5a17c3e9u};
+}
 static GeneratorOfflineRecovery::Policy networkRecoveryPolicy;
 static bool networkRecoveryFence=false;
 static uint32_t networkRecoverySalt=0,networkRecoveryLastLog=0;
@@ -259,6 +275,7 @@ static bool NetworkApplySnapshot(const Has2BoundedTransport::Result &result,bool
   }
   NetworkCompletionObserveSnapshot();
   if(!strcmp(my["device_state"] | "", "update")){ GeneratorNetworkRequestMaintenance(true); }
+  if(strcmp(my["device_state"] | "", "github")&&NetworkOtaAttempts()){ NetworkOtaAttemptsSet(0); }
   return true;
 }
 static void NetworkFinishPoll(bool success) {
@@ -603,6 +620,12 @@ bool GeneratorNetworkComplete(const char *state) {
 }
 void GeneratorNetworkRequestMaintenance(bool legacy) {
   if(networkMaintenance){ return; }
+  if(!legacy&&NetworkOtaAttempts()>=kNetworkOtaMaxAttempts) {
+    // Each attempt costs a restart; stop until staff set another state.
+    DiagnosticPrintf("[NET] GitHub OTA not retried: %lu attempts without update; set another device_state to reset\r\n",
+      (unsigned long)NetworkOtaAttempts());
+    return;
+  }
   networkMaintenance=true;networkMaintenanceLegacy=legacy;networkMaintenanceStarted=millis();
   has1blackbox::blackbox.setUploadAllowed(false);
   portENTER_CRITICAL(&networkMux);
@@ -613,26 +636,40 @@ void GeneratorNetworkRequestMaintenance(bool legacy) {
 }
 // The core's mbedTLS has fixed 16 KiB in/out record buffers: one GitHub HTTPS
 // request needs ~45 KiB, two ~17 KiB blocks contiguous. With BLE running ~48 KiB
-// was free and every GitHub request failed at connect (HTTP -1). The local HTTP
-// update needs no TLS and keeps its proven path without the BLE stop.
-// Returns false when BLE did not come back.
-static bool NetworkGithubOta() {
+// was free and every GitHub request failed at connect (HTTP -1). Stopping the
+// controller gave TLS ~20 KiB, but Update.begin() could then not get its 4 KiB
+// buffer once the download started, so its static memory is released as well.
+// BLE comes back only at boot: the caller restarts if OTA returns. The local HTTP
+// update needs no TLS and keeps its proven path without any of this.
+static esp_timer_handle_t networkOtaGuard=nullptr;
+static void NetworkOtaGuardExpired(void*) { esp_restart(); }
+static void NetworkGithubOta() {
+  // Counted first, so a reset anywhere below (BLE release included) is bounded.
+  const uint32_t attempt=NetworkOtaAttempts()+1;
+  NetworkOtaAttemptsSet(attempt);
   const uint32_t heap=ESP.getFreeHeap(),largest=ESP.getMaxAllocHeap();
   Has1BleBeacon::suspend();
-  DiagnosticPrintf("[NET] OTA memory heap=%lu largest=%lu; BLE stopped heap=%lu largest=%lu bb_idle=%u\r\n",
+  const bool released=Has1BleBeacon::releaseMemory();
+  DiagnosticPrintf("[NET] OTA memory heap=%lu largest=%lu; BLE off heap=%lu largest=%lu released=%u bb_idle=%u\r\n",
     (unsigned long)heap,(unsigned long)largest,(unsigned long)ESP.getFreeHeap(),
-    (unsigned long)ESP.getMaxAllocHeap(),unsigned(has1blackbox::blackbox.uploadIdle()));
+    (unsigned long)ESP.getMaxAllocHeap(),unsigned(released),unsigned(has1blackbox::blackbox.uploadIdle()));
+  // The loop task is off its watchdog here and BLE is gone for this boot; a
+  // download stalled past SecureOTA's own timeouts must still end in a restart.
+  const esp_timer_create_args_t guard={NetworkOtaGuardExpired,nullptr,ESP_TIMER_TASK,"ota-guard",false};
+  if(!networkOtaGuard){ esp_timer_create(&guard,&networkOtaGuard); }
+  if(networkOtaGuard){ esp_timer_start_once(networkOtaGuard,300000000ull); }
   ota.check(); // Restarts after a verified update; returns on failure or skip.
-  Has1BleBeacon::resume();
-  const Has1BleBeacon::Diagnostics ble=Has1BleBeacon::diagnostics();
-  DiagnosticPrintf("[NET] OTA returned without update; BLE restart step=%u error=%u\r\n",
-    unsigned(ble.step),unsigned(ble.lastError));
-  return ble.step!=Has1BleBeacon::Step::Unavailable;
+  if(networkOtaGuard){ esp_timer_stop(networkOtaGuard); }
+  DiagnosticPrintf("[NET] OTA returned without update; restart pending (attempt %lu of %lu)\r\n",
+    (unsigned long)attempt,(unsigned long)kNetworkOtaMaxAttempts);
 }
 void GeneratorNetworkBegin() {
   if(networkTask){ return; }
   NetworkCompletionLoad();
   const bool prior=GeneratorOfflineRecovery::boot(networkRecoveryHistory,esp_reset_reason()==ESP_RST_SW);
+  const int reason=esp_reset_reason();
+  if(reason!=ESP_RST_SW&&reason!=ESP_RST_PANIC&&reason!=ESP_RST_INT_WDT&&
+     reason!=ESP_RST_TASK_WDT&&reason!=ESP_RST_WDT){ NetworkOtaAttemptsSet(0); }
   const String mac=has2wifi.GetMacAddress();
   for(size_t i=0;i<mac.length();++i){networkRecoverySalt=networkRecoverySalt*33u+uint8_t(mac[i]);}
   if(prior) {
@@ -760,6 +797,17 @@ void GeneratorNetworkLoop() {
     portENTER_CRITICAL(&networkMux);
     bool busy=networkMailboxReady;for(const auto &slot:networkSlots)if(slot.occupied){ busy=true; }
     portEXIT_CRITICAL(&networkMux);
+    if(networkOtaRestartPending) {
+      // Released BLE memory returns only through boot. Let the OTA callback's
+      // state report leave first, for at most ten seconds.
+      if(!busy||uint32_t(millis()-networkOtaRestartSince)>=10000) {
+        DiagnosticPrintf("[NET] restarting after GitHub OTA without update; BLE returns at boot\r\n");
+        BlackBoxOtaRestart(NetworkOtaAttempts());
+        networkOtaRestartPending=false;networkMaintenance=false;
+        ESP.restart();
+      }
+      return;
+    }
     // GitHub OTA also waits for the withdrawn MQTT session to free its client,
     // task and buffers; a stuck SDK stop gets 15 seconds, then OTA proceeds.
     if(!networkMaintenanceLegacy&&!has1blackbox::blackbox.uploadIdle()&&
@@ -770,14 +818,12 @@ void GeneratorNetworkLoop() {
     } else if(!busy&&online) {
       has1blackbox::blackbox.setPaused(true);
       esp_task_wdt_delete(nullptr);
-      bool bleBack=true;
       if(networkMaintenanceLegacy){ has2wifi.FirmwareUpdate(my["device_type"]|"generator","172.30.1.43"); }
-      else bleBack=NetworkGithubOta();
+      else NetworkGithubOta();
       esp_task_wdt_add(nullptr);
       has1blackbox::blackbox.setPaused(false);
-      networkMaintenance=false;GeneratorNetworkRefreshCycle();
-      // No game may run without the beacon; boot starts the controller afresh.
-      if(!bleBack){ DiagnosticPrintf("[NET] BLE did not restart after OTA; restarting device\r\n");ESP.restart(); }
+      if(networkMaintenanceLegacy){ networkMaintenance=false;GeneratorNetworkRefreshCycle(); }
+      else { networkOtaRestartPending=true;networkOtaRestartSince=millis(); }
     }
   }
 

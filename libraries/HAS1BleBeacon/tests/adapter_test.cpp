@@ -18,12 +18,14 @@ namespace {
 uint32_t fakeNow = 100;
 unsigned starts = 0;
 unsigned stops = 0;
+unsigned memReleases = 0;
 unsigned registrations = 0;
 unsigned sendReadyChecks = 0;
 unsigned criticalDepth = 0;
 portMUX_TYPE* activeMux = nullptr;
 bool startResult = true;
 bool stopResult = true;
+bool releaseResult = true;
 bool available = true;
 bool immediateCompletion = false;
 esp_err_t registerResult = ESP_OK;
@@ -281,6 +283,48 @@ void suspendBeforeBeginAndResumeFailure() {
   REQUIRE(stops == 2 && starts == 3 && registrations == 2);
   runToRunning();
 }
+void releaseMemoryAfterStop() {
+  prepare();
+  runToRunning();
+  REQUIRE(!releaseMemory()); // Not before the controller is stopped.
+  REQUIRE(memReleases == 0);
+  immediateCompletion = true;
+  suspend();
+  immediateCompletion = false;
+  REQUIRE(releaseMemory());
+  REQUIRE(releaseMemory()); // Idempotent: released once.
+  REQUIRE(memReleases == 1);
+  resume(); // Memory is gone: no controller start is attempted.
+  REQUIRE(starts == 1 && registrations == 1);
+  REQUIRE(diagnostics().step == Step::Unavailable);
+  REQUIRE(diagnostics().lastError == Error::StartupFailed);
+  for (unsigned i = 0; i < 1000; ++i) { ++fakeNow; poll(); }
+  REQUIRE(sent.size() == 6);
+  suspend();
+  REQUIRE(stops == 2); // Already idle; a later cycle stays harmless.
+  resume();
+  REQUIRE(starts == 1);
+}
+
+void releaseMemoryRefused() {
+  prepare();
+  runToRunning();
+  stopResult = false;
+  suspend();
+  REQUIRE(!releaseMemory()); // The controller may still be running.
+  REQUIRE(memReleases == 0);
+  stopResult = true;
+  releaseResult = false;
+  suspend(); // Still suspended: no second stop.
+  REQUIRE(stops == 1);
+  resume();
+  suspend();
+  REQUIRE(!releaseMemory()); // Arduino reported failure: memory still usable.
+  REQUIRE(memReleases == 1);
+  resume();
+  REQUIRE(starts == 3);
+  runToRunning();
+}
 } // namespace
 
 unsigned long millis() {
@@ -317,6 +361,13 @@ bool btStop() {
   }
   if (stopResult) registeredCallback = nullptr; // Deinit drops the registration.
   return stopResult;
+}
+
+bool btMemRelease(esp_bt_mode_t mode) {
+  REQUIRE(criticalDepth == 0);
+  REQUIRE(mode == BT_MODE_BLE);
+  ++memReleases;
+  return releaseResult;
 }
 
 bool btStartMode(esp_bt_mode_t mode) {
@@ -363,7 +414,9 @@ int main(int argc, char** argv) {
     {"suspend_waits_bounded", suspendWaitsBounded},
     {"suspend_finishes_outstanding_command_first", suspendFinishesOutstandingCommandFirst},
     {"suspend_ignores_stopped_controller_event", suspendIgnoresStoppedControllerEvent},
-    {"suspend_before_begin_resume_failure", suspendBeforeBeginAndResumeFailure}
+    {"suspend_before_begin_resume_failure", suspendBeforeBeginAndResumeFailure},
+    {"release_memory_after_stop", releaseMemoryAfterStop},
+    {"release_memory_refused", releaseMemoryRefused}
   };
   try {
     REQUIRE(argc == 2);

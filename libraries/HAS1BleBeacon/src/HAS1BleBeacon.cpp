@@ -16,6 +16,8 @@ StateMachine machine;
 bool startupAttempted = false;
 bool controllerAvailable = false;
 bool suspended = false;
+bool controllerStopped = false;
+bool memoryReleased = false;
 
 // Xtensa's toolchain does not promise lock-free C++ atomics. Use the ESP-IDF
 // cross-core critical-section primitive instead. Every scope below copies only
@@ -114,13 +116,23 @@ void suspend() {
   expect(0);
   takeCompletion();
   // Also after a failed startup: a half-initialized controller still holds heap.
-  machine.suspend(btStop());
+  controllerStopped = btStop();
+  machine.suspend(controllerStopped);
+}
+
+bool releaseMemory() {
+  // ESP-IDF releases controller memory only from the idle (deinitialized) state.
+  if (!suspended || !controllerStopped) return false;
+  // Arduino released Classic memory at boot; BLE takes the shared regions too.
+  // Its bookkeeping then makes a later btStartMode() refuse instead of crash.
+  if (!memoryReleased) memoryReleased = btMemRelease(BT_MODE_BLE);
+  return memoryReleased;
 }
 
 void resume() {
   if (!suspended) return;
   suspended = false;
-  controllerAvailable = startController();
+  controllerAvailable = !memoryReleased && startController();
   machine.resume(controllerAvailable);
 }
 
