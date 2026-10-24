@@ -18,8 +18,8 @@ For store 1 the intended address is `mqtt://172.30.1.43:1883`; confirm that its
 broker, collector, firewall and device accounts are ready before choosing MQTT.
 The helper accepts only explicit private LAN IPv4 addresses and ports, with no
 DNS, URL credentials or TLS scheme. This matches the existing trusted-LAN uploader.
-Firmware uses its uppercase 12-hex-digit Wi-Fi station MAC as MQTT username and
-client ID. The broker must have each device's MAC account and the configured
+Firmware uses its uppercase 12-hex-digit Wi-Fi station MAC as MQTT username.
+The MQTT client ID is `has1-bb-<MAC>`. The broker must have each device's MAC account and the configured
 password, with the supplied per-user topic ACL. The collector uses its separate
 account. Changing only the firmware setting does not provision broker accounts.
 

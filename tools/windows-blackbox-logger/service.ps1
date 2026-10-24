@@ -141,7 +141,7 @@ try {
         Assert-NoReparse $AppDir
         Assert-NoReparse $StateDir
         Invoke-Checked $PythonExe @('-E','-s','-c',
-            'import sys,struct; assert sys.version_info >= (3,11), "Python 3.11+ required"; assert struct.calcsize("P")==8, "64-bit Python required"')
+            "import sys,struct; assert sys.version_info >= (3,11), 'Python 3.11+ required'; assert struct.calcsize('P')==8, '64-bit Python required'")
         # Validate before creating or overwriting service files. Reinstallation
         # reuses the retained service configuration; it does not migrate a live DB.
         $existingConfig = Test-Path -LiteralPath $ConfigTarget

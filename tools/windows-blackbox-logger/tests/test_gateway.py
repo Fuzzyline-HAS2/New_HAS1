@@ -78,7 +78,16 @@ class GatewayTests(unittest.TestCase):
             for data in [b"bad", packet(), packet(source_id="wrong")]:
                 sender.sendto(data, ("127.0.0.1", receiver.port))
             deadline = time.monotonic() + 2
-            while receiver.stats()["callback_errors"] < 1 and time.monotonic() < deadline: time.sleep(.01)
+            # Parsing runs on the UDP reader while callbacks run on another
+            # worker. A callback error does not prove the last datagram was
+            # parsed; stopping at that point can discard it on Windows.
+            while time.monotonic() < deadline:
+                stats = receiver.stats()
+                if stats["invalid"] == 2 and stats["callback_errors"] == 1:
+                    break
+                time.sleep(.01)
+            else:
+                self.fail(f"Gateway did not finish both receive and callback work: {receiver.stats()}")
         finally: receiver.stop(2); sender.close()
         self.assertEqual(receiver.stats()["invalid"], 2)
         self.assertEqual(receiver.stats()["callback_errors"], 1)
