@@ -19,6 +19,7 @@ from service_runtime import read_machine_password
 NOTION_VERSION = "2025-09-03"
 MAX_BODY = 65536
 TOTAL_TIMEOUT = 10.0
+NOTION_STATUS_NAMES = {"offline": "In progress", "recovered": "Done", "monitoring_ended": "Not started"}
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ def _allowed_url(url, method):
             valid = ((method == "POST" and (parsed.path == "/v1/pages" or
                      re.fullmatch(r"/v1/data_sources/[0-9a-f-]{36}/query", parsed.path))) or
                      (method == "PATCH" and re.fullmatch(r"/v1/pages/[0-9a-f-]{36}", parsed.path)) or
-                     (method == "GET" and re.fullmatch(r"/v1/databases/[0-9a-f-]{36}", parsed.path)))
+                     (method == "GET" and re.fullmatch(r"/v1/(?:databases|data_sources)/[0-9a-f-]{36}", parsed.path)))
         else:
             valid = False
         if not valid:
@@ -150,7 +151,7 @@ def notion_database_id(url):
     """Parse a copied Notion DB URL; never connect to the supplied URL itself."""
     try:
         parsed = urlsplit(url)
-        if (parsed.scheme != "https" or parsed.hostname not in ("notion.so", "www.notion.so") or
+        if (parsed.scheme != "https" or parsed.hostname not in ("notion.so", "www.notion.so", "app.notion.com") or
                 parsed.username or parsed.password or parsed.port not in (None, 443)):
             raise ValueError()
         segment = parsed.path.rstrip("/").rsplit("/", 1)[-1]
@@ -184,6 +185,58 @@ def resolve_notion_database(database_url, token, *, transport=_transport):
         return DeliveryResult("delivered", "data_source_resolved", remote_id=_uuid(sources[0]["id"]))
     except (ValueError, TypeError, AttributeError, KeyError, OSError, RuntimeError):
         return DeliveryResult("permanent", "invalid_database_or_credentials")
+
+
+def _notion_schema(response, source_id):
+    """Validate only the supported properties; never repair a remote schema."""
+    failure = _classify(response, safe_retry=True)
+    if failure:
+        return None, failure
+    if response.get("oversized"):
+        return None, DeliveryResult("permanent", "oversized_schema_response")
+    try:
+        data = json.loads(response.get("body", ""))
+        if (not isinstance(data, dict) or data.get("object") != "data_source" or
+                _uuid(data.get("id")) != source_id or not isinstance(data.get("properties"), dict)):
+            raise ValueError()
+        properties = data["properties"]
+    except (ValueError, TypeError):
+        return None, DeliveryResult("retryable", "invalid_schema_response", 30)
+    for name, kind in (("Name", "title"), ("Incident ID", "rich_text"), ("Summary", "rich_text")):
+        prop = properties.get(name)
+        if not isinstance(prop, dict) or prop.get("type") != kind or not isinstance(prop.get(kind), dict):
+            return None, DeliveryResult("permanent", "notion_schema_mismatch")
+    prop = properties.get("Status")
+    if not isinstance(prop, dict):
+        return None, DeliveryResult("permanent", "notion_schema_mismatch")
+    kind = prop.get("type")
+    if kind == "rich_text" and isinstance(prop.get(kind), dict):
+        return kind, None
+    if kind != "status" or not isinstance(prop.get("status"), dict):
+        return None, DeliveryResult("permanent", "notion_schema_mismatch")
+    options = prop["status"].get("options")
+    if not isinstance(options, list) or any(not isinstance(option, dict) or not isinstance(option.get("name"), str) for option in options):
+        return None, DeliveryResult("retryable", "invalid_schema_response", 30)
+    # Validate all transitions during setup as well as delivery. No case folding,
+    # option creation or fallback to Done: monitoring ended is not recovery.
+    names = [option["name"] for option in options]
+    if any(names.count(name) != 1 for name in NOTION_STATUS_NAMES.values()):
+        return None, DeliveryResult("permanent", "notion_status_options_mismatch")
+    return kind, None
+
+
+def check_notion_schema(data_source_id, token, *, transport=_transport):
+    """Read-only installation preflight, with no credentials in the result."""
+    try:
+        source_id = _uuid(data_source_id)
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
+            return DeliveryResult("permanent", "invalid_credentials")
+        response = transport({"url": "https://api.notion.com/v1/data_sources/" + source_id,
+                              "method": "GET", "body": None, "token": token}, TOTAL_TIMEOUT)
+        kind, failure = _notion_schema(response, source_id)
+        return failure or DeliveryResult("delivered", "schema_valid_" + kind)
+    except (ValueError, TypeError, AttributeError, KeyError, OSError, RuntimeError):
+        return DeliveryResult("permanent", "invalid_schema_or_credentials")
 
 
 def _text(value, limit=1800):
@@ -230,6 +283,13 @@ class NotificationSender:
             if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
                 return DeliveryResult("permanent", "invalid_credentials")
             source_id = _uuid(self.config["notion"]["data_source_id"])
+            status = payload.get("status")
+            if not isinstance(status, str) or status not in NOTION_STATUS_NAMES:
+                return DeliveryResult("permanent", "unsupported_incident_status")
+            response = call(f"https://api.notion.com/v1/data_sources/{source_id}", "GET", None, token)
+            status_kind, failure = _notion_schema(response, source_id)
+            if failure:
+                return failure
             response = call(f"https://api.notion.com/v1/data_sources/{source_id}/query", "POST",
                             {"filter": {"property": "Incident ID", "rich_text": {"equals": incident_id}}, "page_size": 2}, token)
             failure = _classify(response, safe_retry=True)
@@ -251,7 +311,8 @@ class NotificationSender:
                 return [{"type": "text", "text": {"content": _text(text)}}]
             properties = {"Name": {"title": rich("HAS1 " + incident_id)},
                           "Incident ID": {"rich_text": rich(incident_id)},
-                          "Status": {"rich_text": rich(payload.get("status"))},
+                          "Status": ({"status": {"name": NOTION_STATUS_NAMES[status]}} if status_kind == "status"
+                                     else {"rich_text": rich(status)}),
                           "Summary": {"rich_text": rich(summary)}}
             body = {"properties": properties}
             if page_id:
@@ -274,15 +335,19 @@ class NotificationSender:
 
 if __name__ == "__main__":
     mode = sys.argv[1:]
-    if mode not in (["--http-worker"], ["--resolve-notion-database"]):
+    if mode not in (["--http-worker"], ["--resolve-notion-database"], ["--check-notion-schema"]):
         raise SystemExit("Use the collector notification worker or configuration helper")
     try:
         raw = sys.stdin.read(MAX_BODY + 1)
         if len(raw) > MAX_BODY:
             raise ValueError()
         request = json.loads(raw)
-        result = (_http_child(request) if mode == ["--http-worker"] else
-                  asdict(resolve_notion_database(request.get("database_url"), request.get("token"))))
+        if mode == ["--http-worker"]:
+            result = _http_child(request)
+        elif mode == ["--check-notion-schema"]:
+            result = asdict(check_notion_schema(request.get("data_source_id"), request.get("token")))
+        else:
+            result = asdict(resolve_notion_database(request.get("database_url"), request.get("token")))
     except Exception:
         result = {"network_error": True}
     sys.stdout.write(json.dumps(result))

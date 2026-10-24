@@ -39,11 +39,11 @@ if ($EnableSlack) {
     if ($private.slack_webhook_url -cnotmatch '^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$') { throw 'Invalid Slack webhook format.' }
 }
 if ($EnableNotion) {
+    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Run from the installed collector folder; Python venv is missing.' }
     $private.notion_token = Read-PrivateText 'Notion integration token (hidden)'
     if ($private.notion_token -cnotmatch '^[A-Za-z0-9_-]{10,512}$') { throw 'Invalid Notion token format.' }
     if ($NotionDatabaseUrl) {
-        $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-        if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Run from the installed collector folder; Python venv is missing.' }
         $lookup = @{ database_url = $NotionDatabaseUrl; token = $private.notion_token } | ConvertTo-Json -Compress
         $result = ($lookup | & $python -E -s (Join-Path $PSScriptRoot 'notifications.py') --resolve-notion-database) | ConvertFrom-Json
         $lookup = $null
@@ -53,6 +53,16 @@ if ($EnableNotion) {
         }
         $NotionDataSourceId = $result.remote_id
     }
+    # Read-only preflight for either input form; never save unusable credentials/config.
+    $lookup = @{ data_source_id = $NotionDataSourceId; token = $private.notion_token } | ConvertTo-Json -Compress
+    try {
+        $result = ($lookup | & $python -E -s (Join-Path $PSScriptRoot 'notifications.py') --check-notion-schema) | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $result.state -ne 'delivered') {
+            throw 'Notion preflight failed.'
+        }
+    } catch {
+        throw 'Cannot validate Notion schema. Check token access, network and property types/options in NOTIFICATIONS.md. Previous config is retained.'
+    } finally { $lookup = $null }
 }
 Add-Type -AssemblyName System.Security
 $bytes = [Text.Encoding]::UTF8.GetBytes(($private | ConvertTo-Json -Compress))
