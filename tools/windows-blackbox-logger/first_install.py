@@ -17,6 +17,9 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
 TABLES = {"device", "training_device"}
+# Store-1 (theme origin) registers its gloves as originglove, other themes as iotglove.
+DEVICE_TYPES = ("iotglove", "originglove", "generator")
+THEME_PATTERN = r"[A-Za-z0-9_-]{1,64}"
 
 
 def normalize_mac(value):
@@ -28,7 +31,7 @@ def normalize_mac(value):
     return raw.upper()
 
 
-def inventory(mac_list=None, database=None, tables=None):
+def inventory(mac_list=None, database=None, tables=None, theme="origin"):
     if bool(mac_list) == bool(database):
         raise ValueError("Supply exactly one MAC list or server database")
     skipped = 0
@@ -39,6 +42,8 @@ def inventory(mac_list=None, database=None, tables=None):
         selected = tables or ["device", "training_device"]
         if not selected or any(t not in TABLES for t in selected):
             raise ValueError("Only device and training_device inventory tables are supported")
+        if not isinstance(theme, str) or not re.fullmatch(THEME_PATTERN, theme):
+            raise ValueError("Theme must be 1..64 letters, digits, '_' or '-'")
         path = Path(database).resolve(strict=True)
         values = []
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
@@ -51,8 +56,15 @@ def inventory(mac_list=None, database=None, tables=None):
                 columns = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
                 if not {"mac", "device_type"}.issubset(columns):
                     raise ValueError("Inventory schema missing mac/device_type: " + table)
-                rows = db.execute(f'SELECT mac FROM "{table}" WHERE device_type IN (?, ?)',
-                                  ("iotglove", "generator"))
+                # device holds every theme's seed rows; only this store's theme is registered.
+                if table == "device" and "theme" not in columns:
+                    raise ValueError("Inventory schema missing theme: device; use a MAC list")
+                query = f'SELECT mac FROM "{table}" WHERE device_type IN (?, ?, ?)'
+                parameters = DEVICE_TYPES
+                if "theme" in columns:
+                    query += " AND theme = ?"
+                    parameters += (theme,)
+                rows = db.execute(query, parameters)
                 for row in rows:
                     if row[0] in (None, "", "mac not found"):
                         skipped += 1
@@ -167,10 +179,11 @@ def main():
     parser.add_argument("--mac-list", type=Path)
     parser.add_argument("--server-database", type=Path)
     parser.add_argument("--tables", nargs="+", choices=sorted(TABLES))
+    parser.add_argument("--theme", default="origin", help="device.theme of this store (store-1: origin)")
     args = parser.parse_args()
     try:
         value = read_provision(args.provision)
-        macs, skipped = inventory(args.mac_list, args.server_database, args.tables)
+        macs, skipped = inventory(args.mac_list, args.server_database, args.tables, args.theme)
         prepare(args.output, value, macs, args.passwd_exe)
         write_new(args.output / "HAS1BlackBoxBroker.xml", broker_xml(args.broker_exe.resolve(strict=True), args.output))
         print(f"Prepared {len(macs)} device accounts; skipped {skipped} unregistered placeholders. No service started.")

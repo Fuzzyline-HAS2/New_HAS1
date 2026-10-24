@@ -8,6 +8,8 @@ param(
     [Parameter(Mandatory=$true, ParameterSetName='Database')][string]$ServerDatabase,
     [Parameter(ParameterSetName='Database')][ValidateSet('device','training_device')]
     [string[]]$Tables = @('device','training_device'),
+    [Parameter(ParameterSetName='Database')][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+    [string]$Theme = 'origin',
     [string]$WinSWBinary,
     [switch]$Start
 )
@@ -95,7 +97,7 @@ try {
     $arguments = @('-E','-s',(Join-Path $PSScriptRoot 'first_install.py'),
         '--provision',$Provision,'--output',$BrokerState,'--passwd-exe',$PasswdExe,'--broker-exe',$BrokerExe)
     if ($PSCmdlet.ParameterSetName -eq 'List') { $arguments += @('--mac-list',$MacList) }
-    else { $arguments += @('--server-database',$ServerDatabase,'--tables') + $Tables }
+    else { $arguments += @('--server-database',$ServerDatabase,'--theme',$Theme,'--tables') + $Tables }
     & $PythonExe @arguments
     Check-Exit 'Broker preparation'
     $ProvisionValue = Get-Content -LiteralPath $Provision -Raw -Encoding UTF8 | ConvertFrom-Json
