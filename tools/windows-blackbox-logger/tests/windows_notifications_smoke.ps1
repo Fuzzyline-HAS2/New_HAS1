@@ -95,7 +95,11 @@ def mark(stage):
 mark("started")
 assert sys.argv[1:] == ["--check-notion-schema"], "unexpected CLI arguments"
 mark("argv_ok")
-raw_input = sys.stdin.read()
+raw_bytes = sys.stdin.buffer.read(65537)
+mark("stdin_bytes_" + str(len(raw_bytes)))
+mark("utf8_bom_" + str(int(raw_bytes.startswith(b"\xef\xbb\xbf"))))
+assert len(raw_bytes) <= 65536, "oversized preflight stdin"
+raw_input = raw_bytes.decode("utf-8-sig")
 mark("stdin_chars_" + str(len(raw_input)))
 request = json.loads(raw_input)
 mark("json_parsed")
@@ -138,6 +142,7 @@ else:
         if ($null -eq $failure -or -not $failure.Contains('Previous config is retained.')) { throw 'Rejected Notion schema did not fail safely.' }
         if ($failure.Contains($mockNotionToken) -or $failure.Contains($mockWebhook)) { throw 'Preflight failure exposed a credential.' }
         if (-not (Test-Path -LiteralPath $helperCalledPath) -or [IO.File]::ReadAllText($helperCalledPath) -ne 'reject') { throw ('Direct-ID schema preflight failed; synthetic helper stages: ' + (Get-HelperSmokeStage)) }
+        Write-Host ('Notion synthetic preflight stages: ' + (Get-HelperSmokeStage))
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($configPath)) -cne $beforeNotion) { throw 'Rejected Notion schema changed config.' }
         $credentialsAfter = @((Get-ChildItem -LiteralPath $StateDirectory -Filter 'notifications-*.dpapi').Name | Sort-Object) -join '|'
         if ($credentialsAfter -cne $credentialsBefore) { throw 'Rejected Notion schema left an extra DPAPI file.' }

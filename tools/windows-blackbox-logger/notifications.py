@@ -338,10 +338,12 @@ if __name__ == "__main__":
     if mode not in (["--http-worker"], ["--resolve-notion-database"], ["--check-notion-schema"]):
         raise SystemExit("Use the collector notification worker or configuration helper")
     try:
-        raw = sys.stdin.read(MAX_BODY + 1)
+        # Windows PowerShell / .NET redirected stdin may prepend a UTF-8 BOM.
+        # Decode bytes explicitly so the protocol also ignores the host locale.
+        raw = sys.stdin.buffer.read(MAX_BODY + 1)
         if len(raw) > MAX_BODY:
             raise ValueError()
-        request = json.loads(raw)
+        request = json.loads(raw.decode("utf-8-sig"))
         if mode == ["--http-worker"]:
             result = _http_child(request)
         elif mode == ["--check-notion-schema"]:

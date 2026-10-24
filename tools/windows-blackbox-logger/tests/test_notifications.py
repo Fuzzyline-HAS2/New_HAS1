@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications import NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, validate_config
+from notifications import MAX_BODY, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, validate_config
 
 SOURCE = '12345678-1234-1234-1234-123456789abc'
 PAGE = 'abcdefab-1234-1234-1234-123456789abc'
@@ -282,11 +282,27 @@ class NotificationsTests(unittest.TestCase):
         self.assertNotIn(CREDS['notion_token'], repr(result))
 
     def test_schema_helper_cli_rejects_secret_without_network(self):
-        completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'notifications.py'),
-                                    '--check-notion-schema'], input=json.dumps({'data_source_id': SOURCE, 'token': 'bad secret'}),
-                                   text=True, capture_output=True, check=True, timeout=5)
-        self.assertEqual(json.loads(completed.stdout)['code'], 'invalid_credentials')
-        self.assertNotIn('bad secret', completed.stdout + completed.stderr)
+        request = json.dumps({'data_source_id': SOURCE, 'token': 'bad secret'}).encode('utf-8')
+        for prefix in (b'', b'\xef\xbb\xbf'):
+            with self.subTest(bom=bool(prefix)):
+                completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'notifications.py'),
+                                            '--check-notion-schema'], input=prefix + request,
+                                           capture_output=True, check=True, timeout=5)
+                self.assertEqual(json.loads(completed.stdout)['code'], 'invalid_credentials')
+                self.assertNotIn(b'bad secret', completed.stdout + completed.stderr)
+
+    def test_schema_helper_cli_rejects_malformed_or_oversized_bytes(self):
+        oversized = json.dumps({'data_source_id': SOURCE, 'token': 'bad secret', 'note': '\uac00' * 22000},
+                               ensure_ascii=False).encode('utf-8')
+        self.assertGreater(len(oversized), MAX_BODY)
+        for request in (b'{', b'\xff', b'\xef\xbb\xbf{', oversized):
+            with self.subTest(size=len(request)):
+                completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'notifications.py'),
+                                            '--check-notion-schema'], input=request,
+                                           capture_output=True, check=True, timeout=5)
+                self.assertEqual(json.loads(completed.stdout), {'network_error': True})
+                self.assertEqual(completed.stderr, b'')
+                self.assertNotIn(b'bad secret', completed.stdout)
 
     def test_notion_blocked_rate_limit_is_permanent(self):
         response = {'status': 429, 'body': json.dumps({'additional_data': {'rate_limit_reason': 'public_api_request_blocked'}})}
