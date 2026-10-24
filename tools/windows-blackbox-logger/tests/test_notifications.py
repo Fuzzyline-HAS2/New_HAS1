@@ -214,6 +214,35 @@ class NotificationsTests(unittest.TestCase):
         self.assertNotIn('thread_ts', calls[1]['body'])
         self.assertIn('모두 복구', calls[1]['body']['blocks'][0]['text']['text'])
 
+    def test_slack_bot_alerts_only_when_a_settled_card_reopens(self):
+        # Two gloves dropping together: the second only edits the card.
+        sender, calls = self.bot_sender([self.slack_ok()])
+        both_open = self.session(self.CARD, counts={'open': 2})
+        self.assertEqual(sender.send('slack', dict(PAYLOAD, device_id='G1P5', status='offline', slack_session=both_open)).state, 'delivered')
+        self.assertEqual(len(calls), 1)
+        # A new drop after everything else had ended: thread it and surface it in the channel.
+        sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000600.000600')])
+        settled = self.session(self.CARD, counts={'open': 1, 'recovered': 2})
+        self.assertEqual(sender.send('slack', dict(PAYLOAD, device_id='G1P1', status='offline', gap_ms=20100,
+                                                   slack_session=settled)).state, 'delivered')
+        update, reply = calls
+        self.assertEqual((reply['body']['thread_ts'], reply['body']['reply_broadcast']), (self.CARD, True))
+        self.assertTrue(reply['body']['text'].startswith('🔴 G1P1 연결 끊김 · '))
+        self.assertIn('무응답 20초', reply['body']['text'])
+
+    def test_slack_bot_takes_over_a_pre_upgrade_device_card(self):
+        sender, calls = self.bot_sender([self.slack_ok()])
+        result = sender.send('slack', dict(PAYLOAD, slack_ts='1700000000.000900', slack_session=self.session(None, 'recovered')))
+        self.assertEqual((calls[0]['url'], calls[0]['body']['ts']), ('https://slack.com/api/chat.update', '1700000000.000900'))
+        self.assertEqual(result.parent_id, '1700000000.000900')
+
+    def test_slack_session_card_counts_the_whole_session(self):
+        many = [{'device_id': f'G1P{n}', 'state': 'recovered', 'opened_utc': '2026-10-24T22:25:29Z',
+                 'updated_utc': '2026-10-24T22:25:47Z'} for n in range(14)]
+        card = slack_session_card(PAYLOAD, self.session(incidents=many, counts={'recovered': 70}))
+        self.assertTrue(any(text.endswith('외 58건') for kind, text in self.texts(card) if kind == 'plain_text'))
+        self.assertIn(('plain_text', '장애\n70건 (복구 70 · 미복구 0 · 진행 중 0)'), self.texts(card))
+
     def test_slack_session_card_keeps_device_names_inert(self):
         session = self.session(site_id='<!here>', incidents=[{'device_id': '<!channel>', 'state': 'open', 'opened_utc': 'bad', 'updated_utc': None}])
         card = slack_session_card(PAYLOAD, session)

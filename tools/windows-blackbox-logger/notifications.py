@@ -390,31 +390,45 @@ def _session_item_line(item):
     return line + (" → 미복구 종료" if item.get("state") == "closed" else " → 장애중")
 
 
+def _session_counts(session):
+    """(open, recovered, unrecovered) over the whole session, not just the listed lines."""
+    counts = session.get("counts")
+    if not isinstance(counts, dict):
+        states = [item.get("state") for item in session.get("incidents") or [] if isinstance(item, dict)]
+        counts = {state: states.count(state) for state in set(states)}
+    def number(state):
+        value = counts.get(state, 0)
+        return value if type(value) is int and value >= 0 else 0
+    return number("open"), number("recovered"), number("closed")
+
+
 def slack_session_card(payload, session):
     """One incident card per game session, edited in place like PagerDuty/Opsgenie alerts.
 
     plain_text only, except the Notion link whose URL and label the collector builds itself.
     """
     items = [item for item in session.get("incidents") or [] if isinstance(item, dict)]
-    states = [item.get("state") for item in items]
+    open_count, recovered, unrecovered = _session_counts(session)
+    total = open_count + recovered + unrecovered
     site = _text(session.get("site_id") or payload.get("site_id"), 60)
     game = _text(session.get("session_id") or payload.get("game_session_id"), 80)
-    if "open" in states:
-        overall = f"🔴 장애 진행 중 {states.count('open')}건"
-    elif "closed" in states:
+    if open_count:
+        overall = f"🔴 장애 진행 중 {open_count}건"
+    elif unrecovered:
         overall = "🟠 미복구 종료 포함"
     else:
         overall = "🟢 모두 복구"
     title = " · ".join(part for part in (overall, f"세션 {game}" if game else None, site) if part)
     opened = [stamp for stamp in (_parse_time(item.get("opened_utc")) for item in items) if stamp]
-    counts = f"{len(items)}건 (복구 {states.count('recovered')} · 미복구 {states.count('closed')} · 진행 중 {states.count('open')})"
+    counts = f"{total}건 (복구 {recovered} · 미복구 {unrecovered} · 진행 중 {open_count})"
     # Same automatic rule as the Notion incident DB; SEV1 (game stopped, refund) is set by people.
-    severity = "SEV2 · 미복구 있음" if "closed" in states else "SEV3 · 자동 판정"
+    severity = "SEV2 · 미복구 있음" if unrecovered else "SEV3 · 자동 판정"
     fields = [("매장", site), ("게임 세션", game), ("처음 끊김", _kst(min(opened).isoformat()) if opened else None),
               ("장애", counts), ("심각도", severity)]
+    # The collector lists unresolved incidents first, then the newest.
     lines = [_session_item_line(item) for item in items[:SESSION_LINES]]
-    if len(items) > SESSION_LINES:
-        lines.append(f"외 {len(items) - SESSION_LINES}건")
+    if total > len(lines):
+        lines.append(f"외 {total - len(lines)}건")
     context = [{"type": "plain_text", "text": "원인은 아직 확정되지 않았습니다. 장치별 경과는 스레드에 있습니다."}]
     link = _notion_link(session.get("notion_page"), "📒 노션 장애 페이지")
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
@@ -486,7 +500,9 @@ def _send_slack_session(call, token, channel_id, payload):
                                   "opened_utc": payload.get("opened_at") or payload.get("occurred_at"),
                                   "updated_utc": payload.get("occurred_at")}]}
     card = slack_session_card(payload, session)
-    parent = session.get("ts") if isinstance(session.get("ts"), str) and SLACK_TS.fullmatch(session["ts"]) else None
+    # A pre-upgrade follow-up still carries its per-device card: take it over as the session card.
+    parent = next((ts for ts in (session.get("ts"), payload.get("slack_ts")) if isinstance(ts, str) and SLACK_TS.fullmatch(ts)), None)
+    edited = False
     if parent:
         # Edit first: a failed edit retries without leaving a duplicate reply.
         _, failure = _slack_api(call, token, "chat.update", {"channel": channel_id, "ts": parent,
@@ -495,6 +511,8 @@ def _send_slack_session(call, token, channel_id, payload):
             return failure
         if failure:
             parent = None  # Card deleted or no longer editable: open a new one for the session.
+        else:
+            edited = True
     if not parent:
         data, failure = _slack_api(call, token, "chat.postMessage", dict(card, channel=channel_id))
         if failure:
@@ -502,9 +520,12 @@ def _send_slack_session(call, token, channel_id, payload):
         parent = data.get("ts")
         if not isinstance(parent, str) or not SLACK_TS.fullmatch(parent):
             return DeliveryResult("unknown", "invalid_write_response")
-    if payload.get("status") != "monitoring_ended":
+    open_count, recovered, unrecovered = _session_counts(session)
+    # Edits notify nobody. Thread and surface what needs a person: a device unrecovered at game end,
+    # or a new drop on a card that had settled (everything else had already ended).
+    reopened = payload.get("status") == "offline" and edited and open_count == 1 and recovered + unrecovered > 0
+    if payload.get("status") != "monitoring_ended" and not reopened:
         return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
-    # Unrecovered at game end needs a person: thread it and surface it in the channel too.
     reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent, reply_broadcast=True)
     _, failure = _slack_api(call, token, "chat.postMessage", reply)
     if failure:

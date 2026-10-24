@@ -257,6 +257,14 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual({key: context[key] for key in ("site_id","session_id","ts","notion_page","event_page")},
                          {"site_id":"store-1","session_id":"game-1","ts":card,"notion_page":session_page,"event_page":event_page})
         self.assertEqual([(item["device_id"],item["state"]) for item in context["incidents"]],[("glove-1","open")])
+        # Only announced incidents count: a pending or canceled alert would never refresh the card.
+        for name, state in (("quiet","pending"),("dropped","canceled"),("told","delivered")):
+            self.store.db.execute("INSERT INTO incident_state VALUES (?,'store-1','server-1','server-1','game-1',?,NULL,'recovered','reconnected',?,?,'{}')",(name,"dev-"+name,NOW,NOW))
+            self.store.db.execute("INSERT INTO incident_outbox(incident_id,destination,version,payload,state) VALUES (?,'slack',1,'{}',?)",(name,state))
+        context = self.store.slack_session("incident-1")
+        self.assertEqual([item["device_id"] for item in context["incidents"]],["glove-1","dev-told"])  # open first
+        self.assertEqual(context["counts"],{"open":1,"recovered":1})
+        self.assertEqual(self.store.slack_session("quiet")["counts"],{"open":1,"recovered":2})  # itself while delivering
         self.process(event("device_recovered",seq=2))
         self.assertEqual(self.store.slack_session("incident-1")["incidents"][0]["state"],"recovered")
         # A failed write that still opened the card keeps it for the retry.
@@ -412,7 +420,7 @@ class RuntimeTests(unittest.TestCase):
                         time.sleep(.01)
                     self.assertEqual(len(calls),1)
                     self.assertEqual(calls[0][1]["incident_id"],"next-incident")
-                    self.assertEqual(calls[0][1]["slack_session"]["session_id"],"game-2")
+                    self.assertNotIn("slack_session",calls[0][1])  # webhook mode is unchanged
                     stopped=runtime.stop()
                     self.assertTrue(stopped)
                 finally:

@@ -365,12 +365,20 @@ class IncidentStore:
             return None
         links = dict(self.db.execute("SELECT destination,remote_id FROM session_links WHERE site_id=? AND session_id=?", (row["site_id"], row["session_id"])).fetchall())
         event = self.db.execute("SELECT remote_id FROM incident_outbox WHERE incident_id=? AND destination='notion' AND version=1 AND state='delivered'", (incident_id,)).fetchone()
+        # Only incidents already announced on Slack (plus the one being delivered): one whose alert was
+        # canceled never gets a follow-up, so listing it would leave the card stale.
+        announced = ("FROM incident_state i WHERE site_id=? AND session_id=? AND (incident_id=? OR EXISTS("
+                     "SELECT 1 FROM incident_outbox o WHERE o.incident_id=i.incident_id AND o.destination='slack' "
+                     "AND o.version=1 AND o.state='delivered'))")
+        params = (row["site_id"], row["session_id"], incident_id)
+        # Unresolved first, then newest: a flapping session must not hide the device that is down now.
         incidents = [dict(item) for item in self.db.execute(
-            "SELECT device_id,state,opened_utc,updated_utc FROM incident_state i WHERE site_id=? AND session_id=? "
-            "AND EXISTS(SELECT 1 FROM incident_outbox o WHERE o.incident_id=i.incident_id AND o.destination='slack') "
-            "ORDER BY opened_utc,incident_id LIMIT 64", (row["site_id"], row["session_id"]))]
+            "SELECT incident_id,device_id,state,opened_utc,updated_utc " + announced +
+            " ORDER BY state='open' DESC,opened_utc DESC,incident_id LIMIT 64", params)]
+        counts = dict(self.db.execute("SELECT state,count(*) " + announced + " GROUP BY state", params).fetchall())
         return {"site_id": row["site_id"], "session_id": row["session_id"], "ts": links.get("slack"),
-                "notion_page": links.get("notion"), "event_page": event[0] if event else None, "incidents": incidents}
+                "notion_page": links.get("notion"), "event_page": event[0] if event else None,
+                "incident_id": incident_id, "incidents": incidents, "counts": counts}
 
     def defer(self, delivery_id, *, now_epoch, delay):
         # Waiting for late device uploads sends nothing, so it is not a delivery attempt.
@@ -439,8 +447,10 @@ class IncidentRuntime:
         self.counts = {"process_errors":0,"notification_errors":0}
         self.health = "awaiting_snapshot"
         notification = config.get("notifications", {})
-        # Notion first: its session page is then known when the Slack card links to it.
-        self.channels = [name for name in ("notion","slack") if notification.get("enabled") and notification.get(name,{}).get("enabled")]
+        # Bot mode keeps one Slack card per game session; Notion goes first so the card can link its page.
+        self.slack_cards = bool(notification.get("enabled") and notification.get("slack",{}).get("enabled") and notification.get("slack",{}).get("channel_id"))
+        order = ("notion","slack") if self.slack_cards else ("slack","notion")
+        self.channels = [name for name in order if notification.get("enabled") and notification.get(name,{}).get("enabled")]
 
     def start(self):
         for target,name in ((self._process_loop,"incident-state"),(self._notification_loop,"incident-delivery")):
@@ -556,8 +566,7 @@ class IncidentRuntime:
                             if delay:
                                 state.defer(row["id"], now_epoch=time.time(), delay=delay)
                                 continue
-                        if row["destination"] == "slack":
-                            # Bot mode edits one card per game session; webhook mode ignores this.
+                        if row["destination"] == "slack" and self.slack_cards:
                             payload = dict(payload, slack_session=state.slack_session(row["incident_id"]))
                         result = sender.send(row["destination"],payload)
                         state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels)
