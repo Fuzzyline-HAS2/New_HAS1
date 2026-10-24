@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from incident_evidence import summarize, wait_seconds
@@ -170,6 +171,26 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(kept), 6)
         self.assertTrue(kept[0].startswith("와이파이 요약"))
         self.assertIn("복구 동작", kept[-1])
+
+    def test_unmapped_wifi_reasons_still_summarize(self):
+        # ESP-IDF has many disconnect codes beyond WIFI_REASONS; they must not break the table.
+        path = Path(self.temp.name) / "unmapped.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        store.save(device(2, "2026-10-24T03:03:30.000000+00:00", "WifiEvent", "ap:112233445566", (21, 14, 6, 0)))
+        store.save(device(3, "2026-10-24T03:03:30.000000+00:00", "WifiEvent", "ap:112233445566", (21, 202, 6, 0)))
+        store.save(device(4, "2026-10-24T03:03:30.000000+00:00", "WifiEvent", "ap:112233445566", (21, 9, 6, 0)))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            result = summarize(raw, INCIDENT, CLOSED)
+        self.assertEqual(result["highlights"], ["와이파이 끊김 원인 14, 202 AUTH_FAIL, 9"])
+        self.assertIn("끊김 원인 14", result["rows"][-3][2])
+
+    def test_highlight_failure_never_costs_the_table(self):
+        with patch("incident_evidence._highlights", side_effect=TypeError("boom")):
+            result = summarize(self.raw, INCIDENT, CLOSED)
+        self.assertEqual(result["highlights"], [])
+        self.assertTrue(result["rows"])
 
     def test_flapping_omada_keeps_start_and_end_and_reports_the_cut(self):
         path = Path(self.temp.name) / "flap.db"

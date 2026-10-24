@@ -336,7 +336,7 @@ class IncidentStore:
                 return result
         return None
 
-    def finish(self, delivery_id, result, *, now_epoch, channels):
+    def finish(self, delivery_id, result, *, now_epoch, channels, on_delivered=None):
         state = {"delivered":"delivered", "retryable":"retryable", "permanent":"permanent", "unknown":"manual_review"}.get(result.state, "manual_review")
         with self.transaction():
             row = self.db.execute("SELECT * FROM incident_outbox WHERE id=? AND state='sending'", (delivery_id,)).fetchone()
@@ -352,6 +352,8 @@ class IncidentStore:
                 # The game session's Slack card / Notion page, kept even when this delivery's
                 # own write failed so its retry and later events reuse it.
                 self.db.execute("INSERT OR REPLACE INTO session_links VALUES (?,?,?,?)", (incident["site_id"], incident["session_id"], row["destination"], parent))
+            if on_delivered and state == "delivered":
+                on_delivered()  # same transaction: a follow-up cannot be lost between the two writes
             if row["version"] == 1 and incident["state"] != "open":
                 if state == "retryable":
                     self.db.execute("UPDATE incident_outbox SET state='canceled' WHERE id=?", (delivery_id,))
@@ -580,9 +582,11 @@ class IncidentRuntime:
                         if row["destination"] == "slack" and self.slack_cards:
                             payload = dict(payload, slack_session=state.slack_session(row["incident_id"]))
                         result = sender.send(row["destination"],payload)
-                        state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels)
-                        if self.slack_cards and isinstance(payload.get("evidence"), dict) and result.state == "delivered":
-                            state.queue_slack_evidence(row["incident_id"], payload["evidence"].get("highlights"))
+                        followup = None
+                        if self.slack_cards and isinstance(payload.get("evidence"), dict):
+                            highlights = payload["evidence"].get("highlights")
+                            followup = lambda: state.queue_slack_evidence(row["incident_id"], highlights)
+                        state.finish(row["id"],result,now_epoch=time.time(),channels=self.channels,on_delivered=followup)
                 except Exception:
                     # An unexpected exception after claim is ambiguous; never
                     # automatically resend a possibly accepted external request.
