@@ -43,7 +43,7 @@ Set-Location 'C:\HAS1-BlackBox\windows-blackbox-logger'
   -ServerDatabase '운영자가 확인한 실제 SQLite 파일의 전체 경로' -Start
 ```
 
-`device`와 `training_device`의 `device_type`이 `iotglove` 또는 `generator`인 행에서 `mac`만 읽습니다. DB는 읽기 전용이며 게임 데이터를 변경하지 않습니다. 기본 테이블이 없는 이전 서버라면 실제 존재 여부를 확인하고 `-Tables device`를 지정합니다. 비어 있는 MAC/`mac not found`는 건너뛰고 수량을 출력합니다. 그 외 잘못된 MAC이나 예상하지 못한 스키마는 중단합니다. 여러 테마에 같은 MAC이 등록돼 있으면 하나의 계정으로 합칩니다.
+`device`와 `training_device`의 `device_type`이 `iotglove`, `originglove` 또는 `generator`인 행에서 `mac`만 읽습니다. 1호점(`origin` 테마)의 글러브는 `originglove`로 등록되어 있습니다. 서버 DB의 `device`에는 다른 테마(`404`, `badland`, `city_error` 등)의 장치도 함께 들어 있으므로 `device.theme`이 `-Theme`(기본값 `origin`)과 같은 행만 사용합니다. 다른 매장은 그 매장의 테마를 지정합니다. `training_device`는 `theme` 열이 없어 전체 행을 읽습니다. `device`에 `theme` 열이 없는 이전 서버는 다른 테마 장치를 걸러낼 수 없으므로 중단하며, 이 경우 방법 A의 MAC 목록을 사용합니다. DB는 읽기 전용이며 게임 데이터를 변경하지 않습니다. 기본 테이블이 없는 이전 서버라면 실제 존재 여부를 확인하고 `-Tables device`를 지정합니다. 비어 있는 MAC/`mac not found`는 건너뛰고 수량을 출력합니다. 그 외 잘못된 MAC이나 예상하지 못한 스키마는 중단합니다. 같은 MAC이 여러 행에 있으면 하나의 계정으로 합칩니다.
 
 설치 결과를 `C:\ProgramData\HAS1BlackBoxBroker\registered-macs.txt`에서 확인하세요. 동작 중인 장치가 이 목록에 없으면 로그인할 수 없습니다. DB의 MAC이 TTGO의 실제 STA MAC과 맞는지도 확인해야 합니다.
 

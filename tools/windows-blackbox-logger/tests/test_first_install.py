@@ -18,6 +18,8 @@ from test_mqtt import BROKER, PASSWD, HAS_PAHO
 
 MAC = "AABBCCDDEEFF"
 OTHER = "112233445566"
+TRAINING = "A4F00FD90B44"
+ELSEWHERE = "2CBCBBA7BD28"
 PROVISION = dict(schema_version=1, site_id="store-1", broker_uri="mqtt://172.30.1.43:1883",
                  collector_username="collector", device_password="d" * 64, collector_password="c" * 64)
 
@@ -27,14 +29,26 @@ class FirstInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fixture.sqlite"
             db = sqlite3.connect(path)
-            db.executescript("CREATE TABLE device(mac TEXT, device_type TEXT); CREATE TABLE training_device(mac TEXT, device_type TEXT);")
-            db.executemany("INSERT INTO device VALUES (?,?)", [("aa:bb:cc:dd:ee:ff", "iotglove"),
-                (OTHER, "generator"), ("mac not found", "iotglove"), ("CC" * 6, "itembox")])
+            db.executescript("CREATE TABLE device(mac TEXT, device_type TEXT, theme TEXT); CREATE TABLE training_device(mac TEXT, device_type TEXT);")
+            db.executemany("INSERT INTO device VALUES (?,?,?)", [("aa:bb:cc:dd:ee:ff", "originglove", "origin"),
+                (OTHER, "generator", "origin"), ("", "originglove", "origin"), ("mac not found", "iotglove", "origin"),
+                ("CC" * 6, "itembox", "origin"), (ELSEWHERE, "iotglove", "badland"), (ELSEWHERE, "iotglove", "origin_error")])
+            db.executemany("INSERT INTO training_device VALUES (?,?)", [(TRAINING, "generator"), ("", "iotglove")])
             db.commit(); db.close()
             before = path.read_bytes()
-            self.assertEqual(inventory(database=path), ([OTHER, MAC], 1))
+            self.assertEqual(inventory(database=path), ([OTHER, TRAINING, MAC], 3))
+            self.assertEqual(inventory(database=path, tables=["device"]), ([OTHER, MAC], 2))
+            self.assertEqual(inventory(database=path, tables=["device"], theme="badland"), ([ELSEWHERE], 0))
             self.assertEqual(path.read_bytes(), before)
             with self.assertRaises(ValueError): inventory(database=path, tables=["device;DROP TABLE device"])
+            for theme in ("", "origin' OR '1'='1", None):
+                with self.assertRaises(ValueError): inventory(database=path, theme=theme)
+            unthemed = Path(directory) / "unthemed.sqlite"
+            db = sqlite3.connect(unthemed)
+            db.executescript("CREATE TABLE device(mac TEXT, device_type TEXT);")
+            db.execute("INSERT INTO device VALUES (?,?)", (MAC, "iotglove"))
+            db.commit(); db.close()
+            with self.assertRaises(ValueError): inventory(database=unthemed, tables=["device"])
             missing = Path(directory) / "absent.sqlite"
             with self.assertRaises(FileNotFoundError): inventory(database=missing)
             self.assertFalse(missing.exists())
