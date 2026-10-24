@@ -82,6 +82,23 @@ firmware release or installation has been performed by this change.
   uninterrupted normal gameplay. Worker and main state ownership still applies.
   Cancelled queued work can drain offline; maintenance aborts after ten seconds
   without connectivity rather than holding the normal queue indefinitely.
+- GitHub OTA needs memory the running device does not have spare. The core's
+  mbedTLS uses fixed 16 KiB in/out record buffers, about 45 KiB per HTTPS request
+  including two ~17 KiB contiguous blocks, while a generator runs with ~48 KiB
+  free (largest block 31-45 KiB). Every GitHub request failed at connect (HTTP -1).
+  Before `ota.check()` the main task therefore waits (up to 15 seconds after the
+  request) for the blackbox MQTT session to end, then stops the BLE controller
+  (`Has1BleBeacon::suspend()`), logs `[NET] OTA memory` heap/largest before and
+  after, and runs the check. A successful update restarts the device. A failed or
+  skipped one restarts BLE (`resume()`), which replays its full advertising setup,
+  and logs `[NET] OTA returned without update`. If BLE does not come back, the
+  device restarts so no game runs without its beacon. GitHub maintenance starts
+  only when `device_state` changes to `github` (including the first snapshot after
+  boot), so a failed attempt is retried after the state changes away and back or
+  after a reboot, as before. A restart for BLE therefore repeats the attempt while
+  the server stays at `github`, until staff change the state. The local HTTP update
+  (`device_state=update`) needs no TLS and keeps its path without these steps, so
+  it remains the fallback if the new path misbehaves.
 
 Network diagnostics identify request kind/id/generation, queue delay, transport
 phase and elapsed time. The worker publishes a small progress snapshot; main

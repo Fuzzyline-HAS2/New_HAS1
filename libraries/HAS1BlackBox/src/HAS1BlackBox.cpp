@@ -86,6 +86,8 @@ struct PartitionFlash : Flash {
 PartitionFlash flash;
 Ring ring(flash);
 std::atomic<bool> connected{false}, subscribed{false}, mqttTaskStarted{false};
+// An MQTT client (its task, buffers and TCP transport) may exist; see uploadIdle().
+std::atomic<bool> sessionActive{false};
 std::atomic<uint32_t> mqttStartTimeouts{0};
 // Only MQTT task touches these reassembly fields; callbacks only copy to the
 // ACK queue.
@@ -453,6 +455,14 @@ void uploader(void *) {
       nextAt = millis() + 60000;
       continue;
     }
+    // Published before the last permission check: a caller that withdrew
+    // permission and then saw uploadIdle() knows no session can still start.
+    sessionActive = true;
+    if (generation != gen || !networkReady()) {
+      sessionActive = false;
+      nextAt = millis() + 5000;
+      continue;
+    }
     esp_mqtt_client_config_t cfg{};
     cfg.broker.address.uri = broker;
     cfg.credentials.client_id = clientId;
@@ -546,6 +556,7 @@ void uploader(void *) {
         // Leaking is bounded: the uploader stops after three.
         if (++mqttStartTimeouts >= 3) {
           ++uploadFailures;
+          sessionActive = false;
           for (;;)
             vTaskDelay(pdMS_TO_TICKS(60000));
         }
@@ -557,6 +568,7 @@ void uploader(void *) {
         esp_mqtt_client_destroy(client);
       }
     }
+    sessionActive = false;
     // Lifetime minimum: covers the payload buffer and publish/subscribe paths.
     uploaderStackFree = uint32_t(uxTaskGetStackHighWaterMark(nullptr));
     if (success) {
@@ -713,6 +725,7 @@ void BlackBox::endLedOutput() {
     xSemaphoreGive(flashGuard);
 }
 bool BlackBox::ready() const { return isReady; }
+bool BlackBox::uploadIdle() const { return !sessionActive; }
 Diagnostics BlackBox::diagnostics() const {
   Diagnostics d{accepted.load(),
           persisted.load(),

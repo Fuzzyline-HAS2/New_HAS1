@@ -95,7 +95,9 @@ automatic retries. Diagnostic fault hooks run outside the RTC lock. Logger tasks
 never feed the main or worker watchdog.
 
 OTA adds pause/unpause around the existing calls; it cannot preempt flash work
-already executing. Explicit server restart stays immediate; the final log is
+already executing. GitHub OTA first waits up to 15 seconds from the maintenance
+request for `uploadIdle()`, so the withdrawn MQTT session has freed its client,
+task and buffers before TLS starts. The local HTTP update does not wait. Explicit server restart stays immediate; the final log is
 best-effort queueing, with no new flush delay or restart policy.
 
 Steady state is approximately 10–15 records/minute, plus logger metadata, so 1,920

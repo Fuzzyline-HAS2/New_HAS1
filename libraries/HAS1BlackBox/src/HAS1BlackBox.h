@@ -39,6 +39,10 @@ public:
   bool tryBeginLedOutput();
   void endLedOutput();
   bool ready() const;
+  // No MQTT session exists. After setUploadAllowed(false) or setPaused(true)
+  // this becomes true once the uploader has stopped and freed its client, and
+  // stays true until permission returns. A leaked client is not waited for.
+  bool uploadIdle() const;
   FlushResult flushThrough(uint32_t ticket, uint32_t timeoutMs);
   Diagnostics diagnostics() const;
 };

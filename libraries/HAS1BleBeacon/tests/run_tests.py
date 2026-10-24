@@ -42,6 +42,10 @@ def main():
             "startup_failure", "registration_failure", "immediate_callback_idempotence",
             "successful_status_not_final", "timely_mailbox_consumption",
             "wrong_duplicate_events", "unavailable_transport_service",
+            "suspend_resume", "suspend_waits_bounded",
+            "suspend_finishes_outstanding_command_first",
+            "suspend_ignores_stopped_controller_event",
+            "suspend_before_begin_resume_failure",
         ):
             subprocess.run([str(adapter), scenario], check=True, env=environment, timeout=30)
 

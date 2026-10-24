@@ -17,16 +17,20 @@ using namespace Has1BleBeacon;
 namespace {
 uint32_t fakeNow = 100;
 unsigned starts = 0;
+unsigned stops = 0;
 unsigned registrations = 0;
 unsigned sendReadyChecks = 0;
 unsigned criticalDepth = 0;
 portMUX_TYPE* activeMux = nullptr;
 bool startResult = true;
+bool stopResult = true;
 bool available = true;
 bool immediateCompletion = false;
 esp_err_t registerResult = ESP_OK;
 const esp_vhci_host_callback_t* registeredCallback = nullptr;
 std::vector<std::vector<uint8_t>> sent;
+std::function<void()> duringStop;
+std::function<void()> duringDelay;
 
 uint16_t lastOpcode() {
   REQUIRE(!sent.empty());
@@ -173,6 +177,110 @@ void unavailableTransportService() {
   REQUIRE(diagnostics().lastError == Error::SendUnavailable);
   REQUIRE(diagnostics().failures > 0 && diagnostics().failures < 6);
 }
+
+void runToRunning() {
+  immediateCompletion = true;
+  for (unsigned i = 0; i < 32 && diagnostics().step != Step::Running; ++i) { ++fakeNow; poll(); }
+  immediateCompletion = false;
+  REQUIRE(diagnostics().step == Step::Running);
+}
+
+bool advertisingDisable(const std::vector<uint8_t>& packet) {
+  return packet.size() == 5 && packet[1] == 0x0a && packet[2] == 0x20 && packet[4] == 0;
+}
+
+void suspendResume() {
+  prepare();
+  runToRunning();
+  immediateCompletion = true;
+  const uint32_t before = fakeNow;
+  suspend();
+  suspend(); // Idempotent: one controller stop.
+  immediateCompletion = false;
+  REQUIRE(stops == 1);
+  REQUIRE(sent.size() == 6 && advertisingDisable(sent.back())); // Before deinit.
+  REQUIRE(fakeNow == before); // An answered disable costs no wait.
+  REQUIRE(diagnostics().step == Step::Unavailable);
+  REQUIRE(diagnostics().radio == RadioState::Off);
+  const unsigned checks = sendReadyChecks;
+  for (unsigned i = 0; i < 1000; ++i) { ++fakeNow; poll(); }
+  REQUIRE(sendReadyChecks == checks && sent.size() == 6);
+  resume();
+  resume();
+  REQUIRE(starts == 2 && registrations == 2); // Deinit dropped the callback.
+  runToRunning();
+  REQUIRE(sent.size() == 11);
+  REQUIRE(sent[6][1] == 0x03 && sent[6][2] == 0x0c); // Reset first.
+  REQUIRE(diagnostics().failures == 0);
+}
+
+void suspendWaitsBounded() {
+  prepare();
+  runToRunning();
+  const uint32_t before = fakeNow;
+  suspend(); // The disable is never answered.
+  REQUIRE(sent.size() == 6 && advertisingDisable(sent.back()));
+  REQUIRE(fakeNow - before >= kCompletionTimeoutMs && fakeNow - before <= kCompletionTimeoutMs + 2);
+  REQUIRE(stops == 1);
+}
+
+void suspendFinishesOutstandingCommandFirst() {
+  prepare();
+  poll();
+  REQUIRE(lastOpcode() == 0x0c03);
+  const uint32_t answerAt = fakeNow + 20;
+  duringDelay = [answerAt]() {
+    if (fakeNow < answerAt) return;
+    duringDelay = nullptr;
+    immediateCompletion = true; // Also answers the disable that follows.
+    completeEvent(0x0c03);
+  };
+  suspend();
+  immediateCompletion = false;
+  REQUIRE(sent.size() == 2 && advertisingDisable(sent.back()));
+  REQUIRE(fakeNow - answerAt <= 1);
+  REQUIRE(diagnostics().failures == 0 && stops == 1);
+}
+
+void suspendIgnoresStoppedControllerEvent() {
+  prepare();
+  runToRunning();
+  immediateCompletion = true;
+  duringStop = []() { completeEvent(0x200a); }; // In flight while deinit runs.
+  suspend();
+  immediateCompletion = false;
+  resume();
+  poll();
+  REQUIRE(sent.size() == 7 && lastOpcode() == 0x0c03);
+  poll();
+  REQUIRE(diagnostics().awaitingCompletion); // The stale event completed nothing.
+  completeEvent(0x0c03);
+  poll(false);
+  REQUIRE(diagnostics().step == Step::Parameters);
+}
+
+void suspendBeforeBeginAndResumeFailure() {
+  suspend();
+  resume();
+  REQUIRE(stops == 0 && starts == 0 && registrations == 0);
+  prepare();
+  runToRunning();
+  stopResult = false;
+  suspend();
+  REQUIRE(stops == 1);
+  REQUIRE(diagnostics().radio == RadioState::Unknown);
+  startResult = false;
+  resume();
+  REQUIRE(diagnostics().lastError == Error::StartupFailed);
+  for (unsigned i = 0; i < 1000; ++i) { ++fakeNow; poll(); }
+  REQUIRE(sent.size() == 6 && registrations == 1);
+  stopResult = startResult = true;
+  suspend(); // Not available: no disable is attempted, only the stop.
+  REQUIRE(sent.size() == 6);
+  resume();
+  REQUIRE(stops == 2 && starts == 3 && registrations == 2);
+  runToRunning();
+}
 } // namespace
 
 unsigned long millis() {
@@ -191,6 +299,24 @@ void testExitCritical(portMUX_TYPE* mux) {
   REQUIRE(criticalDepth == 1 && mux == activeMux);
   --criticalDepth;
   activeMux = nullptr;
+}
+
+void delay(unsigned long ms) {
+  REQUIRE(criticalDepth == 0);
+  fakeNow += static_cast<uint32_t>(ms);
+  if (duringDelay) duringDelay();
+}
+
+bool btStop() {
+  REQUIRE(criticalDepth == 0);
+  ++stops;
+  if (duringStop) {
+    auto hook = duringStop;
+    duringStop = nullptr;
+    hook();
+  }
+  if (stopResult) registeredCallback = nullptr; // Deinit drops the registration.
+  return stopResult;
 }
 
 bool btStartMode(esp_bt_mode_t mode) {
@@ -216,9 +342,10 @@ bool esp_vhci_host_check_send_available() {
 void esp_vhci_host_send_packet(uint8_t* data, uint16_t size) {
   REQUIRE(criticalDepth == 0);
   REQUIRE(available);
-  REQUIRE(diagnostics().awaitingCompletion);
   sent.emplace_back(data, data + size);
-  REQUIRE(diagnostics().pendingOpcode == lastOpcode());
+  // Only the suspend path sends outside the state machine, and only a disable.
+  if (diagnostics().awaitingCompletion) REQUIRE(diagnostics().pendingOpcode == lastOpcode());
+  else REQUIRE(advertisingDisable(sent.back()));
   if (immediateCompletion) completeEvent(lastOpcode());
 }
 
@@ -231,7 +358,12 @@ int main(int argc, char** argv) {
     {"successful_status_not_final", successfulStatusIsNotFinal},
     {"timely_mailbox_consumption", timelyMailboxConsumption},
     {"wrong_duplicate_events", wrongAndDuplicateEvents},
-    {"unavailable_transport_service", unavailableTransportService}
+    {"unavailable_transport_service", unavailableTransportService},
+    {"suspend_resume", suspendResume},
+    {"suspend_waits_bounded", suspendWaitsBounded},
+    {"suspend_finishes_outstanding_command_first", suspendFinishesOutstandingCommandFirst},
+    {"suspend_ignores_stopped_controller_event", suspendIgnoresStoppedControllerEvent},
+    {"suspend_before_begin_resume_failure", suspendBeforeBeginAndResumeFailure}
   };
   try {
     REQUIRE(argc == 2);
