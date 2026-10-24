@@ -4,6 +4,7 @@ Called only by the durable outbox worker; never by MQTT ingestion/ACK handling.
 HTTP runs in an isolated short-lived child so DNS and slow reads also have a deadline.
 """
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 import http.client
 import json
 from pathlib import Path
@@ -20,6 +21,13 @@ NOTION_VERSION = "2025-09-03"
 MAX_BODY = 65536
 TOTAL_TIMEOUT = 10.0
 NOTION_STATUS_NAMES = {"offline": "In progress", "recovered": "Done", "monitoring_ended": "Not started"}
+SLACK_TOKEN = re.compile(r"xoxb-[A-Za-z0-9-]{10,250}")
+SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,20}")
+SLACK_TS = re.compile(r"\d{1,12}\.\d{1,8}")
+# Slack documents these as transient; all but service_unavailable may have partially completed.
+SLACK_TRANSIENT = {"internal_error", "fatal_error", "request_timeout", "service_unavailable"}
+SLACK_ORIGINAL_GONE = {"slack_message_not_found", "slack_cant_update_message"}
+
 
 
 @dataclass(frozen=True)
@@ -47,12 +55,17 @@ def validate_config(value, base_path):
         raise ValueError("Invalid notifications enabled flag")
     for channel in ("slack", "notion"):
         entry = value.get(channel, {})
-        keys = {"enabled"} | ({"data_source_id"} if channel == "notion" else set())
+        keys = {"enabled"} | ({"data_source_id"} if channel == "notion" else {"channel_id"})
         if not isinstance(entry, dict) or set(entry) - keys or type(entry.get("enabled", False)) is not bool:
             raise ValueError("Invalid notification channel configuration")
         result[channel] = {"enabled": entry.get("enabled", False)}
         if channel == "notion" and result["enabled"] and entry.get("enabled"):
             result[channel]["data_source_id"] = _uuid(entry.get("data_source_id"))
+        if channel == "slack" and "channel_id" in entry:
+            # Present only for the bot-token mode that threads recoveries; absent means webhook.
+            if not isinstance(entry["channel_id"], str) or not SLACK_CHANNEL.fullmatch(entry["channel_id"]):
+                raise ValueError("Invalid Slack channel ID")
+            result[channel]["channel_id"] = entry["channel_id"]
     if result["enabled"]:
         path = value.get("credential_file")
         if not isinstance(path, str) or not path.strip() or "\0" in path:
@@ -71,6 +84,8 @@ def _allowed_url(url, method):
             raise ValueError()
         if parsed.hostname == "hooks.slack.com":
             valid = method == "POST" and re.fullmatch(r"/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+", parsed.path)
+        elif parsed.hostname == "slack.com":
+            valid = method == "POST" and parsed.path in ("/api/chat.postMessage", "/api/chat.update")
         elif parsed.hostname == "api.notion.com":
             valid = ((method == "POST" and (parsed.path == "/v1/pages" or
                      re.fullmatch(r"/v1/data_sources/[0-9a-f-]{36}/query", parsed.path))) or
@@ -97,6 +112,11 @@ def _http_child(request):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
             raise ValueError("Invalid credential")
         headers.update({"Authorization": "Bearer " + token, "Notion-Version": NOTION_VERSION})
+    elif parsed.hostname == "slack.com":
+        token = request["token"]
+        if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
+            raise ValueError("Invalid credential")
+        headers.update({"Authorization": "Bearer " + token, "Content-Type": "application/json; charset=utf-8"})
     connection = http.client.HTTPSConnection(parsed.hostname, timeout=TOTAL_TIMEOUT)
     try:
         connection.request(request["method"], parsed.path, data, headers)
@@ -244,6 +264,144 @@ def _text(value, limit=1800):
     return str(value or "").replace("\0", "")[:limit]
 
 
+KST = timezone(timedelta(hours=9), "KST")
+SLACK_HEADERS = {"offline": "🔴 장치 연결 끊김", "recovered": "🟢 장치 복구됨",
+                 "monitoring_ended": "⚪ 모니터링 종료 (복구 확인 안 됨)"}
+CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active": "게임 종료 또는 서버 목록에서 제외"}
+
+
+def _parse_time(value):
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _kst(value):
+    try:
+        stamp = _parse_time(value)
+        return stamp.astimezone(KST).strftime("%m/%d %H:%M:%S") if stamp else None
+    except OverflowError:
+        return None
+
+
+def _fallback(text):
+    # Top-level text is mrkdwn even when blocks are plain_text; keep values inert there too.
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")[:300]
+
+
+def _duration(seconds):
+    if seconds is None or seconds < 0:
+        return None
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}초"
+    if seconds < 3600:
+        return f"{seconds // 60}분 {seconds % 60}초"
+    return f"{seconds // 3600}시간 {seconds % 3600 // 60}분"
+
+
+def _outage(payload):
+    opened, occurred = _parse_time(payload.get("opened_at")), _parse_time(payload.get("occurred_at"))
+    return _duration((occurred - opened).total_seconds()) if opened and occurred else None
+
+
+def _close_reason(payload):
+    reason = _text(payload.get("close_reason"), 80)
+    return CLOSE_REASONS.get(reason, reason)
+
+
+def slack_message(payload):
+    """Human-readable card. plain_text only, so payload values can never mention or link."""
+    status = payload.get("status")
+    header = SLACK_HEADERS.get(status, "HAS1 장치 장애")
+    device = _text(payload.get("device_id"), 60) or "알 수 없는 장치"
+    site = _text(payload.get("site_id"), 60)
+    try:
+        gap = _duration(int(payload.get("gap_ms")) / 1000)
+    except (ValueError, TypeError, OverflowError):
+        gap = None
+    fields = [("매장", site), ("장치", device), ("역할", _text(payload.get("role"), 60)),
+              ("MAC", _text(payload.get("device_mac"), 40))]
+    if status == "offline":
+        fields += [("끊긴 시각", _kst(payload.get("occurred_at"))),
+                   ("마지막 수신", _kst(payload.get("last_seen_utc"))), ("무응답 시간", gap)]
+    else:
+        fields += [("끊긴 시각", _kst(payload.get("opened_at"))),
+                   ("복구 시각" if status == "recovered" else "종료 시각", _kst(payload.get("occurred_at"))),
+                   ("장애 지속", _outage(payload)), ("종료 사유", _close_reason(payload))]
+    fields.append(("게임 세션", _text(payload.get("game_session_id"), 80)))
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"{header} · {device}"[:150]}},
+              {"type": "section", "fields": [{"type": "plain_text", "text": f"{label}\n{value}"[:2000]}
+                                             for label, value in fields if value and value != "unknown"][:10]}]
+    note = "원인은 아직 확정되지 않았습니다." if status == "offline" else ""
+    blocks.append({"type": "context", "elements": [{"type": "plain_text",
+                   "text": f"{note} 사건 ID {_text(payload.get('incident_id'), 160)}".strip()}]})
+    title = " ".join(part for part in (header, site, device) if part)
+    return {"text": _fallback(title), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+
+
+def slack_reply(payload):
+    """Short thread reply under the original outage card; the card itself carries the details."""
+    outage = _outage(payload)
+    text = " · ".join(part for part in ("🟢 복구됨", outage and outage + " 만에", _close_reason(payload)) if part)
+    return {"text": _fallback(text), "blocks": [{"type": "section", "text": {"type": "plain_text", "text": text}}],
+            "unfurl_links": False, "unfurl_media": False}
+
+
+def _slack_api(call, token, method, body):
+    # chat.update rewrites the same message, so only it is safe to retry blindly.
+    safe = method == "chat.update"
+    response = call("https://slack.com/api/" + method, "POST", body, token)
+    failure = _classify(response, safe_retry=safe)
+    if failure:
+        return None, failure
+    try:
+        data = json.loads(response.get("body", ""))
+        if not isinstance(data, dict):
+            raise ValueError()
+    except ValueError:
+        return None, DeliveryResult("retryable" if safe else "unknown", "unexpected_response", 30)
+    if data.get("ok") is not True:
+        error = data.get("error")
+        error = error if isinstance(error, str) and re.fullmatch(r"[a-z_]{1,48}", error) else "error"
+        if error in SLACK_TRANSIENT:
+            # A possibly-posted message must not be resent; an edit or an unprocessed request can be.
+            retry = safe or error == "service_unavailable"
+            return None, DeliveryResult("retryable" if retry else "unknown", "slack_" + error, 30)
+        return None, DeliveryResult("permanent", "slack_" + error)
+    return data, None
+
+
+def _send_slack_bot(call, token, channel_id, payload):
+    message = slack_message(payload)
+    def post():
+        data, failure = _slack_api(call, token, "chat.postMessage", dict(message, channel=channel_id))
+        if failure:
+            return failure
+        ts = data.get("ts")
+        if not isinstance(ts, str) or not SLACK_TS.fullmatch(ts):
+            return DeliveryResult("unknown", "invalid_write_response")
+        return DeliveryResult("delivered", "ok", remote_id=ts)
+    original = payload.get("slack_ts")
+    if not isinstance(original, str) or not SLACK_TS.fullmatch(original):
+        return post()
+    # Edit the original card first: a failed edit retries without leaving a duplicate reply.
+    _, failure = _slack_api(call, token, "chat.update", {"channel": channel_id, "ts": original,
+                            "text": message["text"], "blocks": message["blocks"]})
+    if failure and failure.code in SLACK_ORIGINAL_GONE:
+        return post()  # Card deleted or no longer editable: announce the outcome on its own.
+    if failure:
+        return failure
+    if payload.get("status") == "recovered":
+        _, failure = _slack_api(call, token, "chat.postMessage", dict(slack_reply(payload), channel=channel_id, thread_ts=original))
+        if failure:
+            return failure
+    return DeliveryResult("delivered", "ok", remote_id=original)
+
+
 class NotificationSender:
     def __init__(self, config, *, credential_reader=read_machine_password, transport=_transport):
         self.config = config
@@ -273,10 +431,17 @@ class NotificationSender:
                                 ("incident_id", "site_id", "device_mac", "game_session_id", "status", "occurred_at"))
             summary += "\n" + _text(payload.get("summary"), 800)
             if channel == "slack":
+                channel_id = self.config["slack"].get("channel_id")
+                if channel_id:
+                    token = credentials.get("slack_bot_token")
+                    if not isinstance(token, str) or not SLACK_TOKEN.fullmatch(token):
+                        return DeliveryResult("permanent", "invalid_credentials")
+                    return _send_slack_bot(call, token, channel_id, payload)
+                if payload.get("slack_ts") and payload.get("status") != "recovered":
+                    # Queued while in bot mode; webhooks never announce monitoring_ended.
+                    return DeliveryResult("permanent", "webhook_mode_skips_monitoring_end")
                 url = credentials.get("slack_webhook_url")
-                response = call(url, "POST", {"text": "HAS1 incident " + incident_id,
-                    "blocks": [{"type": "section", "text": {"type": "plain_text", "text": summary[:2900]}}],
-                    "unfurl_links": False, "unfurl_media": False})
+                response = call(url, "POST", slack_message(payload))
                 failure = _classify(response)
                 if failure:
                     return failure

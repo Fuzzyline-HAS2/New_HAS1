@@ -4,6 +4,7 @@
 param(
     [string]$StateDirectory = (Join-Path $env:ProgramData 'HAS1BlackBox'),
     [switch]$EnableSlack,
+    [string]$SlackChannelId = '',
     [switch]$EnableNotion,
     [string]$NotionDataSourceId = '',
     [string]$NotionDatabaseUrl = ''
@@ -19,6 +20,8 @@ while ($null -ne $cursor) {
     $cursor = $cursor.Parent
 }
 if ((Get-Item -LiteralPath $configPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse-point config is not supported.' }
+if ($SlackChannelId -and -not $EnableSlack) { throw '-SlackChannelId requires -EnableSlack.' }
+if ($SlackChannelId -and $SlackChannelId -cnotmatch '^[CG][A-Z0-9]{8,20}$') { throw 'Supply the Slack channel ID (for example C0123456789), not the channel name.' }
 if ($EnableNotion -and [bool]$NotionDataSourceId -eq [bool]$NotionDatabaseUrl) { throw 'Supply exactly one of -NotionDataSourceId or -NotionDatabaseUrl.' }
 if ($EnableNotion -and $NotionDataSourceId) {
     $parsedId = [Guid]::Empty
@@ -70,7 +73,11 @@ function Invoke-NotionHelper([string]$PythonPath, [ValidateSet('--resolve-notion
 # Credentials are never accepted on command lines or printed. A new credential
 # file is written before the atomic config switch so prior config stays usable.
 $private = @{}
-if ($EnableSlack) {
+if ($EnableSlack -and $SlackChannelId) {
+    # Bot mode returns a message ts, so recoveries edit and thread under the outage card.
+    $private.slack_bot_token = Read-PrivateText 'Slack bot token xoxb- (hidden)'
+    if ($private.slack_bot_token -cnotmatch '^xoxb-[A-Za-z0-9-]{10,250}$') { throw 'Invalid Slack bot token format.' }
+} elseif ($EnableSlack) {
     $private.slack_webhook_url = Read-PrivateText 'Slack Incoming Webhook URL (hidden)'
     if ($private.slack_webhook_url -cnotmatch '^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$') { throw 'Invalid Slack webhook format.' }
 }
@@ -128,6 +135,7 @@ try {
         slack = @{ enabled = [bool]$EnableSlack }
         notion = @{ enabled = [bool]$EnableNotion }
     }
+    if ($SlackChannelId) { $settings.slack.channel_id = $SlackChannelId }
     if ($EnableNotion) { $settings.notion.data_source_id = $NotionDataSourceId }
     $config.telemetry.incidents | Add-Member -NotePropertyName notifications -NotePropertyValue $settings -Force
     $utf8 = New-Object Text.UTF8Encoding($false)

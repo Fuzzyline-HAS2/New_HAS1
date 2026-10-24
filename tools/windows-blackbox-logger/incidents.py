@@ -149,13 +149,22 @@ class IncidentStore:
                    "device_mac": row["mac"], "device_id": row["device_id"],
                    "game_session_id": row["session_id"], "status": status,
                    "summary": f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined.",
-                   "occurred_at": row["opened_utc"] if status == "offline" else row["updated_utc"]}
+                   "occurred_at": row["opened_utc"] if status == "offline" else row["updated_utc"],
+                   # Structured copies of the summary values for the human-readable Slack card.
+                   "role": role, "server_reason": details.get("reason"), "close_reason": row["reason"],
+                   "opened_at": row["opened_utc"], "last_seen_utc": details.get("last_seen_utc"),
+                   "gap_ms": details.get("gap_ms")}
         for channel in channels:
+            linked = {}
             if version > 1:
-                delivered = self.db.execute("SELECT 1 FROM incident_outbox WHERE incident_id=? AND destination=? AND version=1 AND state='delivered'", (row["incident_id"], channel)).fetchone()
-                if not delivered or (status != "recovered" and channel != "notion"):
+                delivered = self.db.execute("SELECT remote_id FROM incident_outbox WHERE incident_id=? AND destination=? AND version=1 AND state='delivered'", (row["incident_id"], channel)).fetchone()
+                # A bot-posted Slack card has a message ts: its follow-up edits that card and
+                # threads under it, so even monitoring_ended closes it out. Webhooks only post recoveries.
+                if channel == "slack" and delivered and delivered[0]:
+                    linked = {"slack_ts": delivered[0]}
+                if not delivered or (status != "recovered" and channel != "notion" and not linked):
                     continue
-            self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)", (row["incident_id"], channel, version, canonical_json(payload)))
+            self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)", (row["incident_id"], channel, version, canonical_json(dict(payload, **linked))))
 
     def _close(self, incident_id, state, reason, when, channels):
         previous = self.db.execute("SELECT state FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications import MAX_BODY, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, validate_config
+from notifications import MAX_BODY, NotificationSender, _allowed_url, _classify, _http_child, _transport, notion_database_id, resolve_notion_database, check_notion_schema, slack_message, validate_config
 
 SOURCE = '12345678-1234-1234-1234-123456789abc'
 PAGE = 'abcdefab-1234-1234-1234-123456789abc'
@@ -56,11 +56,133 @@ class NotificationsTests(unittest.TestCase):
 
     def test_slack_plain_text_and_recovery(self):
         sender, calls = self.sender([{'status': 200, 'body': 'ok'}])
-        self.assertEqual(sender.send('slack', PAYLOAD).state, 'delivered')
-        section = calls[0]['body']['blocks'][0]['text']
-        self.assertEqual(section['type'], 'plain_text')
-        self.assertIn('recovered', section['text'])
+        payload = dict(PAYLOAD, device_id='<!channel>', opened_at='2026-10-23T23:57:30Z', close_reason='reconnected')
+        self.assertEqual(sender.send('slack', payload).state, 'delivered')
+        blocks = calls[0]['body']['blocks']
+        texts = [blocks[0]['text']] + blocks[1]['fields'] + blocks[2]['elements']
+        self.assertTrue(all(text['type'] == 'plain_text' for text in texts))
+        self.assertIn('복구', blocks[0]['text']['text'])
+        rendered = '\n'.join(text['text'] for text in texts)
+        self.assertIn('10/24 09:00:00', rendered)  # UTC shown in store-local KST
+        self.assertIn('2분 30초', rendered)
+        self.assertIn('장치 재연결', rendered)
         self.assertNotIn('Authorization', calls[0])
+
+    def test_slack_offline_card_skips_unknown_and_legacy_payloads(self):
+        sender, calls = self.sender([{'status': 200, 'body': 'ok'}, {'status': 200, 'body': 'ok'}])
+        payload = dict(PAYLOAD, status='offline', device_id='glove-3', role='unknown', gap_ms=12500,
+                       last_seen_utc='2026-10-23T23:59:47Z')
+        self.assertEqual(sender.send('slack', payload).state, 'delivered')
+        blocks = calls[0]['body']['blocks']
+        rendered = '\n'.join(field['text'] for field in blocks[1]['fields'])
+        self.assertIn('연결 끊김', blocks[0]['text']['text'])
+        self.assertIn('12초', rendered)
+        self.assertNotIn('역할', rendered)
+        self.assertIn('원인', blocks[2]['elements'][0]['text'])
+        # Outbox rows queued before this format still render without the new keys.
+        self.assertEqual(sender.send('slack', dict(PAYLOAD, status='offline')).state, 'delivered')
+        self.assertTrue(calls[1]['body']['blocks'][1]['fields'])
+
+    def bot_sender(self, responses):
+        calls = []
+        def transport(request, timeout):
+            calls.append(request)
+            return responses.pop(0)
+        config = validate_config({'enabled': True, 'credential_file': 'test.dpapi',
+            'slack': {'enabled': True, 'channel_id': 'C0123456789'}}, '.')
+        creds = {'slack_bot_token': 'xoxb-synthetic-test-token'}
+        return NotificationSender(config, credential_reader=lambda _: json.dumps(creds), transport=transport), calls
+
+    @staticmethod
+    def slack_ok(**extra):
+        return {'status': 200, 'body': json.dumps(dict({'ok': True, 'channel': 'C0123456789', 'ts': '1700000000.000100'}, **extra))}
+
+    def test_slack_bot_offline_post_returns_message_ts(self):
+        sender, calls = self.bot_sender([self.slack_ok()])
+        result = sender.send('slack', dict(PAYLOAD, status='offline'))
+        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000000.000100'))
+        self.assertEqual(calls[0]['url'], 'https://slack.com/api/chat.postMessage')
+        self.assertEqual(calls[0]['body']['channel'], 'C0123456789')
+        self.assertNotIn('thread_ts', calls[0]['body'])
+        self.assertNotIn('xoxb', json.dumps(calls[0]['body']))
+
+    def test_slack_bot_recovery_edits_original_then_threads_reply(self):
+        sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000300.000200')])
+        payload = dict(PAYLOAD, slack_ts='1700000000.000100', opened_at='2026-10-23T23:57:30Z', close_reason='reconnected')
+        result = sender.send('slack', payload)
+        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000000.000100'))
+        update, reply = calls
+        self.assertEqual(update['url'], 'https://slack.com/api/chat.update')
+        self.assertEqual(update['body']['ts'], '1700000000.000100')
+        self.assertIn('복구', update['body']['blocks'][0]['text']['text'])
+        self.assertEqual(reply['url'], 'https://slack.com/api/chat.postMessage')
+        self.assertEqual(reply['body']['thread_ts'], '1700000000.000100')
+        self.assertEqual(reply['body']['text'], '🟢 복구됨 · 2분 30초 만에 · 장치 재연결')
+
+    def test_slack_bot_monitoring_end_edits_without_reply(self):
+        sender, calls = self.bot_sender([self.slack_ok()])
+        result = sender.send('slack', dict(PAYLOAD, status='monitoring_ended', slack_ts='1700000000.000100'))
+        self.assertEqual(result.state, 'delivered')
+        self.assertEqual([call['url'] for call in calls], ['https://slack.com/api/chat.update'])
+
+    def test_slack_bot_failures_never_duplicate_reply(self):
+        payload = dict(PAYLOAD, slack_ts='1700000000.000100')
+        # A failed edit is safely retryable and posts no reply.
+        sender, calls = self.bot_sender([{'status': 503}])
+        self.assertEqual(sender.send('slack', payload).state, 'retryable')
+        self.assertEqual(len(calls), 1)
+        # An ambiguous reply is not retried automatically.
+        sender, calls = self.bot_sender([self.slack_ok(), {'network_error': True}])
+        self.assertEqual(sender.send('slack', payload).state, 'unknown')
+        # Slack API errors are permanent and carry only the fixed error name.
+        sender, _ = self.bot_sender([{'status': 200, 'body': '{"ok":false,"error":"not_in_channel"}'}])
+        result = sender.send('slack', dict(PAYLOAD, status='offline'))
+        self.assertEqual((result.state, result.code), ('permanent', 'slack_not_in_channel'))
+        sender, _ = self.bot_sender([{'status': 200, 'body': '{"ok":true}'}])
+        self.assertEqual(sender.send('slack', dict(PAYLOAD, status='offline')).state, 'unknown')
+
+    def test_slack_bot_transient_errors_are_not_dropped(self):
+        def error(name):
+            return {'status': 200, 'body': json.dumps({'ok': False, 'error': name})}
+        payload = dict(PAYLOAD, slack_ts='1700000000.000100')
+        offline = dict(PAYLOAD, status='offline')
+        for name in ('internal_error', 'fatal_error', 'request_timeout', 'service_unavailable'):
+            sender, _ = self.bot_sender([error(name)])
+            self.assertEqual(sender.send('slack', payload).state, 'retryable')  # edits are idempotent
+            sender, _ = self.bot_sender([error(name)])
+            expected = 'retryable' if name == 'service_unavailable' else 'unknown'
+            self.assertEqual(sender.send('slack', offline).state, expected)
+
+    def test_slack_bot_deleted_card_posts_standalone_outcome(self):
+        gone = {'status': 200, 'body': '{"ok":false,"error":"message_not_found"}'}
+        sender, calls = self.bot_sender([gone, self.slack_ok(ts='1700000400.000300')])
+        result = sender.send('slack', dict(PAYLOAD, slack_ts='1700000000.000100'))
+        self.assertEqual((result.state, result.remote_id), ('delivered', '1700000400.000300'))
+        self.assertNotIn('thread_ts', calls[1]['body'])
+        self.assertIn('복구', calls[1]['body']['blocks'][0]['text']['text'])
+
+    def test_slack_webhook_skips_bot_queued_monitoring_end(self):
+        sender, calls = self.sender([])
+        result = sender.send('slack', dict(PAYLOAD, status='monitoring_ended', slack_ts='1700000000.000100'))
+        self.assertEqual(result.state, 'permanent')
+        self.assertEqual(calls, [])
+
+    def test_slack_card_tolerates_garbage_and_escapes_fallback(self):
+        message = slack_message(dict(PAYLOAD, status='offline', device_id='<!channel>', gap_ms=10 ** 400,
+                                     last_seen_utc='0001-01-01T00:00:00+05:00'))
+        self.assertNotIn('<!channel>', message['text'])
+        self.assertIn('&lt;!channel&gt;', message['text'])
+        self.assertIn('<!channel>', message['blocks'][0]['text']['text'])  # plain_text renders it inert
+
+    def test_slack_bot_config_and_destinations(self):
+        for channel_id in ('#has1-device-alerts', 'c0123456789', 7):
+            with self.assertRaises(ValueError):
+                validate_config({'slack': {'enabled': True, 'channel_id': channel_id}}, '.')
+        _allowed_url('https://slack.com/api/chat.update', 'POST')
+        for url in ('https://slack.com/api/chat.delete', 'https://slack.com/api/users.list'):
+            with self.assertRaises(ValueError): _allowed_url(url, 'POST')
+        with self.assertRaises(ValueError):
+            _http_child({'url': 'https://slack.com/api/chat.postMessage', 'method': 'POST', 'body': {}, 'token': 'xoxp-user-token-123'})
 
     def test_rate_limit_and_auth_are_distinct(self):
         sender, _ = self.sender([{'status': 429, 'retry_after': '125'}, {'status': 401, 'body': 'secret echo'}])
