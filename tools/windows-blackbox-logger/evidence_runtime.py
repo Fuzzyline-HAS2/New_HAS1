@@ -3,6 +3,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 from protocol import decode_record
+from retention import retention_floors, skip_pruned_device
 from timeline import device_event
 
 
@@ -17,7 +18,7 @@ class DeviceImporter:
         self.filename, self.store, self.site_id = str(Path(filename).resolve()), store, site_id
         self.page_size = page_size
         self.next_identity = ("", "")
-        self.counts = {"inserted": 0, "examined": 0, "cycles": 0}
+        self.counts = {"inserted": 0, "examined": 0, "cycles": 0, "pruned_skipped": 0}
         store.db.execute("CREATE TABLE IF NOT EXISTS device_import_cursor (site TEXT,filename TEXT,mac TEXT,ring TEXT,scan_seq INTEGER,high_seq INTEGER,PRIMARY KEY(site,filename,mac,ring)) WITHOUT ROWID")
 
     def poll(self):
@@ -35,10 +36,14 @@ class DeviceImporter:
             tail = db.execute("SELECT mac,ring,seq,device,raw,received_utc FROM records WHERE mac=? AND ring=? AND seq>? ORDER BY seq LIMIT ?", (*identity, cursor[1], self.page_size)).fetchall()
             reconcile = db.execute("SELECT mac,ring,seq,device,raw,received_utc FROM records WHERE mac=? AND ring=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?", (*identity, cursor[0],cursor[1],self.page_size)).fetchall()
             last, high = cursor
+            # Reconciliation rescans old ranges; records retention removed stay removed.
+            floors = retention_floors(self.store.db, self.site_id)
             for row in tail + reconcile:
                 address, ring, seq, device, raw, received = row
                 previous = self.store.db.execute("SELECT 1 FROM telemetry_events WHERE site_id=? AND source='device' AND source_id=? AND event_id=?", (self.site_id,address,ring+":"+str(seq))).fetchone()
-                if not previous:
+                if not previous and skip_pruned_device(seq, cursor[1], raw, received, floors):
+                    self.counts["pruned_skipped"] += 1
+                elif not previous:
                     self.store.save(device_event(self.site_id, address, ring, seq, device, raw, received))
                     self.counts["inserted"] += 1
                 high = max(high, seq)
