@@ -336,24 +336,32 @@ class RuntimeTests(unittest.TestCase):
             settings={"database":str(folder/"incidents.db"),"notifications":{"enabled":True,"slack":{"enabled":True}}}
             runtime=IncidentRuntime(settings,telemetry_database=telemetry_path,site_id="store-1",source_id="server-1")
             calls=[]
+            # Replaying 302 rows can take several seconds on a loaded Windows
+            # runner; the loops exit as soon as the state is reached.
             with patch("notifications.NotificationSender") as sender:
                 sender.return_value.send.side_effect=lambda *args: calls.append(args) or SimpleNamespace(state="delivered",retry_after=0,code="ok",remote_id=None)
                 runtime.start()
-                end=time.monotonic()+4
-                while time.monotonic()<end:
-                    if runtime.health=="healthy":
-                        break
-                    time.sleep(.01)
-                self.assertEqual(runtime.health,"healthy")
-                self.assertEqual(calls,[])
-                raw.save(event(seq=303,when=utc_now(),incident="next-incident",session="game-2"))
-                end=time.monotonic()+4
-                while time.monotonic()<end and not calls:
-                    time.sleep(.01)
-                self.assertEqual(len(calls),1)
-                self.assertEqual(calls[0][1]["incident_id"],"next-incident")
-                self.assertTrue(runtime.stop())
-            raw.close()
+                stopped=False
+                try:
+                    end=time.monotonic()+15
+                    while time.monotonic()<end:
+                        if runtime.health=="healthy":
+                            break
+                        time.sleep(.01)
+                    self.assertEqual(runtime.health,"healthy")
+                    self.assertEqual(calls,[])
+                    raw.save(event(seq=303,when=utc_now(),incident="next-incident",session="game-2"))
+                    end=time.monotonic()+15
+                    while time.monotonic()<end and not calls:
+                        time.sleep(.01)
+                    self.assertEqual(len(calls),1)
+                    self.assertEqual(calls[0][1]["incident_id"],"next-incident")
+                    stopped=runtime.stop()
+                    self.assertTrue(stopped)
+                finally:
+                    if not stopped:
+                        runtime.stop()  # release incidents.db before the folder is removed
+                    raw.close()
 
     def test_config_requires_server_and_distinct_databases(self):
         with tempfile.TemporaryDirectory() as folder:

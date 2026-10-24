@@ -263,7 +263,9 @@ class NotificationSender:
             deadline = time.monotonic() + TOTAL_TIMEOUT
             def call(url, method, body, token=None):
                 _allowed_url(url, method)
-                remaining = deadline - time.monotonic()
+                # (t + 10) - t can round above 10 when the coarse Windows
+                # monotonic clock has not ticked; never exceed the budget.
+                remaining = min(TOTAL_TIMEOUT, deadline - time.monotonic())
                 if remaining <= 0:
                     return {"network_error": True}
                 return self.transport({"url": url, "method": method, "body": body, "token": token}, remaining)

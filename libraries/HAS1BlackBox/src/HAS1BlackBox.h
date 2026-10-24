@@ -15,6 +15,19 @@ struct Diagnostics {
            uploadFailures = 0, uploaded = 0, queueDepth = 0;
   bool ready = false, paused = false;
   uint32_t eraseCalls = 0, maxEraseUs = 0, overwritten = 0;
+  // spiffs partition bytes (0 = not found) and the last Ring::begin result as
+  // RingStatus (0 unopened, 1 ready, 2 size, 3 read, 4 metadata, 5 foreign
+  // data, 6 erase, 7 write, 8 record conflict).
+  uint32_t partitionSize = 0;
+  uint8_t ringStatus = 0;
+  // Uploader task minimum free stack in bytes (0 = not measured yet).
+  uint32_t uploaderStackFree = 0;
+  // Saved coredump at boot: 0 not checked yet, 1 written by this boot's
+  // panic/watchdog reset, 2 an older crash still stored, 3 none. Task name is
+  // sanitized to [A-Za-z0-9_.-].
+  uint8_t crashState = 0;
+  uint32_t crashPc = 0, crashCause = 0;
+  char crashTask[16] = {};
 };
 class BlackBox {
 public:

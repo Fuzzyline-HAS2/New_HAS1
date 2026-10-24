@@ -22,7 +22,17 @@ a compile check does not configure a field broker or deploy a device.
 An empty/unknown partition is handled by the library's documented initialization
 rules. Never erase a used filesystem automatically to make logging work. Field
 TTGOs can carry an empty SPIFFS from the older 192 KiB `min_spiffs` layout; it
-holds no file and the library erases it once before initializing.
+holds no file and the library erases it once before initializing. TTGOs that still
+have that 192 KiB partition table are accepted too: the ring uses the first 128 KiB.
+
+The remote console status (`s`, and on connect) prints `[blackbox] ready status
+partition flash_errors uploaded upload_failures dropped upload_stack` and
+`[crash] state task pc cause` from the coredump the last panic saved (state 0 =
+not checked yet, 1 = this reset, 2 = an older crash, 3 = none; decode per the
+library README). `status` is the library
+`RingStatus` (1 ready, 2 bad size, 5 foreign data left untouched; see the library
+README) and `partition` the spiffs size in bytes, so a silent logger is diagnosable
+without USB.
 
 ## Device records
 

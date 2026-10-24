@@ -428,7 +428,7 @@ void invalid() {
 }
 // Empty SPIFFS formatted over the ring range: only per-block magic remains.
 void formatSpiffs(Memory &f, uint32_t blockCount) {
-  for (size_t s = 0; s < Ring::Size / Ring::Sector; ++s) {
+  for (size_t s = 0; s < f.data.size() / Ring::Sector; ++s) {
     const uint16_t magic = uint16_t(0x20140529u ^ 256u ^ (blockCount - s));
     f.data[s * Ring::Sector + 252] = uint8_t(magic);
     f.data[s * Ring::Sector + 253] = uint8_t(magic >> 8);
@@ -496,6 +496,80 @@ void emptySpiffs() {
   Ring broken(failing);
   assert(!broken.begin(1));
   assert(failing.data == unchanged);
+  assert(broken.status() == RingStatus::EraseError);
+}
+// Arduino 2.x min_spiffs: 192 KiB spiffs. The ring uses its first 128 KiB.
+constexpr size_t Legacy = 3 * 65536;
+void legacyPartition() {
+  Memory blank;
+  blank.data.assign(Legacy, 255);
+  Ring r(blank);
+  assert(r.begin(0x31) && r.status() == RingStatus::Ready);
+  auto e = event();
+  assert(r.append(e) == AppendResult::Persisted);
+  assert(std::all_of(blank.data.begin() + Ring::Size, blank.data.end(),
+                     [](uint8_t b) { return b == 255; }));
+  Ring reboot(blank);
+  assert(reboot.begin(0) && reboot.id() == 0x31);
+
+  Memory formatted; // the field layout: empty SPIFFS over all 48 blocks
+  formatted.data.assign(Legacy, 255);
+  formatSpiffs(formatted, 48);
+  auto before = formatted.data;
+  Ring retry(formatted);
+  assert(!retry.begin(0) && retry.status() == RingStatus::Unopened);
+  assert(formatted.data == before && formatted.erases == 0);
+  Ring adopted(formatted);
+  assert(adopted.begin(0x32) && adopted.status() == RingStatus::Ready);
+  assert(formatted.erases == Legacy / Ring::Sector);
+  assert(std::all_of(formatted.data.begin() + Ring::Size, formatted.data.end(),
+                     [](uint8_t b) { return b == 255; }));
+
+  Memory file; // a file lookup entry beyond the ring keeps everything intact
+  file.data.assign(Legacy, 255);
+  formatSpiffs(file, 48);
+  file.data[40 * Ring::Sector] = 1;
+  auto kept = file.data;
+  Ring refused(file);
+  assert(!refused.begin(1) && refused.status() == RingStatus::ForeignData);
+  assert(file.data == kept && file.erases == 0);
+
+  Memory ragged;
+  ragged.data.assign(Ring::Size + 100, 255);
+  Ring odd(ragged);
+  assert(!odd.begin(1) && odd.status() == RingStatus::BadSize);
+  Memory large; // e.g. the 1.4 MiB default-scheme spiffs: not adopted
+  large.data.assign(Ring::MaxSize + Ring::Sector, 255);
+  Ring big(large);
+  assert(!big.begin(1) && big.status() == RingStatus::BadSize && large.erases == 0);
+}
+void statusCodes() {
+  Memory fresh;
+  Ring unopened(fresh);
+  assert(unopened.status() == RingStatus::Unopened);
+  Memory foreign;
+  foreign.data[12345] = 1;
+  Ring r(foreign);
+  assert(!r.begin(1) && r.status() == RingStatus::ForeignData);
+  Memory small;
+  small.data.resize(4096);
+  Ring s(small);
+  assert(!s.begin(1) && s.status() == RingStatus::BadSize);
+  Memory unreadable;
+  unreadable.failRead = true;
+  Ring u(unreadable);
+  assert(!u.begin(1) && u.status() == RingStatus::ReadError);
+  Memory duplicate;
+  Ring d(duplicate);
+  assert(d.begin(1));
+  auto e = event();
+  assert(d.append(e) == AppendResult::Persisted);
+  std::memcpy(duplicate.data.data() + Ring::Data + 64, e.bytes, 64);
+  Ring dup(duplicate);
+  assert(!dup.begin(1) && dup.status() == RingStatus::RecordConflict);
+  // Console values are documented; keep them stable.
+  assert(uint8_t(RingStatus::Ready) == 1 && uint8_t(RingStatus::ForeignData) == 5 &&
+         uint8_t(RingStatus::RecordConflict) == 8);
 }
 void protocol() {
   Batch b;
@@ -611,6 +685,8 @@ int main() {
   metadataJournal();
   invalid();
   emptySpiffs();
+  legacyPartition();
+  statusCodes();
   protocol();
   std::cout << "blackbox core: all fault and protocol tests passed\n";
 }
