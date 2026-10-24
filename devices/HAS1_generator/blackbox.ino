@@ -139,3 +139,10 @@ void BlackBoxRecoveryState(unsigned depth,bool mailbox,bool scanPending,bool dri
   has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,depth,flags,
       WiFi.status(),0,"worker.queue.gates");
 }
+
+void BlackBoxOfflineRecovery(int stage,uint32_t outageMs,uint32_t attempts,uint32_t detail) {
+  // stage: 1 outage start, 2 deferred, 3 restart, 4 healthy backoff reset,
+  // 5 retained prior restart. detail: delay at start, blocker bits if deferred.
+  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,
+      stage,outageMs,attempts,detail,"wifi.offline.recovery");
+}

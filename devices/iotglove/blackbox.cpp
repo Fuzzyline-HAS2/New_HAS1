@@ -1,4 +1,5 @@
 #include "blackbox.h"
+#include "button_trace.h"
 #include <BlackBoxEvidence.h>
 #include "secrets.h"
 #include "library_and_pin.h"
@@ -27,6 +28,32 @@ void blackBoxOutput(uint32_t now,bool motor,int lit,int brightness) {
   known=true;changedAt=now;
   blackbox.log(EventType::State,motor,lit,brightness,suppressed,"output.applied");
   suppressed=0;
+}
+void blackBoxButton(uint32_t id,bool down,const ButtonDecision& decision,const GameModel& game,uint32_t inFlight) {
+  blackbox.log(EventType::State,id,down,int(decision.disposition),decision.sequence,"button.edge");
+  const auto& state=game.server();
+  // Low byte phase, next byte role, next byte device state; high flags are
+  // synchronization and physical chip present. Context is after input handling.
+  const uint32_t context=uint32_t(state.phase)|(uint32_t(state.role)<<8)|
+      (uint32_t(state.deviceState)<<16)|(uint32_t(game.synchronized())<<24)|
+      (uint32_t(game.chipPresent())<<25);
+  blackbox.log(EventType::State,id,context,game.queuedEvents(),inFlight,"button.context");
+}
+void blackBoxButtonSuppressed(uint32_t count) {
+  blackbox.log(EventType::State,count,10000,4,0,"button.suppressed");
+}
+void blackBoxButtonCommand(const GameEvent& event,int stage,int result) {
+  if(event.traceButton)
+    blackbox.log(EventType::Progress,event.pressId,event.sequence,stage,result,"button.command");
+}
+void blackBoxMotor(uint32_t now,bool motor,int source,uint32_t pressId) {
+  static MotorTrace trace;
+  // Physical GPIO edges, independent of LED/output throttling. Initial state is
+  // a baseline, not an edge; source 0/press 0 means unknown/no active pattern.
+  if(trace.observe(now,motor))
+    blackbox.log(EventType::State,motor,source,pressId,0,"motor.applied");
+  const uint32_t suppressed=trace.suppressed(now);
+  if(suppressed) blackbox.log(EventType::State,suppressed,motor,1000,16,"motor.suppressed");
 }
 static portMUX_TYPE uploadPolicyMux=portMUX_INITIALIZER_UNLOCKED;
 static bool mainAllows=false,networkIdle=false;
@@ -97,7 +124,7 @@ void blackBoxLoop(uint32_t now,int phase,int role,int deviceState,bool known,boo
   }
   summary.emitted(now);
 }
-void blackBoxBeforeRestart(int reason,int attempts) {
+void blackBoxBeforeRestart(int reason,uint32_t attempts) {
   updateUpload(true,false);
   // Existing recovery deadline already expired: enqueue only. Do not postpone
   // recovery for a best-effort flush or feed the game watchdog from logging.

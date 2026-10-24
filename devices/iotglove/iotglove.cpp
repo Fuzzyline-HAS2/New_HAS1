@@ -280,11 +280,11 @@ void printDiagnostics(uint32_t now) {
         (unsigned long)network.lastHttpElapsedMs, (unsigned long)network.lastHttpBytes,
         (unsigned long)network.primaryTransportFailures, (unsigned long)network.forcedReconnects,
         (unsigned long)network.reconnectCooldownMs);
-    remoteConsoleLogf("[resources] heap=%lu largest=%lu worker_stack_min=%lu reset_reason=%u recovery_restarts=%lu diagnostic_mode=%u main_wdt=%u\n",
+    remoteConsoleLogf("[resources] heap=%lu largest=%lu worker_stack_min=%lu reset_reason=%u recovery_restarts=%lu restart_wait_ms=%lu main_wdt=%u\n",
         (unsigned long)network.heapFree, (unsigned long)network.heapLargest,
         (unsigned long)network.workerStackHighWater, static_cast<unsigned>(esp_reset_reason()),
         (unsigned long)networkRestartHistory.attempts,
-        !NetworkRestartPolicy::allowed(networkRestartHistory), mainWatchdog != nullptr);
+        (unsigned long)networkRestartPolicy.remainingMs(now), mainWatchdog != nullptr);
   }
   remoteConsoleLogf("[inputs] chip_gpio26=%d button_gpio27=%d chip_debounced=%u button_debounced=%u chip_model=%u\n",
       sensorChipRaw(), sensorButtonRaw(),
@@ -461,6 +461,7 @@ void pollNetwork(uint32_t now) {
   }
   GameEvent event;
   if (!inFlight && !otaRequests.hasActive() && serverFresh(now) && game.peekEvent(event) && networkSubmit(event)) {
+    blackBoxButtonCommand(event,0);
     inFlight = event.sequence;
     game.consumeEvent();
   }
@@ -585,6 +586,7 @@ void render(uint32_t now) {
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
   if (otaBusy() || resetHigh) out.motor = false;
   digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
+  blackBoxMotor(now,out.motor,int(out.motorSource),out.motorPressId);
   blackBoxOutput(now,out.motor,lastOutputs.lit,lastBrightness);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
   if (out.motor) { lastMotorOnMs = now; motorEverOn = true; }
@@ -625,7 +627,7 @@ void handleConsoleCommand(char command, uint32_t now) {
     if (command == 'p') sendProbe(now, true);
 }
 void armMainWatchdog() {
-  if (mainWatchdog || !NetworkRestartPolicy::allowed(networkRestartHistory)) return;
+  if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
   // Preserve the configured idle subscribers; allow flash erases more time than
   // the core's five-second default. HTTP worker stalls have their own 20s limit.
   esp_task_wdt_config_t config{};
@@ -671,14 +673,11 @@ void monitorNetwork() {
         (unsigned long)(now - linkLossRecord.lostAtMs));
     linkLossClear(linkLossRecord);
   }
-  const bool stalled = networkWorkerStalled(d, now);
-  if (networkRestartPolicy.observe(now, d.sequence, stalled) && networkRestartHistory.attempts) {
-    networkRestartHistory = {NetworkRestartPolicy::kMagic, 0, false};
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,0,0,0,0,"budget.restored");
-    remoteConsoleLogf("[recovery] worker progressed for 10 minutes; restart budget restored\n");
-    linkDownReported = false;  // A still-dead link may use the fresh budget.
-    armMainWatchdog();
-  }
+  const bool ota = otaBusy() || d.phase == NetworkPhase::Ota;
+  const bool stalled = !ota && networkWorkerStalled(d, now);
+  const bool linkDown = !ota && wifiLinkDownTooLong(d, now);
+  // These latches limit diagnostics only. poll() below always reevaluates the
+  // recovery deadline, including after the first stall/down report.
   if (!stalled) stallReported = false;
   else if (!stallReported) {
     stallReported = true;
@@ -686,35 +685,43 @@ void monitorNetwork() {
         now-d.startedAtMs,now-d.progressAtMs,"worker.stall");
     remoteConsoleLogf("[recovery] worker stalled phase=%u sequence=%lu age_ms=%lu idle_ms=%lu restarts=%lu\n",
         static_cast<unsigned>(d.phase), (unsigned long)d.sequence,
-        (unsigned long)(now - d.startedAtMs), (unsigned long)(now - d.progressAtMs),
+        (unsigned long)(now-d.startedAtMs), (unsigned long)(now-d.progressAtMs),
         (unsigned long)networkRestartHistory.attempts);
-    if (NetworkRestartPolicy::request(networkRestartHistory)) {
-      linkLossComplete(linkLossRecord, LinkLossCause::WorkerStall, now, d.wifiConnectFailures,
-                       static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
-      blackBoxBeforeRestart(2,networkRestartHistory.attempts);
-      ESP.restart();
-    }
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,networkRestartHistory.attempts,0,0,0,"budget.exhausted");
-    remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
   }
-  // The STA retry loop alone never ends; after a bounded outage the same
-  // restart budget reboots the radio. Reported once per outage.
-  if (!wifiLinkDownTooLong(d, now)) { linkDownReported = false; return; }
-  if (linkDownReported) return;
-  linkDownReported = true;
-  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,now-d.wifiDownSinceMs,
-      d.wifiConnectFailures,d.wifiWasUp,d.wifiLastLossReason,"wifi.down.threshold");
-  remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu last_loss_reason=%u last_loss_rssi=%d restarts=%lu\n",
-      (unsigned long)(now - d.wifiDownSinceMs), d.wifiWasUp, (unsigned long)d.wifiConnectFailures,
-      d.wifiLastLossReason, d.wifiLastLossRssi, (unsigned long)networkRestartHistory.attempts);
-  if (NetworkRestartPolicy::request(networkRestartHistory)) {
-    linkLossComplete(linkLossRecord, LinkLossCause::WifiDown, now, d.wifiConnectFailures,
-                     static_cast<uint8_t>(networkRestartHistory.attempts), currentLinkLossContext(now));
-    blackBoxBeforeRestart(3,networkRestartHistory.attempts);
+  if (!linkDown) linkDownReported = false;
+  else if (!linkDownReported) {
+    linkDownReported = true;
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,now-d.wifiDownSinceMs,
+        d.wifiConnectFailures,d.wifiWasUp,d.wifiLastLossReason,"wifi.down.threshold");
+    remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu restarts=%lu\n",
+        (unsigned long)(now-d.wifiDownSinceMs),d.wifiWasUp,
+        (unsigned long)d.wifiConnectFailures,(unsigned long)networkRestartHistory.attempts);
+  }
+  const NetworkRestartDecision decision = networkRestartPolicy.poll(
+      networkRestartHistory,d,now,bootId ^ networkRestartHistory.attempts,ota);
+  if (decision.restored) {
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.previousAttempts,
+        NetworkRestartPolicy::kStableMs,d.sequence,0,"restart.backoff_reset");
+    remoteConsoleLogf("[recovery] link connected and worker progressing for 10 minutes; restart backoff reset\n");
+  }
+  if (decision.cancelled) {
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.cause,
+        networkRestartHistory.attempts,decision.elapsedMs,0,"restart.wait_cancel");
+  }
+  if (decision.waitingStarted && !decision.restart) {
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.cause,
+        networkRestartHistory.attempts,decision.waitMs,decision.remainingMs,"restart.wait");
+    remoteConsoleLogf("[recovery] restart pending cause=%u attempts=%lu total_wait_ms=%lu remaining_ms=%lu\n",
+        decision.cause,(unsigned long)networkRestartHistory.attempts,
+        (unsigned long)decision.waitMs,(unsigned long)decision.remainingMs);
+  }
+  if (decision.restart) {
+    const auto cause = decision.cause == 2 ? LinkLossCause::WorkerStall : LinkLossCause::WifiDown;
+    linkLossComplete(linkLossRecord,cause,now,d.wifiConnectFailures,
+        NetworkRestartPolicy::diagnosticAttempt(networkRestartHistory.attempts),currentLinkLossContext(now));
+    blackBoxBeforeRestart(decision.cause,networkRestartHistory.attempts);
     ESP.restart();
   }
-  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,networkRestartHistory.attempts,0,0,0,"budget.exhausted");
-  remoteConsoleLogf("[recovery] automatic restart limit reached; USB diagnostics remain active\n");
 }
 }  // namespace
 
@@ -755,9 +762,9 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
     if (networkReady) {
       networkReportChip(sensorChipPresent());
       armMainWatchdog();
-      remoteConsoleLogf("[recovery] reset_reason=%u attempts=%lu diagnostic_mode=%u\n",
-          static_cast<unsigned>(reason), (unsigned long)networkRestartHistory.attempts,
-          !NetworkRestartPolicy::allowed(networkRestartHistory));
+      remoteConsoleLogf("[recovery] reset_reason=%u attempts=%lu retry_backoff_ms=%lu main_wdt=%u\n",
+          static_cast<unsigned>(reason),(unsigned long)networkRestartHistory.attempts,
+          (unsigned long)NetworkRestartPolicy::backoffMs(networkRestartHistory.attempts),mainWatchdog != nullptr);
     }
   }
   hello(nextId()); sendMode();
@@ -768,7 +775,7 @@ void gloveLoop() {
   pollPeer(now);
   pollNetwork(now);
   if (!kTraining) reportServerChanges(now);
-  sensorPoll(game, now);
+  sensorPoll(game, now, inFlight);
   if (!kTraining && networkReady) networkReportChip(sensorChipPresent());
   game.tick(now);
   // Read-only status and bounded PING probes work without a server connection.

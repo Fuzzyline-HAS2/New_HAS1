@@ -342,13 +342,18 @@ bool send(const char* field, const String& value) {
 
 void execute(const GameEvent& event) {
   GameResult result{event.sequence, GameResult::Status::Rejected};
+  blackBoxButtonCommand(event,1);
   // Read immediately before mutation. Snapshot freshness alone is not a lock,
   // but detects stale queues/phase changes without assuming a server transaction.
   if (!refresh()) result.status = GameResult::Status::Unknown;
   else if (commandAllowed(event, latest)) {
     bool ack = false;
-    if (event.kind == GameEvent::Kind::SetCount)
+    if (event.kind == GameEvent::Kind::SetCount) {
+      blackBoxButtonCommand(event,2);
       ack = send("revival_count", String(event.value));
+      blackBoxButtonCommand(event,3,ack);
+    }
+    blackBoxButtonCommand(event,4);
     const bool readBack = refresh();
     result.status = readBack && commandApplied(event, latest) ? GameResult::Status::Success :
         (ack && readBack ? GameResult::Status::Rejected : GameResult::Status::Unknown);
@@ -357,6 +362,7 @@ void execute(const GameEvent& event) {
   }
   // The consumer drains results before snapshots. One command in flight keeps
   // a known order for the remaining revival-count command.
+  blackBoxButtonCommand(event,5,int(result.status));
   xQueueOverwrite(results, &result);
 }
 
@@ -482,6 +488,7 @@ void cancelQueuedCommand() {
   GameEvent event;
   if (xQueueReceive(commands, &event, 0) == pdTRUE) {
     const GameResult result{event.sequence, GameResult::Status::Unknown};
+    blackBoxButtonCommand(event,6,int(result.status));
     xQueueOverwrite(results, &result);
   }
 }

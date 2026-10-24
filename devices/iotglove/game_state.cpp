@@ -32,10 +32,11 @@ void GameModel::begin(bool chipPresent, uint32_t now) {
   count_ = 0;
   haveServer_ = needsSync_ = overflow_ = false;
   haptic_ = Haptic::None;
+  hapticPressId_ = 0;
   resetQueue();
 }
 
-bool GameModel::emit(GameEvent::Kind kind, uint8_t value) {
+bool GameModel::emit(GameEvent::Kind kind, uint8_t value, uint32_t pressId, bool trace) {
   if (needsSync_ || !haveServer_) return false;
   if (size_ == kCapacity) {
     // Stop producing mutations; keep existing ordered events for diagnostics.
@@ -46,6 +47,8 @@ bool GameModel::emit(GameEvent::Kind kind, uint8_t value) {
   event = GameEvent{};
   event.kind = kind;
   event.value = value;
+  event.pressId = pressId;
+  event.traceButton = trace;
   event.sequence = ++sequence_;
   memcpy(event.session, server_.session, sizeof(event.session));
   memcpy(event.deviceName, server_.deviceName, sizeof(event.deviceName));
@@ -85,6 +88,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
     needsSync_ = true;
     server_.valid = false;
     haptic_ = Haptic::None;
+    hapticPressId_ = 0;
     resetQueue();
     return;
   }
@@ -101,6 +105,7 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
   if (newSession || phaseChanged || controlChanged || roleChanged || academyModeChanged || recovering) {
     resetQueue();
     haptic_ = Haptic::None;
+    hapticPressId_ = 0;
     needsSync_ = overflow_ = false;
   }
   const uint32_t nextInterval = snapshot.stepSeconds <= 86400U ? snapshot.stepSeconds * 1000U : 0;
@@ -145,6 +150,7 @@ void GameModel::chipChanged(bool present, uint32_t now) {
       trainingGhost_ = true;
       trainingStart_ = now;
       haptic_ = Haptic::Removed;
+      hapticPressId_ = 0;
     }
     tick(now);
     return;
@@ -153,20 +159,25 @@ void GameModel::chipChanged(bool present, uint32_t now) {
   // observation lane. Only the server decides capture, cancellation and revival.
 }
 
-void GameModel::buttonPressed(uint32_t now) {
+ButtonDecision GameModel::buttonPressed(uint32_t now, uint32_t pressId, bool trace) {
   if (profile_ == Profile::Training || academyPlayer()) {
-    if (!trainingGhost_) return;
+    if (!trainingGhost_) return {ButtonDisposition::NotGhost, 0};
     trainingStart_ = now;
     haptic_ = Haptic::Found;
-    return;
+    hapticPressId_ = pressId;
+    return {ButtonDisposition::LocalAccepted, 0};
   }
-  if (!synchronized() || !activeGhost()) return;
-  if (emit(GameEvent::Kind::SetCount, 0)) {
+  if (!synchronized()) return {ButtonDisposition::Unsynchronized, 0};
+  if (!activeGhost()) return {ButtonDisposition::NotGhost, 0};
+  if (emit(GameEvent::Kind::SetCount, 0, pressId, trace)) {
     count_ = 0;
     countPending_ = true;
     stepStart_ = now;
     haptic_ = Haptic::Found;
+    hapticPressId_ = pressId;
+    return {ButtonDisposition::Queued, sequence_};
   }
+  return {ButtonDisposition::QueueFull, 0};
 }
 
 void GameModel::tick(uint32_t now) {
@@ -199,7 +210,9 @@ bool GameModel::canUseLifeDevice() const {
 Feedback GameModel::feedback() {
   Feedback out;
   out.haptic = haptic_;
+  out.hapticPressId = hapticPressId_;
   haptic_ = Haptic::None;
+  hapticPressId_ = 0;
   if (profile_ == Profile::Training) {
     out.stateValid = true;  // Fixed default identity preserves explicit training events.
     out.display = trainingGhost_ ? Display::Ghost : Display::Player;

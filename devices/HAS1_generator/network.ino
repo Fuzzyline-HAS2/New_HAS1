@@ -3,6 +3,9 @@
 #include "generator_network.h"
 #include <has2_bounded_transport.h>
 #include <esp_task_wdt.h>
+#include <esp_attr.h>
+#include <esp_system.h>
+#include "generator_offline_recovery.h"
 
 static constexpr unsigned kNetworkSlots=8;
 static constexpr uint32_t kNetworkReadLifetime=10000;
@@ -27,6 +30,12 @@ static bool networkRefreshPending=true,networkRefreshInFlight=false,networkBootR
 static bool networkVersionSent=false,networkWatchdogPending=false,networkWatchdogRequested=false;
 static bool networkMaintenance=false,networkMaintenanceLegacy=false;
 static bool networkWasConnected=false;
+RTC_NOINIT_ATTR static GeneratorOfflineRecovery::Retained networkRecoveryHistory;
+static GeneratorOfflineRecovery::Policy networkRecoveryPolicy;
+static bool networkRecoveryFence=false;
+static uint32_t networkRecoverySalt=0,networkRecoveryLastLog=0;
+static bool networkRecoveryBlockedLogged=false;
+static uint32_t networkRecoveryBlockedReason=0;
 static uint32_t networkRefreshAt=0;
 static char networkIdentity[32]={},networkGame[32]={};
 
@@ -64,7 +73,7 @@ static uint32_t NetworkSubmit(NetworkKind kind,const String &path,bool mutation,
   unsigned used=0;for (const auto &slot:networkSlots) if(slot.occupied){ ++used; }
   // Leave capacity for heartbeat/state repair when optional reports fill the queue.
   const bool optional=kind==NetworkKind::Contribution||kind==NetworkKind::Report;
-  if (networkTask&&!(optional&&used>=kNetworkSlots-2)&&!(kind!=NetworkKind::Poll&&used>=kNetworkSlots-1)) {
+  if (networkTask&&!networkRecoveryFence&&!(optional&&used>=kNetworkSlots-2)&&!(kind!=NetworkKind::Poll&&used>=kNetworkSlots-1)) {
     for(auto &slot:networkSlots) if(!slot.occupied) {
       request.id=networkNextId++;if(!networkNextId){ ++networkNextId; }
       slot.request=request;slot.occupied=true;slot.active=false;break;
@@ -157,7 +166,7 @@ static void NetworkWorker(void *) {
     const bool mailboxBusy=networkMailboxReady;
     int selected=-1;uint32_t oldestAge=0;int poll=-1;
     const uint32_t now=millis();
-    if (!mailboxBusy) {
+    if (!mailboxBusy&&!networkRecoveryFence) {
       for(unsigned i=0;i<kNetworkSlots;++i) if(networkSlots[i].occupied&&!networkSlots[i].active) {
         const NetworkRequest &r=networkSlots[i].request;
         const uint32_t age=now-r.enqueued;
@@ -182,7 +191,7 @@ static void NetworkWorker(void *) {
       // uncertain even if a later local cancellation arrives before socket I/O.
       portENTER_CRITICAL(&networkMux);
       const NetworkRequest &current=networkSlots[selected].request;
-      if(current.cancelled){ discard=NetworkDiscard::Cancelled; }
+      if(networkRecoveryFence||current.cancelled){ discard=NetworkDiscard::Cancelled; }
       else if(request.generation&&request.generation!=networkGeneration){ discard=NetworkDiscard::GameChanged; }
       else if(request.kind==NetworkKind::Tag&&request.token!=networkTagToken){ discard=NetworkDiscard::TagChanged; }
       else if((request.kind==NetworkKind::Completion||request.kind==NetworkKind::Verify)&&request.token!=networkCompletionToken){ discard=NetworkDiscard::Cancelled; }
@@ -224,7 +233,7 @@ static bool NetworkApplySnapshot(const Has2BoundedTransport::Result &result,bool
       !strcmp(candidate["device_state"] | "",my["device_state"] | "");
   localCompletion=localCompletion||NetworkOwnBatteryEcho(candidate);
   if(!has2wifi.ApplyNetworkSnapshot("ReceiveMine",result.payload)){ return false; }
-  NetworkIdentityChanged();networkBootReady=true;
+  NetworkIdentityChanged();networkBootReady=true;networkRecoveryPolicy.serverReply(millis());
   if(!unchangedState||networkResetCyclePending) {
     // Close before a same-game mode override can reset the encoder. A new game
     // generation deliberately discards the prior session in ContribEnd.
@@ -269,7 +278,7 @@ static bool NetworkQueueRefresh() {
 }
 static void NetworkPollResult(const NetworkRequest &,const Has2BoundedTransport::Result &result,bool cancelled) {
   if(!NetworkOk(result,cancelled)||!has2wifi.ApplyNetworkSnapshot("Loop",result.payload)){BlackBoxPollResult(false);NetworkFinishPoll(false);return;}
-  BlackBoxPollResult(true);
+  BlackBoxPollResult(true);networkRecoveryPolicy.serverReply(millis());
   if((int)shift_machine["watchdog"]>=1){ networkWatchdogRequested=true; }
   else if(networkWatchdogRequested&&!networkWatchdogPending) {
     DiagnosticPrintf("[NET] explicit server reboot clear confirmed by poll\r\n");BlackBoxBeforeRestart();ESP.restart();
@@ -579,8 +588,68 @@ void GeneratorNetworkRequestMaintenance(bool legacy) {
 }
 void GeneratorNetworkBegin() {
   if(networkTask){ return; }
+  const bool prior=GeneratorOfflineRecovery::boot(networkRecoveryHistory,esp_reset_reason()==ESP_RST_SW);
+  const String mac=has2wifi.GetMacAddress();
+  for(size_t i=0;i<mac.length();++i){networkRecoverySalt=networkRecoverySalt*33u+uint8_t(mac[i]);}
+  if(prior) {
+    DiagnosticPrintf("[NET] prior wifi-offline recovery restart: attempt=%lu outage_ms=%lu\r\n",
+      (unsigned long)networkRecoveryHistory.attempts,(unsigned long)networkRecoveryHistory.outageMs);
+    BlackBoxOfflineRecovery(5,networkRecoveryHistory.outageMs,networkRecoveryHistory.attempts,0);
+  }
   const BaseType_t created=xTaskCreatePinnedToCore(NetworkWorker,"generator-net",8192,nullptr,1,&networkTask,0);
   if(created!=pdPASS){networkTask=nullptr;DiagnosticPrintf("[NET] worker creation failed; gameplay remains unconfirmed\r\n");}
+}
+// Called only from main, after mailbox callbacks have settled transaction state.
+// The dispatch fence and worker selection share networkMux. No task deletion,
+// driver buffer disposal, Wi-Fi mode toggle or transport replay is introduced.
+static bool NetworkOfflineRecoveryService() {
+  const uint32_t now=millis();
+  const bool online=WiFi.status()==WL_CONNECTED;
+  const bool wasOffline=networkRecoveryPolicy.offline;
+  if(networkRecoveryPolicy.sample(now,online,networkRecoveryHistory)) {
+    BlackBoxOfflineRecovery(4,0,0,0);
+    DiagnosticPrintf("[NET] wifi-offline restart backoff reset after 10 minutes of healthy link/server progress\r\n");
+  }
+  if(!online&&!wasOffline) {
+    networkRecoveryBlockedLogged=false;
+    BlackBoxOfflineRecovery(1,0,networkRecoveryHistory.attempts,
+      GeneratorOfflineRecovery::delayMs(networkRecoveryHistory.attempts,networkRecoverySalt,networkRecoveryPolicy.hadConnection));
+  }
+  if(!networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt)){return false;}
+  uint32_t blocked=0;
+  if(networkMaintenance){blocked|=1;}
+  // A possibly delivered completion must retain its read-only confirmation
+  // state. Restarting could cause gameplay to issue the same mutation again.
+  if(networkCompletionSent&&networkCompletionDispatched&&!networkCompletionConfirmed&&
+      !networkCompletionSuperseded&&networkCompletionGeneration==GeneratorNetworkGeneration()){blocked|=2;}
+  portENTER_CRITICAL(&networkMux);
+  if(!networkTask||networkDriverFault){blocked|=4;}
+  if(networkMailboxReady){blocked|=8;}
+  for(const auto &slot:networkSlots)if(slot.occupied&&slot.active){blocked|=8;}
+  if(!blocked){networkRecoveryFence=true;}
+  portEXIT_CRITICAL(&networkMux);
+  if(blocked) {
+    if(!networkRecoveryBlockedLogged||blocked!=networkRecoveryBlockedReason||uint32_t(now-networkRecoveryLastLog)>=30000) {
+      networkRecoveryBlockedLogged=true;networkRecoveryLastLog=now;networkRecoveryBlockedReason=blocked;
+      BlackBoxOfflineRecovery(2,networkRecoveryPolicy.elapsed(now),networkRecoveryHistory.attempts,blocked);
+      DiagnosticPrintf("[NET] wifi-offline restart deferred: age_ms=%lu blockers=%lu (1=OTA 2=uncertain_completion 4=worker_fault 8=in_flight)\r\n",
+        (unsigned long)networkRecoveryPolicy.elapsed(now),(unsigned long)blocked);
+    }
+    return false;
+  }
+  // Recheck current association after the fence, not a stale worker snapshot.
+  if(WiFi.status()==WL_CONNECTED) {
+    portENTER_CRITICAL(&networkMux);networkRecoveryFence=false;portEXIT_CRITICAL(&networkMux);
+    networkRecoveryPolicy.sample(millis(),true,networkRecoveryHistory);return false;
+  }
+  GeneratorOfflineRecovery::requested(networkRecoveryHistory,networkRecoveryPolicy.elapsed(now));
+  has1blackbox::blackbox.setUploadAllowed(false);
+  BlackBoxOfflineRecovery(3,networkRecoveryHistory.outageMs,networkRecoveryHistory.attempts,0);
+  DiagnosticPrintf("[NET] wifi-offline recovery restart: attempt=%lu outage_ms=%lu\r\n",
+    (unsigned long)networkRecoveryHistory.attempts,(unsigned long)networkRecoveryHistory.outageMs);
+  // RTC intent is written before restart. BlackBox delivery is best effort;
+  // next boot re-emits the retained intent. No blocking flush on this path.
+  ESP.restart();return true;
 }
 void GeneratorNetworkLoop() {
   portENTER_CRITICAL(&networkMux);
@@ -635,6 +704,7 @@ void GeneratorNetworkLoop() {
     portENTER_CRITICAL(&networkMux);networkMailboxReady=false;networkMailboxSlot=-1;networkWorkerActiveId=0;portEXIT_CRITICAL(&networkMux);
   }
   NetworkCompletionService();
+  if(NetworkOfflineRecoveryService()){return;}
   const bool online=WiFi.status()==WL_CONNECTED;
   if(!networkMaintenance&&online&&!networkWasConnected){GeneratorNetworkRefresh();GeneratorNetworkRequestPoll();}
   networkWasConnected=online;

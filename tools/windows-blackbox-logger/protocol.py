@@ -113,6 +113,18 @@ def named_values(record, device=None):
 
 
 VALUE_SCHEMAS = {
+    # Device-local diagnostic tags; BB1 signed integers and raw bytes stay intact.
+    'button.edge': (('press_id','id'),('down','boolean'),('disposition','enum'),('command_sequence','uint32')),
+    'button.context': (('press_id','id'),('context_bits','bits'),('queued_events','count'),('in_flight_sequence','uint32')),
+    'button.suppressed': (('press_count','count'),('window_ms','ms'),('trace_limit','count'),('reserved','raw')),
+    'button.command': (('press_id','id'),('command_sequence','uint32'),('stage','enum'),('result','enum')),
+    'motor.applied': (('motor','boolean'),('source','enum'),('press_id','id'),('reserved','raw')),
+    'motor.suppressed': (('edge_count','count'),('final_motor','boolean'),('window_ms','ms'),('edge_limit','count')),
+    'wifi.offline.recovery': (('stage','enum'),('outage_ms','ms'),('attempts','count'),('detail','uint32')),
+    'restart.request': (('cause','enum'),('attempts','uint32'),('reserved_0','raw'),('reserved_1','raw')),
+    'restart.wait': (('cause','enum'),('attempts','uint32'),('total_wait_ms','ms'),('remaining_ms','ms')),
+    'restart.wait_cancel': (('cause','enum'),('attempts','uint32'),('elapsed_ms','ms'),('reserved','raw')),
+    'restart.backoff_reset': (('previous_attempts','uint32'),('healthy_ms','ms'),('worker_sequence','uint32'),('reserved','raw')),
     'primary.failure': (('error','enum'),('http_status','status'),('elapsed_ms','ms'),('semantic_valid','boolean')),
     'primary.recovered': (('error','enum'),('http_status','status'),('elapsed_ms','ms'),('semantic_valid','boolean')),
     'primary.result': (('error','enum'),('http_status','status'),('elapsed_ms','ms'),('semantic_valid','boolean')),

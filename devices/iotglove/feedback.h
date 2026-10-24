@@ -4,10 +4,14 @@
 
 namespace iotglove {
 
+enum class MotorSource : uint8_t { None, State, Event, Command, Proximity, Forced };
+
 struct Outputs {
   uint8_t red = 0, green = 0, blue = 0;
   uint8_t lit = 0;
   bool motor = false;
+  MotorSource motorSource = MotorSource::None;
+  uint32_t motorPressId = 0;
 };
 
 class FeedbackEngine {
@@ -91,11 +95,14 @@ class FeedbackEngine {
       if (state.haptic != Haptic::None) {
         const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
         start(choice, Source::Event, now);
+        patternPressId_ = state.hapticPressId;
       }
       known_ = true;
       remember(state);
-      if (pattern_.total)
+      if (pattern_.total) {
         out.motor = feedback_config::motorOn(pattern_, uint32_t(now - patternStart_));
+        annotate(out);
+      }
       return out;
     }
     // Stop any preceding activity before a new setting/ready/end notification.
@@ -115,6 +122,7 @@ class FeedbackEngine {
       known_ = true;
       remember(state);
       out.motor = vibe == feedback_config::kVibeOn;
+      out.motorSource = MotorSource::Forced;
       return out;
     }
     if (vibeEdge && feedback_config::isCommand(vibe)) {
@@ -124,6 +132,7 @@ class FeedbackEngine {
     if (state.haptic != Haptic::None) {
       const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
       start(choice, Source::Event, now);
+      patternPressId_ = state.hapticPressId;
       // A capture's later server acknowledgement must not repeat its vibration.
       if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
           state.phase == Phase::Active) pendingGhostAck_ = true;
@@ -138,8 +147,10 @@ class FeedbackEngine {
     if (pattern_.total) {
       // The OFF gap is part of the pattern and also overrides proximity pulses.
       out.motor = feedback_config::motorOn(pattern_, uint32_t(now - patternStart_));
+      annotate(out);
     } else if (locationFresh &&
                (state.display == Display::Player || state.display == Display::Ghost)) {
+      out.motorSource = MotorSource::Proximity;
       if (vibe == 3) {
         const uint32_t t = now % 1000U;
         out.motor = t < 100U || (t >= 200U && t < 300U);
@@ -153,6 +164,7 @@ class FeedbackEngine {
   feedback_config::Settings settings_;
   feedback_config::Schedule pattern_;
   uint32_t patternStart_ = 0;
+  uint32_t patternPressId_ = 0;
   uint32_t blinkStart_ = 0;
   Source source_ = Source::None;
   bool known_ = false;
@@ -171,9 +183,14 @@ class FeedbackEngine {
         state.deviceState == DeviceState::Setting || state.deviceState == DeviceState::Ready ||
         state.deviceState == DeviceState::Photo || state.deviceState == DeviceState::Ended;
   }
-  void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; }
+  void annotate(Outputs& out) const {
+    out.motorSource = static_cast<MotorSource>(source_);
+    out.motorPressId = source_ == Source::Event ? patternPressId_ : 0;
+  }
+  void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; patternPressId_ = 0; }
   void start(const feedback_config::Schedule& schedule, Source source, uint32_t now) {
     pattern_ = schedule;
+    patternPressId_ = 0;
     source_ = pattern_.total ? source : Source::None;
     patternStart_ = now;
   }

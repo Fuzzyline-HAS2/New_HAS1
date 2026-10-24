@@ -26,7 +26,7 @@ struct LinkLossRecord {
   uint8_t stateKnown;      // phase/role/deviceState came from a valid snapshot
   uint8_t phase, role, deviceState;
   uint8_t motor, lit;      // outputs when the loss was noticed
-  uint8_t restartAttempt;  // NetworkRestartHistory.attempts after the request
+  uint8_t restartAttempt;  // Attempts after request, saturated at 255 (255 means >=255).
   uint16_t reason;         // Wi-Fi STA disconnect reason from the event
   int8_t rssi;             // last RSSI sampled while the link was still up
   uint8_t padding;
