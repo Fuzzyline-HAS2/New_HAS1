@@ -142,6 +142,7 @@ def broker_xml(executable, state):
         "description": "Isolated authenticated HAS1 diagnostic MQTT broker",
         "executable": str(executable), "arguments": f'-c "{Path(state) / "mosquitto.conf"}"',
         "startmode": "Automatic", "delayedAutoStart": "true", "stoptimeout": "30 sec",
+        "hidewindow": "false", "stopparentprocessfirst": "true",
         "logpath": str(Path(state) / "logs"), "resetfailure": "1 hour",
     }.items():
         ET.SubElement(root, key).text = value

@@ -180,7 +180,7 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(document.findtext("executable"), str(app / ".venv/Scripts/python.exe"))
         self.assertEqual(document.findtext("hidewindow"), "false")
         self.assertEqual(document.findtext("stoptimeout"), "30 sec")
-        self.assertEqual(document.findtext("stopparentprocessfirst"), "false")
+        self.assertEqual(document.findtext("stopparentprocessfirst"), "true")
         self.assertIsNone(document.find("stoparguments"))
         self.assertIsNone(document.find("stopexecutable"))
         self.assertEqual(document.findtext("startmode"), "Automatic")

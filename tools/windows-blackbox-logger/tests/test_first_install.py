@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -71,6 +72,11 @@ class FirstInstallTests(unittest.TestCase):
         self.assertIn("LocalService", xml)
         self.assertIn("roll-by-size", xml)
         self.assertNotIn(PROVISION["device_password"], xml)
+        document = ET.fromstring(xml)
+        self.assertEqual(document.findtext("hidewindow"), "false")
+        self.assertEqual(document.findtext("stopparentprocessfirst"), "true")
+        self.assertEqual(document.findtext("stoptimeout"), "30 sec")
+        self.assertIsNone(document.find("stoparguments"))
 
 
 @unittest.skipUnless(BROKER and PASSWD and HAS_PAHO, "Requires real Mosquitto and Paho")

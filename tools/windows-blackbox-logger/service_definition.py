@@ -24,8 +24,12 @@ def service_xml(app_directory, state_directory):
     value("hidewindow", "false")
     value("stoptimeout", "30 sec")
     # No stoparguments: WinSW 2.12 ignores stoptimeout in that alternate path.
-    # Default stop sends Ctrl+C; Python handles SIGINT, drains, then exits.
-    value("stopparentprocessfirst", "false")
+    # Signal the venv launcher console before traversing its descendants. With
+    # child-first shutdown WinSW 2.12 can kill conhost before reaching Python,
+    # destroying the console and preventing SIGINT/drain (Windows SCM CI).
+    # Parent-first broadcasts Ctrl+C while that console is alive and waits for
+    # the interpreter/launcher to exit; retain the bounded default stop path.
+    value("stopparentprocessfirst", "true")
     account = ET.SubElement(root, "serviceaccount")
     ET.SubElement(account, "domain").text = "NT AUTHORITY"
     ET.SubElement(account, "user").text = "LocalService"
