@@ -34,6 +34,99 @@ class WindowsScriptEntryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("HAS1BlackBoxCollector", result.stdout)
 
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1 -File parameter binding")
+    def test_update_and_rollback_bind_and_require_administrator(self):
+        import ctypes
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            self.skipTest("would really update an installed service")
+        for action in ("update", "rollback"):
+            result = subprocess.run([
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "service.ps1"), action,
+            ], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("as Administrator", result.stderr)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1")
+class UpdateFlowTests(unittest.TestCase):
+    """service.ps1 update/restore functions against temp folders; SCM/pip/ACL are recorders."""
+
+    @classmethod
+    def setUpClass(cls):
+        result = subprocess.run([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(ROOT / "tests" / "service_update_harness.ps1"), "-PythonExe", sys.executable,
+        ], capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise AssertionError(result.stdout + result.stderr)
+        cls.results = json.loads(result.stdout.strip().splitlines()[-1])
+
+    @staticmethod
+    def items(value):
+        # Windows PowerShell 5.1 JSON turns empty/single arrays into {} / scalars.
+        if value in (None, {}):
+            return []
+        return value if isinstance(value, list) else [value]
+
+    def test_unchanged_code_never_stops_service(self):
+        case = self.results["unchanged"]
+        self.assertEqual(case["result"], "unchanged")
+        self.assertEqual(self.items(case["calls"]), ["check:True"])
+        self.assertEqual(self.items(case["backups"]), [])
+
+    def test_applied_update_swaps_code_and_regenerates_definition(self):
+        case = self.results["applied"]
+        self.assertEqual(self.items(case["calls"]), ["check:True", "stop", "check:True", "start"])
+        self.assertEqual((case["omada"], case["xml"], case["status"]), ("new = 2", "<service/>", "Running"))
+        self.assertEqual(len(self.items(case["backups"])), 1)
+
+    def test_start_failure_restores_previous_code_and_restarts(self):
+        case = self.results["start_fails"]
+        self.assertEqual(case["error"], "simulated start failure")
+        self.assertEqual((case["omada"], case["xml"], case["status"]), ("old = 1", "<old/>", "Running"))
+        self.assertEqual(self.items(case["calls"])[-1], "start")
+        # Restored backup equals installed code; kept, it would make rollback a no-op.
+        self.assertEqual(self.items(case["backups"]), [])
+
+    def test_failed_dependency_restore_still_restarts_and_keeps_backup(self):
+        case = self.results["pip_fails"]
+        self.assertEqual(case["error"], "simulated pip failure")
+        # Changed requirements defer the config check until after pip.
+        self.assertEqual(self.items(case["calls"]), ["check:False", "stop", "pip", "pip", "start"])
+        self.assertEqual((case["requirements"], case["status"]), ("old = 1", "Running"))
+        self.assertEqual(len(self.items(case["backups"])), 1)
+
+    def test_stopped_service_is_left_stopped(self):
+        case = self.results["stopped_stays_stopped"]
+        self.assertEqual(self.items(case["calls"]), ["check:True", "check:True"])
+        self.assertEqual(case["status"], "Stopped")
+
+    def test_pruning_keeps_ten_of_each_kind(self):
+        case = self.results["prune"]
+        self.assertEqual((case["plain"], case["pre"], case["restored"]), (10, 10, 10))
+        self.assertEqual(case["oldest_plain"], "20260116-000000")
+
+
+class CodeFileListTests(unittest.TestCase):
+    def code_files(self):
+        import re
+        script = (ROOT / "service.ps1").read_text(encoding="utf-8")
+        block = re.search(r"\$CodeFiles = @\((.*?)\)", script, re.S).group(1)
+        return re.findall(r"'([^']+)'", block)
+
+    def test_listed_files_exist(self):
+        files = self.code_files()
+        self.assertEqual(len(files), len(set(files)))
+        for name in files:
+            self.assertTrue((ROOT / name).is_file(), name)
+
+    def test_every_runtime_module_is_deployed(self):
+        # A module missing here would install/update fine and then fail to import
+        # in the service. first_install.py only runs from the source checkout.
+        modules = {path.name for path in ROOT.glob("*.py")} - {"first_install.py"}
+        self.assertEqual(modules - set(self.code_files()), set())
+
 
 class LockTests(unittest.TestCase):
     def test_other_process_refused_then_crash_releases_lock(self):

@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0, Mandatory=$true)]
-    [ValidateSet('install','start','stop','restart','status','uninstall','credential')]
+    [ValidateSet('install','update','rollback','start','stop','restart','status','uninstall','credential')]
     [string]$Action,
     [string]$PythonExe,
     [string]$Config,
@@ -11,6 +11,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Started from pwsh 7, Windows PowerShell inherits pwsh's PSModulePath and then
+# fails to autoload its own modules (Get-FileHash, Set-Acl). Use the machine default.
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
 # Windows PowerShell 5.1 can evaluate parameter defaults before PSScriptRoot is
 # populated under -File. Resolve the default only after script binding finishes.
 if (-not $PSBoundParameters.ContainsKey('Config')) {
@@ -25,6 +28,14 @@ $Credential = Join-Path $StateDir 'mqtt-password.dpapi'
 $ConfigTarget = Join-Path $StateDir 'config.json'
 $ExpectedHash = 'b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f'
 $DownloadUri = 'https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe'
+$ServiceXml = Join-Path $AppDir 'HAS1BlackBoxCollector.xml'
+$BackupRoot = Join-Path $AppDir 'backups'
+# Everything install copies into AppDir; update/rollback replace exactly this set.
+$CodeFiles = @('collector.py','storage.py','protocol.py','service_runtime.py',
+    'service_definition.py','requirements.txt','export.py','decode_flash.py',
+    'omada.py','telemetry.py','telemetry_runtime.py','timeline.py',
+    'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py',
+    'incidents.py','notifications.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
@@ -115,6 +126,124 @@ function Invoke-Wrapper([string]$Command) {
         } finally { $waiter.Dispose() }
     }
 }
+function Copy-CodeFiles([string]$From, [string]$To, [string[]]$Files) {
+    foreach ($file in $Files) {
+        Copy-Item -LiteralPath (Join-Path $From $file) -Destination (Join-Path $To $file) -Force
+    }
+}
+function Test-CodeDirectory([string]$Directory, [bool]$CheckConfig) {
+    # Syntax-check every module and run the collector's own config/credential
+    # check from this directory, without executing any script entry points.
+    $modules = @(Get-ChildItem -LiteralPath $Directory -Filter '*.py' -File | ForEach-Object { $_.FullName })
+    Invoke-Checked $ServicePython (@('-E','-s','-c',
+        'import py_compile,sys; [py_compile.compile(f, doraise=True) for f in sys.argv[1:]]') + $modules)
+    if ($CheckConfig) {
+        Invoke-Checked $ServicePython @('-E','-s',(Join-Path $Directory 'collector.py'),'--config',$ConfigTarget,
+            '--credential-file',$Credential,'--check-config')
+    }
+}
+function Remove-OldBackups {
+    # Keep the ten newest of each kind so pruning never removes the update
+    # backups rollback walks through because rollback copies piled up.
+    $all = @(Get-ChildItem -LiteralPath $BackupRoot -Directory -ErrorAction SilentlyContinue)
+    foreach ($kind in @(
+            { $_.Name -notlike '*.restored' -and $_.Name -notlike '*-pre-rollback' },
+            { $_.Name -like '*.restored' },
+            { $_.Name -like '*-pre-rollback' })) {
+        $all | Where-Object $kind | Sort-Object Name -Descending | Select-Object -Skip 10 |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+    }
+}
+function Install-Requirements([string]$Directory) {
+    Invoke-Checked $ServicePython @('-E','-s','-m','pip','install','--requirement',(Join-Path $Directory 'requirements.txt'))
+}
+function Update-ServiceCode([string]$Source, [string[]]$Files, [string]$Label, [string]$BackupSuffix) {
+    # Stage and verify before touching the service, back up what is installed,
+    # then swap while stopped. Any failure after the stop restores the backup
+    # and the previous running state. Config, credential and data are untouched.
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $staging = Join-Path $AppDir ".staging-$stamp"
+    $backup = Join-Path $BackupRoot ($stamp + $BackupSuffix)
+    if (Test-Path -LiteralPath $backup) { throw "Backup $backup already exists; retry in a second." }
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    try {
+        # Files the source lacks (an older backup) keep their installed copy.
+        Copy-CodeFiles $AppDir $staging @($CodeFiles | Where-Object { Test-Path -LiteralPath (Join-Path $AppDir $_) })
+        Copy-CodeFiles $Source $staging $Files
+        $requirementsChanged = (Get-FileHash -LiteralPath (Join-Path $staging 'requirements.txt')).Hash -ne
+            (Get-FileHash -LiteralPath (Join-Path $AppDir 'requirements.txt')).Hash
+        # New code may import a package only its new requirements add; then the
+        # full config check waits until pip has run after the stop.
+        Test-CodeDirectory $staging (-not $requirementsChanged)
+        $changed = @($CodeFiles | Where-Object {
+            $old = Join-Path $AppDir $_
+            -not (Test-Path -LiteralPath $old) -or
+                (Get-FileHash -LiteralPath $old).Hash -ne (Get-FileHash -LiteralPath (Join-Path $staging $_)).Hash
+        })
+        if ($changed.Count -eq 0) {
+            Write-Output 'Installed code already matches; nothing to do.'
+            $script:UpdateResult = 'unchanged'
+            return
+        }
+        Write-Output "Changed files: $($changed -join ', ')"
+
+        New-Item -ItemType Directory -Path $backup -Force | Out-Null
+        Copy-CodeFiles $AppDir $backup @($CodeFiles | Where-Object { Test-Path -LiteralPath (Join-Path $AppDir $_) })
+        Copy-Item -LiteralPath $ServiceXml -Destination $backup -Force
+        Set-Content -LiteralPath (Join-Path $backup 'SOURCE.txt') -Encoding UTF8 -Value "$Label from $Source"
+
+        $service = Get-InstalledService
+        $wasRunning = $service.Status -ne 'Stopped'
+        $service.Dispose()
+        try {
+            if ($wasRunning) { Invoke-Wrapper 'stop' }
+            if ($requirementsChanged) { Install-Requirements $staging }
+            Copy-CodeFiles $staging $AppDir $CodeFiles
+            Invoke-Checked $ServicePython @('-E','-s',(Join-Path $AppDir 'service_definition.py'),$AppDir,$StateDir,$ServiceXml)
+            Set-ProtectedAcl $AppDir $false
+            Test-CodeDirectory $AppDir $true
+            if ($wasRunning) { Invoke-Wrapper 'start' }
+        } catch {
+            $failure = $_
+            Write-Warning "Update failed ($($failure.Exception.Message)); restoring $backup"
+            # Each step on its own so one failure (e.g. pip offline) cannot skip
+            # the restart; the service must not be left down by an update.
+            $restored = $true
+            $steps = [ordered]@{
+                'restore code' = { Copy-CodeFiles $backup $AppDir @($CodeFiles | Where-Object { Test-Path -LiteralPath (Join-Path $backup $_) }) }
+                'restore service XML' = { Copy-Item -LiteralPath (Join-Path $backup (Split-Path -Leaf $ServiceXml)) -Destination $ServiceXml -Force }
+                'reinstall previous requirements' = { if ($requirementsChanged) { Install-Requirements $AppDir } }
+                'reapply ACL' = { Set-ProtectedAcl $AppDir $false }
+                'restart service' = {
+                    $current = Get-InstalledService
+                    if ($wasRunning -and $null -ne $current -and $current.Status -ne 'Running') { Invoke-Wrapper 'start' }
+                    if ($null -ne $current) { $current.Dispose() }
+                }
+            }
+            foreach ($step in $steps.GetEnumerator()) {
+                try { & $step.Value } catch {
+                    $restored = $false
+                    Write-Warning "Restore step '$($step.Key)' failed: $($_.Exception.Message)"
+                }
+            }
+            if ($restored) {
+                # The backup now equals the installed code; keeping it would make
+                # the next rollback a silent no-op.
+                Remove-Item -LiteralPath $backup -Recurse -Force
+                Write-Warning 'Previous code restored and previous service state resumed.'
+            } else {
+                Write-Warning "Restore incomplete. Copy files from $backup into $AppDir and run service.cmd start."
+            }
+            throw $failure
+        }
+        $script:UpdateResult = 'applied'
+        Write-Output "Backup of previous code: $backup"
+        $state = if ($wasRunning) { 'restarted' } else { 'left stopped' }
+        Write-Output "Updated; service $state. Check $StateDir\data\collector.log for the new run."
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    }
+}
 
 try {
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
@@ -195,13 +324,7 @@ try {
             Set-ProtectedAcl $StateDir $false
             New-Item -ItemType Directory -Path (Join-Path $StateDir 'data') -Force | Out-Null
             Set-ProtectedAcl (Join-Path $StateDir 'data') $true
-            foreach ($file in @('collector.py','storage.py','protocol.py','service_runtime.py',
-                'service_definition.py','requirements.txt','export.py','decode_flash.py',
-                'omada.py','telemetry.py','telemetry_runtime.py','timeline.py',
-                'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py',
-                'incidents.py','notifications.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')) {
-                Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $AppDir $file) -Force
-            }
+            Copy-CodeFiles $PSScriptRoot $AppDir $CodeFiles
             Copy-Item -LiteralPath $candidate -Destination $Wrapper -Force
             Assert-Hash $Wrapper
             Invoke-Checked $PythonExe @('-E','-s','-m','venv','--clear',(Join-Path $AppDir '.venv'))
@@ -245,6 +368,43 @@ try {
             Write-Output "Database: $database (existing console data was not copied)"
         } finally {
             if ($download -and (Test-Path -LiteralPath $download)) { Remove-Item -LiteralPath $download -Force }
+        }
+    } elseif ($Action -in @('update','rollback')) {
+        if ($null -eq $service) { throw 'Service is not installed. Use service.cmd install.' }
+        $service.Dispose()
+        foreach ($required in @($ServicePython, $ServiceXml, $ConfigTarget)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Installed service is incomplete: $required is missing." }
+        }
+        if (-not (Test-Path -LiteralPath $Credential -PathType Leaf)) { throw 'Service credential is missing. Use service.cmd credential.' }
+        Assert-NoReparse $AppDir
+        if ($Action -eq 'update') {
+            $source = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
+            if ($source -eq [IO.Path]::GetFullPath($AppDir).TrimEnd('\')) { throw 'Run update from a source checkout, not the installed folder.' }
+            Assert-NoReparse $source
+            $missing = @($CodeFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $source $_) -PathType Leaf) })
+            if ($missing.Count) { throw "Source is missing: $($missing -join ', ')" }
+            Update-ServiceCode $source $CodeFiles 'update' ''
+            Remove-OldBackups
+        } else {
+            # Newest backup made by update; skip ones already restored and the
+            # copies rollback itself makes, so repeated rollback walks backwards.
+            $latest = Get-ChildItem -LiteralPath $BackupRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike '*.restored' -and $_.Name -notlike '*-pre-rollback' } |
+                Sort-Object Name -Descending | Select-Object -First 1
+            if ($null -eq $latest) { throw "No backup to roll back to in $BackupRoot." }
+            $files = @($CodeFiles | Where-Object { Test-Path -LiteralPath (Join-Path $latest.FullName $_) -PathType Leaf })
+            if ($files -notcontains 'collector.py') { throw "Backup $($latest.FullName) has no collector.py." }
+            Write-Warning 'Rollback restores code only. If the newer code migrated a database schema, restore the matching data backup too (see README).'
+            $script:UpdateResult = $null
+            Update-ServiceCode $latest.FullName $files 'rollback' '-pre-rollback'
+            # Marked either way so the next rollback goes one step further back.
+            Rename-Item -LiteralPath $latest.FullName -NewName ($latest.Name + '.restored')
+            if ($script:UpdateResult -eq 'unchanged') {
+                Write-Output "Backup $($latest.Name) already matches the installed code; nothing was rolled back. Run rollback again to go further back."
+            } else {
+                Write-Output "Restored from $($latest.FullName)"
+            }
+            Remove-OldBackups
         }
     } elseif ($Action -eq 'credential') {
         if (-not (Test-Path -LiteralPath $ConfigTarget)) { throw 'Install the service first.' }
