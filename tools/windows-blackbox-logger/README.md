@@ -192,7 +192,9 @@ XML을 바꾸지 마십시오. `--credential-file`을 지정한 설정 검사는
 `libraries/HAS1BlackBox`와 장치별 `BLACKBOX.md`를 참고합니다. 미측정 RSSI는
 `INT32_MIN`, 장치 전압/ADC 등 일부 필드는 `-1`이며 필드별 규칙을 따라 해석합니다.
 
-`decode_flash.py`는 별도로 확보한 **128 KiB partition 파일만** 읽습니다. 장치
+`decode_flash.py`는 별도로 확보한 **spiffs partition 파일만** 읽습니다. 128 KiB와,
+Arduino 2.x로 처음 설치된 장치의 192 KiB 파일을 받으며 192 KiB는 ring이 있는 앞쪽
+128 KiB만 해석합니다. 장치
 연결/리셋/erase/write 기능이 없습니다. 앞쪽 4 KiB 섹터 2개의 metadata journal
 (64바이트 헤더 최대 128개)을 모두 스캔하고 CRC가 유효한 가장 높은 generation을
 선택합니다. 중간에 잘린 헤더는 건너뛰되 원본 hex를 출력하며, 섹터 순환 후 새 헤더가

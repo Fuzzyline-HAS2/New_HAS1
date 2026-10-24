@@ -26,7 +26,16 @@ storage/network tasks; small device observation hooks remain in the binary.
 Boot starts the logger before potentially blocking peripheral initialization.
 Initialization errors disable only logging; unknown partition contents are not
 automatically formatted. An empty SPIFFS left by an older `min_spiffs` layout
-(format markers only, no file) is erased once and initialized, per the library README. Up to eight valid prior RTC events are queued as paired event/time records before
+(format markers only, no file) is erased once and initialized, per the library README.
+Generators flashed under Arduino 2.x keep a 192 KiB `spiffs` partition (OTA never
+rewrites the table); the ring uses its first 128 KiB and checks the whole partition.
+
+Each Telnet session's first `[diagnostics]` line ends with the logger state:
+`bb_ready` (0/1), `bb_status` (library `RingStatus`: 0 unopened, 1 ready, 2 bad
+size, 3 read error, 4 metadata conflict, 5 foreign data left untouched, 6 erase
+error, 7 write error, 8 record conflict), `bb_partition` (spiffs bytes, 0 = none),
+`bb_flash_errors`, `bb_uploaded`, `bb_upload_failures` and `bb_dropped`. A logger
+that never connects to the broker can be diagnosed from this line without USB. Up to eight valid prior RTC events are queued as paired event/time records before
 RTC initialization: earliest retained negative-code fault plus the newest seven
 when that fault is outside the tail, otherwise the newest eight. This copy is best effort and
 not evidence preserved through power removal.

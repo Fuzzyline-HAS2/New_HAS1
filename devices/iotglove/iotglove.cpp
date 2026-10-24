@@ -299,6 +299,10 @@ void printDiagnostics(uint32_t now) {
       lastOutputs.motor, lastBrightness, motorAgeText(now));
   remoteConsoleLogf("[battery] adc_mv=%u configured=%u volts=%.2f\n",
       batteryAdcMv, battery.configured(), static_cast<double>(batteryVolts));
+  const has1blackbox::Diagnostics bb = has1blackbox::blackbox.diagnostics();
+  remoteConsoleLogf("[blackbox] ready=%u status=%u partition=%lu flash_errors=%lu uploaded=%lu upload_failures=%lu dropped=%lu\n",
+      unsigned(bb.ready), unsigned(bb.ringStatus), (unsigned long)bb.partitionSize, (unsigned long)bb.flashErrors,
+      (unsigned long)bb.uploaded, (unsigned long)bb.uploadFailures, (unsigned long)bb.dropped);
   diagnosticLog.append(
       "[diag] TTGO fw=%d partition=%d; UART TX32->6 RX36<-5 reset12->1\n"
       "[peer] known=%u online=%u fw=%lu partition=%lu boot=%lu last_seen_ms=%s hello_age_ms=%s\n"

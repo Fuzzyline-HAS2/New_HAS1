@@ -26,9 +26,10 @@ def metadata(raw):
 
 def decode(path, output):
     path = Path(path)
-    if path.stat().st_size != 131072:
-        raise ValueError("expected exactly 131072 bytes (partition only, not whole flash)")
-    data = path.read_bytes()
+    # 128 KiB spiffs, or the Arduino 2.x 192 KiB one whose first 128 KiB holds the ring.
+    if path.stat().st_size not in (131072, 196608):
+        raise ValueError("expected a 131072 or 196608 byte spiffs partition (not whole flash)")
+    data = path.read_bytes()[:131072]
     # Two 4 KiB sectors hold an append-only journal of 128 64-byte headers.
     # Older firmware with one header at each sector start is still readable.
     valid, damaged_metadata, generations = [], [], {}

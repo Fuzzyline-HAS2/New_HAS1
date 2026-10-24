@@ -32,6 +32,18 @@ class FlashTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), raw)
             return [json.loads(line) for line in output.getvalue().splitlines()]
 
+    def test_legacy_192k_partition_uses_first_128k(self):
+        raw = bytearray(b"\xff" * 196608)
+        raw[:64] = metadata()
+        raw[8192:8256] = record(1)
+        raw[131072 + 252:131072 + 254] = b"\x19\x04"  # leftover SPIFFS magic past the ring
+        rows = self.decode_bytes(bytes(raw))
+        self.assertEqual(rows[0]["kind"], "metadata")
+        self.assertEqual([row["seq"] for row in rows if row["kind"] == "record"], [1])
+        for size in (131072 + 4096, 262144):
+            with self.assertRaises(ValueError):
+                self.decode_bytes(b"\xff" * size)
+
     def test_metadata_selection_records_damage_and_no_mutation(self):
         raw = bytearray(b"\xff" * 131072)
         raw[:64] = metadata()

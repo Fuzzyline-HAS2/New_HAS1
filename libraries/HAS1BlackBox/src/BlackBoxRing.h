@@ -9,16 +9,32 @@ struct Flash {
   virtual size_t size() const = 0;
 };
 enum class AppendResult { Persisted, Failed, Uncertain, Full, Unavailable };
+// Why the last begin() did or did not open the ring; numeric values are shown
+// on device consoles, so only append.
+enum class RingStatus : uint8_t {
+  Unopened,         // begin() not run, or a fresh partition without identity
+  Ready,
+  BadSize,          // partition smaller than Size or not whole sectors
+  ReadError,
+  MetadataConflict, // two ring identities, or one generation twice
+  ForeignData,      // unknown content (possibly a file); left untouched
+  EraseError,
+  WriteError,
+  RecordConflict,   // record beyond reservation or duplicate sequence
+};
 // Single owner. Sequence reservations leave intentional gaps after reset.
 class Ring {
 public:
   static constexpr size_t Sector = 4096, Size = 131072, Slots = 1920,
                           Data = 8192;
   explicit Ring(Flash &f) : f_(f) {}
+  // The ring occupies the first Size bytes. A larger partition (the 192 KiB
+  // spiffs of the Arduino 2.x min_spiffs layout) is accepted; its remainder
+  // is only ever checked and, together with the ring, erased when unused.
   bool begin(uint64_t newId) {
     ready_ = false;
-    if (f_.size() != Size)
-      return false;
+    if (f_.size() < Size || f_.size() % Sector)
+      return fail(RingStatus::BadSize);
     uint8_t best[64]{};
     uint32_t seenGeneration[128]{};
     bool found = false;
@@ -26,18 +42,20 @@ public:
     for (size_t slot = 0; slot < 128; ++slot) {
       uint8_t candidate[64];
       if (!f_.read(slot * 64, candidate, 64))
-        return false;
+        return fail(RingStatus::ReadError);
       if (!metadataValid(candidate))
         continue;
       if (found && id(candidate) != id(best))
-        return false;
+        return fail(RingStatus::MetadataConflict);
       const uint32_t gen = get32(candidate + 8);
       for (size_t previous = 0; previous < slot; ++previous) {
         if (seenGeneration[previous] != gen)
           continue;
         uint8_t old[64];
-        if (!f_.read(previous * 64, old, 64) || std::memcmp(candidate, old, 64))
-          return false;
+        if (!f_.read(previous * 64, old, 64))
+          return fail(RingStatus::ReadError);
+        if (std::memcmp(candidate, old, 64))
+          return fail(RingStatus::MetadataConflict);
       }
       seenGeneration[slot] = gen;
       if (!found || gen > get32(best + 8)) {
@@ -48,22 +66,24 @@ public:
     }
     if (!found) {
       bool spiffs = false;
-      if (!unused(spiffs) || !newId)
+      if (!unused(spiffs))
         return false;
+      if (!newId)
+        return fail(RingStatus::Unopened);
       // Holds no file, so erasing it cannot lose data; see unused(). Sector
       // erases keep each flash-cache stall short for the other core.
-      for (size_t off = 0; spiffs && off < Size; off += Sector)
+      for (size_t off = 0; spiffs && off < f_.size(); off += Sector)
         if (!f_.erase(off, Sector))
-          return false;
+          return fail(RingStatus::EraseError);
       if (spiffs && (!unused(spiffs) || spiffs))
-        return false;
+        return fail(RingStatus::EraseError);
       ringId_ = newId;
       generation_ = 0;
       reserved_ = 1;
       acked_ = 0;
       active_ = 1;
       if (!checkpoint(1, 0))
-        return false;
+        return fail(RingStatus::WriteError);
     } else {
       active_ = bestSector;
       ringId_ = id(best);
@@ -78,27 +98,29 @@ public:
     for (size_t i = 0; i < Slots; ++i) {
       Record r;
       if (!read(i, r))
-        return false;
+        return fail(RingStatus::ReadError);
       seqs_[i] = r.valid() ? r.seq() : 0;
       dirty_[i] = !r.erased();
       if (!r.valid())
         continue;
       if (r.seq() >= reserved_)
-        return false;
+        return fail(RingStatus::RecordConflict);
       for (size_t j = 0; j < i; ++j)
         if (seqs_[j] == r.seq())
-          return false;
+          return fail(RingStatus::RecordConflict);
       if (r.seq() > max_) {
         max_ = r.seq();
         cursor_ = (i + 1) % Slots;
       }
     }
     if (acked_ >= reserved_)
-      return false;
+      return fail(RingStatus::RecordConflict);
     ready_ = true;
+    status_ = RingStatus::Ready;
     return true;
   }
   bool ready() const { return ready_; }
+  RingStatus status() const { return status_; }
   uint64_t id() const { return ringId_; }
   uint32_t acked() const { return acked_; }
   uint32_t maximum() const { return max_; }
@@ -253,43 +275,49 @@ private:
   uint32_t seqs_[Slots]{};
   bool dirty_[Slots]{};
   bool ready_ = false;
+  RingStatus status_ = RingStatus::Unopened;
   uint64_t ringId_ = 0;
   uint32_t generation_ = 0, reserved_ = 1, next_ = 1, acked_ = 0,
            durableAck_ = 0, max_ = 0, lost_ = 0;
   size_t active_ = 1, cursor_ = 0;
+  bool fail(RingStatus status) {
+    status_ = status;
+    return false;
+  }
   bool read(size_t i, Record &r) { return f_.read(Data + i * 64, r.bytes, 64); }
   // True for an entirely 0xff partition, or one Arduino formatted as an
   // empty SPIFFS (e.g. under the older 192 KiB min_spiffs layout): each 4 KiB
   // block then holds only its lookup-page magic, SPIFFS_MAGIC = 0x20140529 ^
   // 256-byte page ^ (blockCount - block) as uint16 at byte 252, plus the
-  // erase count after it. Any other byte may belong to a file.
+  // erase count after it. Any other byte may belong to a file. Scans the whole
+  // partition, including any part beyond the ring.
   bool unused(bool &spiffs) {
     spiffs = false;
     uint32_t blockCount = 0;
-    for (size_t sector = 0; sector < Size / Sector; ++sector) {
+    for (size_t sector = 0; sector < f_.size() / Sector; ++sector) {
       uint8_t page[256], tail[4] = {255, 255, 255, 255};
       for (size_t off = 0; off < Sector; off += sizeof(page)) {
         if (!f_.read(sector * Sector + off, page, sizeof(page)))
-          return false;
+          return fail(RingStatus::ReadError);
         for (size_t i = 0; i < sizeof(page); ++i) {
           if (page[i] == 255)
             continue;
           if (off != 0 || i < 252)
-            return false;
+            return fail(RingStatus::ForeignData);
           tail[i - 252] = page[i];
         }
       }
       const uint16_t magic = uint16_t(tail[0] | (tail[1] << 8));
       if (magic == 0xffff) {
         if (tail[2] != 255 || tail[3] != 255)
-          return false;
+          return fail(RingStatus::ForeignData);
         continue;
       }
       // magic ^ (0x20140529 ^ 256) truncated = blockCount - block, nonzero.
       const uint16_t remaining = uint16_t(magic ^ 0x0429);
       const uint32_t count = uint32_t(remaining + sector);
       if (!remaining || (blockCount && blockCount != count))
-        return false;
+        return fail(RingStatus::ForeignData);
       blockCount = count;
       spiffs = true;
     }

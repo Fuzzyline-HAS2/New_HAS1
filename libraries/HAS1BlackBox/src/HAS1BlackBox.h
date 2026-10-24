@@ -15,6 +15,11 @@ struct Diagnostics {
            uploadFailures = 0, uploaded = 0, queueDepth = 0;
   bool ready = false, paused = false;
   uint32_t eraseCalls = 0, maxEraseUs = 0, overwritten = 0;
+  // spiffs partition bytes (0 = not found) and the last Ring::begin result as
+  // RingStatus (0 unopened, 1 ready, 2 size, 3 read, 4 metadata, 5 foreign
+  // data, 6 erase, 7 write, 8 record conflict).
+  uint32_t partitionSize = 0;
+  uint8_t ringStatus = 0;
 };
 class BlackBox {
 public:

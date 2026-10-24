@@ -41,7 +41,9 @@ struct AckMessage {
 std::atomic<bool> started{false}, isReady{false}, paused{false}, allowed{false};
 std::atomic<uint32_t> generation{0}, accepted{0}, persisted{0}, dropped{0},
     flashErrors{0}, uploadFailures{0}, uploaded{0}, firstFailed{0},
-    completed{0}, eraseCalls{0}, maxEraseUs{0}, overwritten{0};
+    completed{0}, eraseCalls{0}, maxEraseUs{0}, overwritten{0},
+    partitionBytes{0};
+std::atomic<uint8_t> ringStatus{0};
 uint32_t bootId = 0;
 RTC_NOINIT_ATTR RetainedEvidence retainedEvidence;
 ClockCoverage clockCoverage;
@@ -143,7 +145,10 @@ void writer(void *) {
   flash.p = esp_partition_find_first(
       ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
   // Startup only: partition validation and discovery happen off the game task.
-  bool ok = flash.p && flash.p->size == Ring::Size;
+  partitionBytes = flash.p ? uint32_t(flash.p->size) : 0;
+  bool ok = flash.p && flash.p->size >= Ring::Size;
+  if (flash.p && !ok)
+    ringStatus = uint8_t(RingStatus::BadSize);
   if (ok) {
     while (paused || xSemaphoreTake(flashGuard, pdMS_TO_TICKS(5)) != pdTRUE)
       vTaskDelay(pdMS_TO_TICKS(5));
@@ -154,6 +159,7 @@ void writer(void *) {
       ok = false;
     } else {
       ok = ring.begin((uint64_t(esp_random()) << 32) | esp_random());
+      ringStatus = uint8_t(ring.status());
       xSemaphoreGive(flashGuard);
     }
   }
@@ -173,6 +179,7 @@ void writer(void *) {
         retryAt = millis();
         if (xSemaphoreTake(flashGuard, 0) == pdTRUE) {
           isReady = ring.begin(0);
+          ringStatus = uint8_t(ring.status());
           degraded = !isReady.load();
           xSemaphoreGive(flashGuard);
         }
@@ -577,7 +584,9 @@ Diagnostics BlackBox::diagnostics() const {
           paused.load(),
           eraseCalls.load(),
           maxEraseUs.load(),
-          overwritten.load()};
+          overwritten.load(),
+          partitionBytes.load(),
+          ringStatus.load()};
 }
 FlushResult BlackBox::flushThrough(uint32_t ticket, uint32_t timeoutMs) {
   if (!started || !ticket || ticket > accepted)
