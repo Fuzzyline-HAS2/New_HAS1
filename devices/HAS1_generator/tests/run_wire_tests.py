@@ -76,6 +76,8 @@ int digitalRead(int pin) {
  ++gpioReads;
  return (physicalMask >= 0 ? (physicalMask & (1 << pin)) != 0 : pin < physical) ? LOW : 1;
 }
+static bool completionPending=false;
+bool GeneratorNetworkCompletionPending(){return completionPending;}
 JsonDocument my;
 bool batteryFinishDone=false, batteryFinishAudioPlayed=false, receiveMineOn=false;
 int completions=0, refreshes=0, activations=0, renders=0, audio=0;
@@ -235,6 +237,10 @@ static std::string snapshotJson() {
  std::string result; serializeJson(json,result); return result;
 }
 int main() {
+ reset(4,4);completionPending=true;run(1400);
+ assert(wireState.qualified(millis())&&writes.empty()&&readRequests==0);
+ completionPending=false;run(500);assert(wireState.synced()&&writes.size()==1);
+ puts("PASS durable completion blocks boot wire fencing while input sampling continues; cleared intent resumes CAS");
  reset(); run(1200); assert(wireState.synced() && writes.size()==1 && readRequests==1);
  assert(writes[0].count==0 && serverState.revision==8); // startup fences an earlier boot
  writes.clear(); readRequests=0;

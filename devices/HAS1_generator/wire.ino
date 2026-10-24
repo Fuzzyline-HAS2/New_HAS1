@@ -237,12 +237,21 @@ static void WireDiagnosticSnapshot(const GeneratorWireState &s) {
     changes=0;
 }
 
+bool WireCompletionContext(GeneratorWireSnapshot &snapshot) {
+    if (!wireContextValid || !WireSnapshot().synced() || wireFenceNeeded) return false;
+    snapshot=wireContext;return true;
+}
+void WireRequestContextRefresh() { wireContextValid=false; }
+
 void WireServiceLoop() {
     WireObserveServerSnapshot();
     GeneratorWireState observed = WireSnapshot();
     WireDiagnosticSnapshot(observed);
     WireSampleInputs(false);
     observed = WireSnapshot();
+    // Never let boot fencing or a new physical report consume a pending
+    // completion token before its authoritative read has reconciled it.
+    if (GeneratorNetworkCompletionPending()) return;
     if (!wireSamplerTask || !wireEnabled || !observed.qualified(millis()) ||
         (wireContextValid && observed.synced() && !wireFenceNeeded)) return;
     // Fresh stable values are sent immediately. Only failures are backed off.

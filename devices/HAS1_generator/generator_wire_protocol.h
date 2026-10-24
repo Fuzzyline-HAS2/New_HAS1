@@ -7,6 +7,7 @@ struct GeneratorWireSnapshot {
   char gameState[32] = {};
   char deviceState[32] = {};
   uint32_t revision = 0;
+  uint8_t completionProtocol = 0;
   int count = 0;
   int maximum = 0;
 };
