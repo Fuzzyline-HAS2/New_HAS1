@@ -538,6 +538,10 @@ void legacyPartition() {
   ragged.data.assign(Ring::Size + 100, 255);
   Ring odd(ragged);
   assert(!odd.begin(1) && odd.status() == RingStatus::BadSize);
+  Memory large; // e.g. the 1.4 MiB default-scheme spiffs: not adopted
+  large.data.assign(Ring::MaxSize + Ring::Sector, 255);
+  Ring big(large);
+  assert(!big.begin(1) && big.status() == RingStatus::BadSize && large.erases == 0);
 }
 void statusCodes() {
   Memory fresh;

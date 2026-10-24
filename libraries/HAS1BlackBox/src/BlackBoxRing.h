@@ -26,14 +26,15 @@ enum class RingStatus : uint8_t {
 class Ring {
 public:
   static constexpr size_t Sector = 4096, Size = 131072, Slots = 1920,
-                          Data = 8192;
+                          Data = 8192, MaxSize = 196608;
   explicit Ring(Flash &f) : f_(f) {}
-  // The ring occupies the first Size bytes. A larger partition (the 192 KiB
-  // spiffs of the Arduino 2.x min_spiffs layout) is accepted; its remainder
-  // is only ever checked and, together with the ring, erased when unused.
+  // The ring occupies the first Size bytes. Up to MaxSize (the 192 KiB spiffs
+  // of the Arduino 2.x min_spiffs layout) is accepted; the remainder is only
+  // ever checked and, together with the ring, erased when unused. The cap
+  // bounds that one-time erase and matches decode_flash.py.
   bool begin(uint64_t newId) {
     ready_ = false;
-    if (f_.size() < Size || f_.size() % Sector)
+    if (f_.size() < Size || f_.size() > MaxSize || f_.size() % Sector)
       return fail(RingStatus::BadSize);
     uint8_t best[64]{};
     uint32_t seenGeneration[128]{};
@@ -75,8 +76,13 @@ public:
       for (size_t off = 0; spiffs && off < f_.size(); off += Sector)
         if (!f_.erase(off, Sector))
           return fail(RingStatus::EraseError);
-      if (spiffs && (!unused(spiffs) || spiffs))
-        return fail(RingStatus::EraseError);
+      if (spiffs) {
+        bool remaining = false;
+        if (!unused(remaining)) // keeps unused()'s ReadError/ForeignData
+          return false;
+        if (remaining)
+          return fail(RingStatus::EraseError);
+      }
       ringId_ = newId;
       generation_ = 0;
       reserved_ = 1;

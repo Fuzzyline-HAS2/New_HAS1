@@ -146,7 +146,8 @@ void writer(void *) {
       ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
   // Startup only: partition validation and discovery happen off the game task.
   partitionBytes = flash.p ? uint32_t(flash.p->size) : 0;
-  bool ok = flash.p && flash.p->size >= Ring::Size;
+  bool ok = flash.p && flash.p->size >= Ring::Size &&
+            flash.p->size <= Ring::MaxSize;
   if (flash.p && !ok)
     ringStatus = uint8_t(RingStatus::BadSize);
   if (ok) {

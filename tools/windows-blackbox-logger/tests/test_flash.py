@@ -36,7 +36,7 @@ class FlashTests(unittest.TestCase):
         raw = bytearray(b"\xff" * 196608)
         raw[:64] = metadata()
         raw[8192:8256] = record(1)
-        raw[131072 + 252:131072 + 254] = b"\x19\x04"  # leftover SPIFFS magic past the ring
+        raw[131072 + 252:131072 + 254] = b"\x39\x04"  # block 32 magic of a 48-block SPIFFS
         rows = self.decode_bytes(bytes(raw))
         self.assertEqual(rows[0]["kind"], "metadata")
         self.assertEqual([row["seq"] for row in rows if row["kind"] == "record"], [1])
