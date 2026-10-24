@@ -468,6 +468,34 @@ int main(int argc, char** argv) {
     const unsigned expected = scenario == "miss_does_not_rearm" ? 1 : 2;
     assert(has2wifi.receive_calls == expected && has2wifi.situation_calls == expected);
     assert(!revival_approval_pending && on_count() == 0);
+  } else if (scenario == "device_ready_lookup") {
+    // game_state=ready, device_state=ready: 태그자를 한 번 조회만 하고 열지 않는다.
+    prepare("ready", "ready");
+    reader_tag = "G1P1";
+    RfidTagTimerFunc(); AdminCardPollReady();
+    assert(has2wifi.receive_calls == 1 && has2wifi.received_tags.front() == "G1P1");
+    assert(has2wifi.situation_calls == 0 && has2wifi.mine_calls == 0 && on_count() == 0);
+    unique_log("[RFID] Tag while device_state=ready - G1P1 role=ghost");
+    RfidTagTimerFunc(); AdminCardPollReady();  // 대고 있는 동안에는 다시 조회하지 않는다.
+    assert(has2wifi.receive_calls == 1);
+    reader_present = false;
+    RfidTagTimerFunc(); AdminCardPollReady();
+    delay(RFID_REARM_ABSENT_MS);
+    RfidTagTimerFunc(); AdminCardPollReady();
+    reader_present = true;
+    RfidTagTimerFunc(); AdminCardPollReady();
+    assert(has2wifi.receive_calls == 2 && has2wifi.situation_calls == 0 && on_count() == 0);
+  } else if (scenario == "device_ready_lookup_activate") {
+    prepare("activate", "ready");
+    card();
+    assert(has2wifi.receive_calls == 1 && has2wifi.situation_calls == 0 && has2wifi.mine_calls == 0);
+    assert(!revival_approval_pending && last_open_tag_user.empty() && on_count() == 0);
+  } else if (scenario == "game_ready_ignores_tag") {
+    prepare("ready", "activate");
+    reader_tag = "G1P1";
+    RfidTagTimerFunc(); AdminCardPollReady();
+    assert_no_game_request();
+    assert(on_count() == 0);
   } else if (scenario == "reset_ready" || scenario == "reset_setting" || scenario == "reset_tagger") {
     prepare(); has2wifi.approve = false; card();
     assert(revival_approval_pending);
