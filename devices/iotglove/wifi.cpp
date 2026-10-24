@@ -528,7 +528,7 @@ void worker(void*) {
       const bool connected = wifi.TrySetupFixed("badland", "badland_shoot");
       finishOperation();
       has1blackbox::blackbox.log(has1blackbox::EventType::WifiTry,connected,connectFailures,0,0,"connect.end");
-      if (!connected) { ++connectFailures; waitWorker(kRetryMs); continue; }
+      if (!connected) { ++connectFailures; waitWorker(wifiConnectRetryMs(connectFailures)); continue; }
       const uint32_t now = millis();
       lastRssi.store(clampRssi(WiFi.RSSI()));
       linkUp.store(true);

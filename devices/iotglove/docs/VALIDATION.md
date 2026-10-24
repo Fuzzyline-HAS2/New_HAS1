@@ -1,3 +1,12 @@
+# 2026-10-25 고정 SSID 재접속 단축 검증
+
+[NETWORK_RECOVERY.md](NETWORK_RECOVERY.md)의 "AP 연결 단절" 처리 변경을 로컬에서 검증했다. 실기 적용 전, 컴파일 전.
+
+- 배경: 2026-10-24 블랙박스 부팅 61건 중 전원 차단·panic 뒤 13건이 18~87초 걸렸다. 첫 인증 거부(202) 뒤 스캔에서 AP를 못 찾으면(201), 실패한 시도마다 10초 타임아웃과 teardown 대기 1초씩 2회, 5초 대기가 그대로 쌓였다. 소프트웨어 재시작 24건은 모두 10초 안에 붙었다.
+- 호스트 C++ 테스트 **21개 통과**, 도구 Python 테스트 **35개 통과**(신규 `TryConnectChecked` 하네스 포함, clang 22 컨테이너; `test_build.py`는 Windows `PYTHONUTF8=1`). 하네스는 수정 4가지(재시도 결과 대기, 36 제외, `begin()` 실패 처리, `WL_STOPPED` 대기 종료)를 각각 되돌린 사본에서 실패함을 확인했다.
+- `has2-wifi-result-api.patch`는 first_store `a1581da9` HAS2_Wifi에 `git apply --check` 통과.
+- 실기 확인 항목: 전원 차단 직후 재투입했을 때 블랙박스 `connect.begin`→`CONNECTED` 시간, 201 뒤 다음 `connect.begin`까지 약 1초인지, Omada 클라이언트 상세 로그의 거부·접속 기록.
+
 # 2026-10-23 링크 손실 기록·STA 재시작 검증
 
 [NETWORK_RECOVERY.md](NETWORK_RECOVERY.md)의 "링크 손실 기록" 변경을 로컬에서 검증했다. 실기 적용 전.

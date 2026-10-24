@@ -8,7 +8,7 @@
  #include "Arduino.h"
  #include <WiFi.h>
  #include <HTTPClient.h>  // wifi 관련 라이브러리
-@@ -65,6 +66,11 @@
+@@ -65,6 +66,12 @@
  
      String _theme;
  
@@ -17,10 +17,11 @@
 +    HAS2HttpProgressHook httpProgressHook_ = nullptr;
 +    void *httpProgressContext_ = nullptr;
 +    bool HttpRequestChecked(String request, String url);
++    bool TryConnectChecked(const char *new_ssid, const char *new_password, unsigned long timeoutMs);
      bool HttpRequest(String request, String string_request);
      void JsonParsing(String request, String json);
      void EnsureWifiCandidatesInitialized();
-@@ -82,6 +88,19 @@
+@@ -82,6 +89,19 @@
      HAS2_Wifi(String host, String php = "/has2.php");
  
      void SetDebugPrint(Print *debugPrint);
@@ -42,7 +43,7 @@
      void Setup(char *new_ssid, char *new_password);
 --- a/HAS2_Wifi/HAS2_Wifi.cpp
 +++ b/HAS2_Wifi/HAS2_Wifi.cpp
-@@ -99,6 +99,41 @@
+@@ -99,6 +99,104 @@
        wifiCandidatesInitialized(false)
  {
      _activeHost = host;
@@ -75,11 +76,74 @@
 +    // Association plus DHCP can exceed the library's 3s default on a weak link,
 +    // and every failed attempt restarts the radio; allow 10s per attempt.
 +    const unsigned long fixedTimeoutMs = 10000;
-+    if (TryConnect(candidate.ssid, candidate.password, fixedTimeoutMs) &&
++    if (TryConnectChecked(candidate.ssid, candidate.password, fixedTimeoutMs) &&
 +        WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) return true;
 +    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true, true);
 +    return false;
 +  }
++  return false;
++}
++
++// Turning the station off leaves WL_STOPPED, never WL_DISCONNECTED, so the
++// teardown waits in TryConnect always ran their full second.
++static bool StationIdle(wl_status_t status)
++{
++  return status == WL_DISCONNECTED || status == WL_STOPPED;
++}
++
++#include <atomic>
++// Disconnects that end an attempt, counted since boot by the event task. The
++// station reports leaving (ASSOC_LEAVE, STA_LEAVING) whenever it is torn down
++// or Arduino restarts a connect; those say nothing about the attempt.
++static std::atomic<uint32_t> stationOutcomes{0};
++static void CountStationOutcome(arduino_event_id_t, arduino_event_info_t info)
++{
++  const uint8_t reason = info.wifi_sta_disconnected.reason;
++  if (reason != WIFI_REASON_ASSOC_LEAVE && reason != WIFI_REASON_STA_LEAVING) ++stationOutcomes;
++}
++
++// TryConnect, but an attempt ends with its outcome instead of idling to the
++// timeout: after a power cut the AP can stay out of scans for tens of seconds,
++// and each idle attempt cost the glove about 17s. With auto-reconnect off
++// nothing follows an outcome, except that Arduino retries once after the
++// first one of a boot; until then the attempt waits for the retry's outcome.
++// Missing that first one only makes the attempt wait as before.
++bool HAS2_Wifi::TryConnectChecked(const char *new_ssid, const char *new_password, unsigned long timeoutMs)
++{
++  static wifi_event_id_t outcomeHandler = 0;
++  if (!outcomeHandler) outcomeHandler = WiFi.onEvent(CountStationOutcome, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
++  _has2DebugPrint->print("Try WiFi: ");
++  _has2DebugPrint->println(new_ssid);
++  WiFi.persistent(false);
++  WiFi.setAutoReconnect(false);
++  WiFi.mode(WIFI_STA);
++  WiFi.disconnect(true, true);
++  unsigned long waited_ms = millis();
++  while (!StationIdle(WiFi.status()) && millis() - waited_ms < 1000) delay(20);
++
++  const uint32_t before = stationOutcomes;
++  const uint32_t outcomesToEnd = before == 0 ? 2 : 1;
++  if (WiFi.begin(new_ssid, new_password) != WL_CONNECT_FAILED)
++  {
++    const unsigned long started_ms = millis();
++    while (WiFi.status() != WL_CONNECTED && millis() - started_ms < timeoutMs &&
++           stationOutcomes - before < outcomesToEnd)
++    {
++      delay(50);
++    }
++  }
++
++  if (WiFi.status() == WL_CONNECTED)
++  {
++    WiFi.setSleep(false);
++    SaveLastWifi(new_ssid, new_password);
++    PrintConnectedWifi();
++    return true;
++  }
++  WiFi.disconnect(true, true);
++  waited_ms = millis();
++  while (!StationIdle(WiFi.status()) && millis() - waited_ms < 1000) delay(20);
++  _has2DebugPrint->println("WiFi connect failed");
 +  return false;
  }
 
