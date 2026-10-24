@@ -49,6 +49,13 @@ class StateMachine {
   StateMachine();
   // Called once; retains a name supplied before controller startup.
   void start(bool controllerAvailable);
+  // The controller was shut down (stopped=true) or its shutdown failed. Drops
+  // the outstanding command and advertised name; keeps the desired name and
+  // counters. poll() emits nothing until resume().
+  void suspend(bool stopped);
+  // Controller restarted after suspend(): replays Reset..Enable for the desired
+  // name, or records StartupFailed and stays unavailable.
+  void resume(bool controllerAvailable);
   // Invalid/null/empty names request a stop. Copies at most 19 input bytes.
   void setDeviceName(const char* name);
   // Returns at most one command, already marked outstanding before return.

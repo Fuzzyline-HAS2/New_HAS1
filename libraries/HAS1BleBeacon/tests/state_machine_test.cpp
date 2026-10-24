@@ -502,8 +502,87 @@ void startupFailureAndIdempotence() {
   REQUIRE(f.poll() == nullptr);
 }
 
+void suspendResumeReplaysSetup() {
+  Fixture f;
+  f.running();
+  f.machine.suspend(true);
+  REQUIRE(f.machine.diagnostics().step == Step::Unavailable);
+  REQUIRE(f.machine.diagnostics().radio == RadioState::Off);
+  f.machine.setDeviceName("duct_2"); // Server updates keep arriving meanwhile.
+  for (unsigned i = 0; i < 10000; ++i) { f.now += 3; REQUIRE(f.poll() == nullptr); }
+  f.machine.resume(true);
+  REQUIRE(f.next().opcode == RESET); // Fresh controller: full setup, not Disable.
+  f.ack(f.sent.back());
+  f.running("HAS3:duct_2");
+  REQUIRE(f.machine.diagnostics().failures == 0);
+  REQUIRE(f.machine.diagnostics().sentCommands == 10);
+}
+
+void suspendDropsOutstandingCommand() {
+  Fixture f;
+  const Command reset = f.next();
+  f.machine.suspend(true);
+  REQUIRE(!f.machine.diagnostics().awaitingCompletion);
+  REQUIRE(f.machine.diagnostics().pendingOpcode == 0);
+  f.ack(reset); // The stopped controller's answer completes nothing.
+  REQUIRE(f.machine.diagnostics().step == Step::Unavailable);
+  f.machine.resume(true);
+  REQUIRE(f.next().opcode == RESET);
+  REQUIRE(f.machine.diagnostics().failures == 0);
+  // A completion that never arrived no longer needs a reboot to recover.
+  Fixture missing;
+  missing.next();
+  missing.now += kCompletionTimeoutMs;
+  REQUIRE(missing.poll() == nullptr);
+  REQUIRE(missing.machine.diagnostics().completionTimedOut);
+  missing.machine.suspend(true);
+  REQUIRE(!missing.machine.diagnostics().completionTimedOut);
+  missing.machine.resume(true);
+  missing.running();
+  REQUIRE(missing.machine.diagnostics().failures == 1);
+}
+
+void failedStopAndRestart() {
+  Fixture f;
+  f.running();
+  f.machine.suspend(false);
+  REQUIRE(f.machine.diagnostics().radio == RadioState::Unknown);
+  f.machine.resume(false);
+  REQUIRE(f.machine.diagnostics().step == Step::Unavailable);
+  REQUIRE(f.machine.diagnostics().lastError == Error::StartupFailed);
+  REQUIRE(f.machine.diagnostics().failures == 1);
+  for (unsigned i = 0; i < 10000; ++i) { ++f.now; REQUIRE(f.poll() == nullptr); }
+  f.machine.suspend(true); // The next maintenance cycle tries again.
+  f.machine.resume(true);
+  REQUIRE(f.next().opcode == RESET);
+  f.ack(f.sent.back());
+  f.running();
+}
+
+void suspendBeforeStartAndAfterStartupFailure() {
+  StateMachine unstarted;
+  unstarted.setDeviceName("valid");
+  unstarted.suspend(true);
+  unstarted.resume(true);
+  REQUIRE(unstarted.diagnostics().step == Step::Unavailable);
+  REQUIRE(unstarted.diagnostics().lastError == Error::None);
+  for (uint32_t now = 0; now < 1000; ++now) REQUIRE(unstarted.poll(now, true, true) == nullptr);
+  Fixture f;
+  f.machine = StateMachine();
+  f.machine.setDeviceName("duct_1");
+  f.machine.start(false);
+  f.machine.suspend(true);
+  f.machine.resume(true); // A controller restart also retries a failed boot start.
+  f.running();
+  REQUIRE(f.machine.diagnostics().failures == 1);
+}
+
 int main(int argc, char** argv) {
   const std::map<std::string, std::function<void()>> tests = {
+    {"suspend_resume_replays_setup", suspendResumeReplaysSetup},
+    {"suspend_drops_outstanding_command", suspendDropsOutstandingCommand},
+    {"failed_stop_and_restart", failedStopAndRestart},
+    {"suspend_before_start_after_startup_failure", suspendBeforeStartAndAfterStartupFailure},
     {"normal_sequence", normalSequence}, {"copied_bounded_names", copiedAndBoundedNames},
     {"invalid_names_stop", invalidNamesStop}, {"latest_name_every_stage", latestNameAtEveryStage},
     {"clear_name_every_stage", clearNameAtEveryStage}, {"busy_gate", busyGate},

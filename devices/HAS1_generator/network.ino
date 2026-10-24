@@ -586,6 +586,24 @@ void GeneratorNetworkRequestMaintenance(bool legacy) {
   GeneratorNetworkInvalidateGame();EncoderDetach();ptrCurrentMode=WaitFunc;
   DiagnosticPrintf("[NET] maintenance requested; draining bounded network work before OTA\r\n");
 }
+// The core's mbedTLS has fixed 16 KiB in/out record buffers: one GitHub HTTPS
+// request needs ~45 KiB, two ~17 KiB blocks contiguous. With BLE running ~48 KiB
+// was free and every GitHub request failed at connect (HTTP -1). The local HTTP
+// update needs no TLS and keeps its proven path without the BLE stop.
+// Returns false when BLE did not come back.
+static bool NetworkGithubOta() {
+  const uint32_t heap=ESP.getFreeHeap(),largest=ESP.getMaxAllocHeap();
+  Has1BleBeacon::suspend();
+  DiagnosticPrintf("[NET] OTA memory heap=%lu largest=%lu; BLE stopped heap=%lu largest=%lu bb_idle=%u\r\n",
+    (unsigned long)heap,(unsigned long)largest,(unsigned long)ESP.getFreeHeap(),
+    (unsigned long)ESP.getMaxAllocHeap(),unsigned(has1blackbox::blackbox.uploadIdle()));
+  ota.check(); // Restarts after a verified update; returns on failure or skip.
+  Has1BleBeacon::resume();
+  const Has1BleBeacon::Diagnostics ble=Has1BleBeacon::diagnostics();
+  DiagnosticPrintf("[NET] OTA returned without update; BLE restart step=%u error=%u\r\n",
+    unsigned(ble.step),unsigned(ble.lastError));
+  return ble.step!=Has1BleBeacon::Step::Unavailable;
+}
 void GeneratorNetworkBegin() {
   if(networkTask){ return; }
   const bool prior=GeneratorOfflineRecovery::boot(networkRecoveryHistory,esp_reset_reason()==ESP_RST_SW);
@@ -716,17 +734,24 @@ void GeneratorNetworkLoop() {
     portENTER_CRITICAL(&networkMux);
     bool busy=networkMailboxReady;for(const auto &slot:networkSlots)if(slot.occupied){ busy=true; }
     portEXIT_CRITICAL(&networkMux);
+    // GitHub OTA also waits for the withdrawn MQTT session to free its client,
+    // task and buffers; a stuck SDK stop gets 15 seconds, then OTA proceeds.
+    if(!networkMaintenanceLegacy&&!has1blackbox::blackbox.uploadIdle()&&
+       uint32_t(millis()-networkMaintenanceStarted)<15000){ busy=true; }
     if(!online&&uint32_t(millis()-networkMaintenanceStarted)>=10000) {
       networkMaintenance=false;GeneratorNetworkRefreshCycle();
       DiagnosticPrintf("[NET] OTA maintenance aborted: WiFi offline for 10 seconds; request again after recovery\r\n");
     } else if(!busy&&online) {
       has1blackbox::blackbox.setPaused(true);
       esp_task_wdt_delete(nullptr);
+      bool bleBack=true;
       if(networkMaintenanceLegacy){ has2wifi.FirmwareUpdate(my["device_type"]|"generator","172.30.1.43"); }
-      else ota.check();
+      else bleBack=NetworkGithubOta();
       esp_task_wdt_add(nullptr);
       has1blackbox::blackbox.setPaused(false);
       networkMaintenance=false;GeneratorNetworkRefreshCycle();
+      // No game may run without the beacon; boot starts the controller afresh.
+      if(!bleBack){ DiagnosticPrintf("[NET] BLE did not restart after OTA; restarting device\r\n");ESP.restart(); }
     }
   }
 

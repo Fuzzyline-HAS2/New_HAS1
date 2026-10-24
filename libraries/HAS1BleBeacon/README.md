@@ -37,8 +37,30 @@ in both advertising and scan response data. No game-state restriction is added.
 
 `begin()` starts the controller in BLE-only mode once. This boot operation may
 block inside Arduino controller initialization. Failure leaves BLE unavailable
-until reboot. A strong `bleInUse()` retains BLE memory while allowing Arduino to
-release Classic memory before setup. It requires the 3.3.11 Arduino API.
+until reboot or a later `resume()`. A strong `bleInUse()` retains BLE memory while
+allowing Arduino to release Classic memory before setup. It requires the 3.3.11
+Arduino API.
+
+## Maintenance suspend
+
+`suspend()` disables and deinitializes the controller (Arduino `btStop()`), so its
+heap is free for another job; `resume()` starts it again and re-registers the VHCI
+callback. ESP-IDF requires advertising to stop before deinit, so `suspend()` first
+lets an outstanding command finish, then sends LE Set Advertising Enable (off) and
+waits for its answer, all within 500 ms; without an answer it proceeds anyway.
+Both calls block (`delay(1)` waits plus the Espressif controller calls) and belong
+in maintenance paths only. The generator uses them around GitHub OTA, whose TLS
+session otherwise does not fit next to the controller. Each call is idempotent;
+both do nothing before `begin()`. Deinit followed by a later init with the static
+controller memory kept is the same cycle as Arduino's `BLEDevice::deinit(false)`.
+
+While suspended, `poll()` does nothing and `setDeviceName()` still records the
+latest name. Suspension forgets an outstanding command, including one whose
+completion never arrived, and an answer from the stopping controller completes
+nothing. `resume()` replays the whole Reset..Enable sequence for the current name,
+and also retries a failed boot startup. If the restart fails, diagnostics report
+`StartupFailed` and BLE stays off until the next suspend/resume or reboot. Static
+controller memory is never released, so `resume()` remains possible.
 
 `setDeviceName()` and `poll()` allocate no heap, start no task, and contain no
 sleep or wait loops. `poll()` sends at most one HCI command and checks send-ready
@@ -67,7 +89,8 @@ A missing Command Complete after 500 ms retains ownership of that command and
 suspends BLE commands. HCI has no transaction ID, so resending the same opcode
 would risk accepting the old response for a new command. If the matching late
 response arrives, the library backs off and resets before trying again. If it
-never arrives, device/Wi-Fi work continues, but BLE needs a reboot to recover.
+never arrives, device/Wi-Fi work continues, but BLE needs a reboot (or a
+maintenance suspend/resume) to recover.
 The actual radio state can then be unknown, and previously enabled advertising
 may continue; the library cannot guarantee it stopped without acknowledgment.
 

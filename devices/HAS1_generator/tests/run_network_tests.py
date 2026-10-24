@@ -37,10 +37,13 @@ struct String:std::string {
 static uint32_t now=100;
 static bool worker=false,online=true,failWatchdog=false;
 static int depth=0,restarts=0,dataChanges=0,otaChecks=0,requestCalls=0;
+static std::vector<std::string> otaTrace;
+static bool blackboxUploadIdle=true;
 namespace has1blackbox {
  struct Logger {
   void setUploadAllowed(bool) { assert(depth==0); }
-  void setPaused(bool) { assert(depth==0); }
+  void setPaused(bool paused) { assert(depth==0);otaTrace.emplace_back(paused?"pause":"unpause"); }
+  bool uploadIdle() const { return blackboxUploadIdle; }
  } blackbox;
 }
 void BlackBoxNetwork(bool,bool,uint32_t,int,uint32_t,uint32_t,uint32_t) {assert(depth==0);}
@@ -73,8 +76,8 @@ int esp_task_wdt_delete(void*){return 0;}
 int xTaskCreatePinnedToCore(void(*)(void*),const char*,unsigned,void*,int,TaskHandle_t *task,int){*task=(void*)1;return pdPASS;}
 static int wifiStatusCalls=0;static bool reconnectOnRecheck=false;
 struct Wifi{int status(){if(reconnectOnRecheck&&++wifiStatusCalls==2)online=true;return online?3:0;}}WiFi;
-struct Esp{void restart(){assert(!worker);++restarts;}}ESP;
-struct Ota{void check(){assert(!worker);++otaChecks;}}ota;
+struct Esp{void restart(){assert(!worker);++restarts;} uint32_t getFreeHeap(){return 48000;} uint32_t getMaxAllocHeap(){return 38900;}}ESP;
+struct Ota{void check(){assert(!worker);++otaChecks;otaTrace.emplace_back("ota");}}ota;
 JsonDocument my,tag,shift_machine;
 bool receiveMineOn=false;
 void ContribEnd(int);
@@ -103,7 +106,7 @@ struct Has {
    if(!strcmp(kind,"ReceiveMine")){ return my.set(doc); }
    return tag.set(doc);
  }
- void FirmwareUpdate(const char*,const char*){++otaChecks;}
+ void FirmwareUpdate(const char*,const char*){++otaChecks;otaTrace.emplace_back("legacy");}
 }has2wifi;
 namespace GeneratorDiagnostic{enum Kind{ServerReset,Has2Http};}
 void DiagnosticPoint(GeneratorDiagnostic::Kind,int,uint32_t){}
@@ -136,7 +139,15 @@ Result get(const char*,uint16_t,const char *path,const Options &options){
 }
 '''
 application_stubs=r'''
-namespace Has1BleBeacon {void setDeviceName(const char*){}}
+static bool bleResumeFails=false;
+namespace Has1BleBeacon {
+ enum class Step {Unavailable,Idle};
+ struct Diagnostics {Step step=Step::Idle;unsigned lastError=0;};
+ void setDeviceName(const char*){}
+ void suspend(){otaTrace.emplace_back("ble-off");}
+ void resume(){otaTrace.emplace_back("ble-on");}
+ Diagnostics diagnostics(){Diagnostics d;if(bleResumeFails){d.step=Step::Unavailable;d.lastError=1;}return d;}
+}
 static int gameTimerDeletes=0;
 struct Timer {void deleteTimer(int){++gameTimerDeletes;} int setInterval(unsigned,void(*)()){return 1;} bool isEnabled(int){return true;}} GameTimer,BlinkTimer;
 int gameTimerId=1,blinkTimerId=2,starterDecreaseAmount=1;
@@ -204,6 +215,7 @@ static void reset(){
  networkPollPending=networkPollEvent=networkPollSuccess=networkPollAwaitingRefresh=false;networkUrgentRun=0;networkWorkerActiveId=0;networkScanPending=networkDriverFault=false;networkRefreshPending=networkRefreshInFlight=networkResetCyclePending=false;activations=0;networkBootReady=true;
  networkVersionSent=true;networkWatchdogPending=networkWatchdogRequested=false;networkWasConnected=true;
  networkMaintenance=networkMaintenanceLegacy=false;networkRefreshAt=0;networkIdentity[0]=networkGame[0]=0;
+ otaTrace.clear();blackboxUploadIdle=true;bleResumeFails=false;
  pendingContributionCount=0;starterContribUser="";
  networkCompletionGeneration=0;networkCompletionToken=1;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
  networkCompletionAttempts=0;NetworkCompletionResendClear();networkCompletionWireCount=-1;networkCompletionWireGeneration=0;networkCompletionWireBypass=false;
@@ -308,6 +320,30 @@ int main(){
  online=false;GeneratorNetworkRequestMaintenance();workerTurn();mainTurn();workerTurn();mainTurn();assert(used()==0);
  now+=10001;mainTurn();assert(!networkMaintenance&&otaChecks==0);
  pass("maintenance cancels queued requests while offline and aborts without a blocking OTA");
+
+ reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance();
+ for(int i=0;i<10;++i){now+=1000;mainTurn();}
+ assert(networkMaintenance&&otaChecks==0&&otaTrace.empty());
+ blackboxUploadIdle=true;mainTurn();assert(!networkMaintenance&&otaChecks==1);
+ assert((otaTrace==std::vector<std::string>{"pause","ble-off","ota","ble-on","unpause"}));
+ {bool logged=false;for(const auto &line:diagnostics){if(line.find("OTA memory")!=std::string::npos){logged=true;}}assert(logged);}
+ assert(restarts==0);
+ pass("GitHub OTA waits for the MQTT session to end, then stops BLE only around the check");
+
+ reset();bleResumeFails=true;GeneratorNetworkRequestMaintenance();mainTurn();
+ assert(otaChecks==1&&!networkMaintenance&&restarts==1);
+ assert((otaTrace==std::vector<std::string>{"pause","ble-off","ota","ble-on","unpause"}));
+ pass("BLE that does not come back after a failed OTA restarts the device rather than play without a beacon");
+
+ reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance();
+ now+=14999;mainTurn();assert(otaChecks==0);
+ now+=1;mainTurn();assert(otaChecks==1&&!networkMaintenance);
+ pass("a stuck MQTT stop delays GitHub OTA by at most 15 seconds");
+
+ reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance(true);mainTurn();
+ assert(otaChecks==1&&!networkMaintenance&&restarts==0);
+ assert((otaTrace==std::vector<std::string>{"pause","legacy","unpause"}));
+ pass("local HTTP update keeps its path: no MQTT wait and no BLE stop");
 
  reset();assert(!GeneratorNetworkTag("G1P1"));reply("{\"role\":\"player\"}");
  duringRequest=[](){++networkGeneration;};workerTurn();mainTurn();assert(tag.isNull());

@@ -63,6 +63,30 @@ void StateMachine::start(bool controllerAvailable) {
   status_.step = Step::Idle;
 }
 
+void StateMachine::suspend(bool stopped) {
+  if (!started_) return;
+  status_.step = Step::Unavailable;
+  // Deinit drops controller state, advertising included; a failed stop does not.
+  status_.radio = stopped ? RadioState::Off : RadioState::Unknown;
+  status_.pendingOpcode = 0;
+  status_.awaitingCompletion = false;
+  status_.completionTimedOut = false;
+  workingName_[0] = '\0';
+  sendReadyClockStarted_ = false;
+}
+
+void StateMachine::resume(bool controllerAvailable) {
+  if (!started_ || status_.step != Step::Unavailable) return;
+  if (!controllerAvailable) {
+    status_.lastError = Error::StartupFailed;
+    ++status_.failures;
+    return;
+  }
+  // Idle begins with Reset, so a controller that survived a failed stop is
+  // returned to a known state before the advertising data is sent again.
+  status_.step = Step::Idle;
+}
+
 void StateMachine::setDeviceName(const char* name) {
   if (!validName(name)) {
     desiredName_[0] = '\0';
