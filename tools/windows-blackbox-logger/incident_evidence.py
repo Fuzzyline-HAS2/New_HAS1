@@ -41,8 +41,8 @@ RESET_REASONS = {0: "UNKNOWN", 1: "POWERON 전원 켜짐", 2: "EXT 외부 리셋
                  8: "DEEPSLEEP 절전 해제", 9: "BROWNOUT 전압 저하", 10: "SDIO"}
 # Haptic/LED output changes repeat every few hundred ms during play and say nothing about the link.
 OUTPUT_TAGS = {"motor.applied", "output.applied", "motor.suppressed"}
-# Never dropped for the row limit: what explains an outage.
-KEY_KINDS = {"Boot", "Crash", "WifiEvent", "WifiTry", "WifiSummary", "Recovery", "Lost", "Dropped"}
+# What explains an outage: fetched separately and kept ahead of routine rows at the row limit.
+KEY_KINDS = ("Boot", "Crash", "WifiEvent", "WifiTry", "WifiSummary", "Recovery", "Lost", "Dropped")
 FIELD_LABELS = {"disconnect_reason": "끊김 원인", "outage_ms": "끊김 시간", "attempts": "시도",
                 "actual_reset_reason": "리셋 원인", "reported_battery_mv": "배터리", "http_status": "HTTP",
                 "elapsed_ms": "소요", "down_age_ms": "끊긴 지", "connect_failures": "접속 실패", "ap_bssid": "AP"}
@@ -167,16 +167,29 @@ def _device_events(raw, incident, limit):
     anchor = raw.execute("SELECT ring,seq FROM event_times WHERE site_id=? AND source='device' AND mac=? AND observed_utc<=? AND seq IS NOT NULL ORDER BY observed_utc DESC,seq DESC LIMIT 1",
                          (site, mac, incident["opened_utc"])).fetchone()
     select = "SELECT e.payload FROM event_times t JOIN telemetry_events e USING(site_id,source,source_id,event_id) WHERE t.site_id=? AND t.source='device' AND t.mac=? "
+    key_only = "AND json_extract(e.payload,'$.event_type') IN (" + ",".join("?" * len(KEY_KINDS)) + ") "
+
+    def merged(where, params, order):
+        # Output-change spam can fill `limit` first; key records are read on their own so a
+        # reboot, crash or Wi-Fi record after it is never lost to the fetch cap.
+        everything = _rows(raw, select + where + order + "LIMIT ?", (*params, limit + 1))
+        key = _rows(raw, select + where + key_only + order + "LIMIT ?", (*params, *KEY_KINDS, limit + 1))
+        events = {}
+        for event in everything[:limit] + key[:limit]:
+            fields = event.get("fields") or {}
+            events[(str(fields.get("ring")), fields.get("seq"), event.get("event_id"))] = event
+        ordered = sorted(events.values(), key=lambda event: (str((event.get("fields") or {}).get("ring")),
+                         (event.get("fields") or {}).get("seq") or 0))
+        return ordered, len(everything) > limit or len(key) > limit
+
     if not anchor:
         # Never reported before the outage: everything it uploaded around the incident.
         end = _iso(parse_utc(incident["updated_utc"]) + timedelta(seconds=GIVE_UP_SECONDS))
-        after = _rows(raw, select + "AND t.observed_utc BETWEEN ? AND ? ORDER BY t.ring,t.seq LIMIT ?",
-                      (site, mac, incident["opened_utc"], end, limit + 1))
-        return after[:limit], len(after) > limit
+        return merged("AND t.observed_utc BETWEEN ? AND ? ", (site, mac, incident["opened_utc"], end), "ORDER BY t.ring,t.seq ")
     ring, seq = anchor
     before = _rows(raw, select + "AND t.ring=? AND t.seq<=? ORDER BY t.seq DESC LIMIT ?", (site, mac, ring, seq, DEVICE_CONTEXT))
-    after = _rows(raw, select + "AND t.ring=? AND t.seq>? ORDER BY t.seq LIMIT ?", (site, mac, ring, seq, limit + 1))
-    return before[::-1] + after[:limit], len(after) > limit
+    after, more = merged("AND t.ring=? AND t.seq>? ", (site, mac, ring, seq), "ORDER BY t.seq ")
+    return before[::-1] + after, more
 
 
 def _first_upload_since_outage(raw, incident):
@@ -229,9 +242,12 @@ def summarize(raw, incident, now, limit=MAX_ROWS):
     device_rows = _device_rows(device)
     budget = max(0, limit - len(rows))
     if len(device_rows) > budget:
-        # Over the limit, drop routine rows before boot, crash, Wi-Fi and recovery rows.
+        # Over the limit, drop routine rows before boot, crash, Wi-Fi and recovery rows; if even
+        # those overflow (repeated Wi-Fi retries), keep how the outage began and how it ended.
         cut = True
-        key = [index for index, (_, important) in enumerate(device_rows) if important][:budget]
+        key = [index for index, (_, important) in enumerate(device_rows) if important]
+        if len(key) > budget:
+            key = key[:budget // 2] + key[len(key) - (budget - budget // 2):]
         other = [index for index, (_, important) in enumerate(device_rows) if not important][:budget - len(key)]
         device_rows = [device_rows[index] for index in sorted(key + other)]
     rows += [row for row, _ in device_rows]

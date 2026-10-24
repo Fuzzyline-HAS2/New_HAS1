@@ -124,6 +124,30 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(any("출력 변경" in text for text in kept))
         self.assertTrue(any("재부팅" in text for text in kept) and any("AUTH_FAIL" in text for text in kept))
 
+    def test_key_records_survive_the_fetch_cap_and_keep_the_outage_end(self):
+        path = Path(self.temp.name) / "spam.db"
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        for seq in range(2, 252):  # more output changes than DEVICE_FETCH reads
+            store.save(device(seq, "2026-10-24T03:03:30.000000+00:00", "State", "motor.applied", (1, 4, 0, 0)))
+        for seq in range(252, 262):  # repeated reconnect attempts, then the recovery that ends it
+            store.save(device(seq, "2026-10-24T03:03:35.000000+00:00", "WifiTry", "connect.begin"))
+        store.save(device(262, "2026-10-24T03:03:35.000000+00:00", "Recovery", "wifi.offline.recovery", (1, 13000, 10, 0)))
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            full = summarize(raw, INCIDENT, CLOSED)
+            tight = summarize(raw, INCIDENT, CLOSED, limit=6)
+        texts = [row[2] for row in full["rows"]]
+        self.assertTrue(full["truncated"])
+        self.assertIn("모터·LED 출력 변경 200건", texts)
+        self.assertEqual(sum("connect.begin" in text for text in texts), 10)
+        self.assertIn("끊김 시간 13.0초", texts[-1])
+        kept = [row[2] for row in tight["rows"]]
+        # Twelve key rows for six slots: the first three and the last three, in order.
+        self.assertEqual(len(kept), 6)
+        self.assertTrue(kept[0].startswith("와이파이 요약"))
+        self.assertIn("복구 동작", kept[-1])
+
     def test_flapping_omada_keeps_start_and_end_and_reports_the_cut(self):
         path = Path(self.temp.name) / "flap.db"
         store = TelemetryStore(path)
