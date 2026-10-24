@@ -21,6 +21,20 @@ from service_runtime import BrokerInstanceLock, InstanceLock, read_machine_passw
 from helpers import TOPIC, payload
 
 
+class WindowsScriptEntryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1 -File parameter binding")
+    def test_status_without_config_from_unrelated_directory(self):
+        # Read-only status must bind without a caller-supplied Config or script
+        # context. WinPS 5.1 left PSScriptRoot empty in the old parameter default.
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "service.ps1"), "status",
+            ], cwd=directory, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("HAS1BlackBoxCollector", result.stdout)
+
+
 class LockTests(unittest.TestCase):
     def test_other_process_refused_then_crash_releases_lock(self):
         with tempfile.TemporaryDirectory() as directory:

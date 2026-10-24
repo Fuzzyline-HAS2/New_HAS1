@@ -5,12 +5,17 @@ param(
     [ValidateSet('install','start','stop','restart','status','uninstall','credential')]
     [string]$Action,
     [string]$PythonExe,
-    [string]$Config = (Join-Path $PSScriptRoot 'config.json'),
+    [string]$Config,
     [string]$WinSWBinary,
     [Security.SecureString]$MqttPassword
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Windows PowerShell 5.1 can evaluate parameter defaults before PSScriptRoot is
+# populated under -File. Resolve the default only after script binding finishes.
+if (-not $PSBoundParameters.ContainsKey('Config')) {
+    $Config = Join-Path $PSScriptRoot 'config.json'
+}
 $ServiceId = 'HAS1BlackBoxCollector'
 $AppDir = Join-Path $env:ProgramFiles 'HAS1 BlackBox'
 $StateDir = Join-Path $env:ProgramData 'HAS1BlackBox'
