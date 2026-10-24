@@ -84,7 +84,10 @@ struct PartitionFlash : Flash {
 };
 PartitionFlash flash;
 Ring ring(flash);
-std::atomic<bool> connected{false}, subscribed{false};
+std::atomic<bool> connected{false}, subscribed{false}, mqttTaskStarted{false};
+std::atomic<uint32_t> mqttStartTimeouts{0};
+// Only the uploader task encodes into it; static to keep it off that stack.
+char uploadPayload[PayloadCapacity];
 // Only MQTT task touches these reassembly fields; callbacks only copy to the
 // ACK queue.
 AckMessage assembling{};
@@ -92,6 +95,8 @@ size_t received = 0;
 char ackTopic[80]{};
 void mqttEvent(void *, esp_event_base_t, int32_t id, void *data) {
   auto *e = static_cast<esp_mqtt_event_handle_t>(data);
+  // Dispatched by mqtt_task itself, after it has set client->run.
+  if (id == MQTT_EVENT_BEFORE_CONNECT) { mqttTaskStarted = true; return; }
   if (id == MQTT_EVENT_PUBLISHED) { publishedMessage = e->msg_id; return; }
   if (id == MQTT_EVENT_CONNECTED) {
     connected = true;
@@ -385,8 +390,8 @@ void writer(void *) {
         if (summaryOk && broker[0]) {
           Record uploadStats = Record::make(
               EventType::Logger, bootId, millis(), int32_t(uploaderStackFree.load()),
-              int32_t(uploaded.load()), int32_t(uploadFailures.load()), 0,
-              "upload/stack");
+              int32_t(uploaded.load()), int32_t(uploadFailures.load()),
+              int32_t(mqttStartTimeouts.load()), "upload/stack");
           summaryOk = ring.append(uploadStats) == AppendResult::Persisted;
         }
         if (!summaryOk) {
@@ -435,8 +440,7 @@ void uploader(void *) {
       nextAt = millis() + 5000;
       continue;
     }
-    char payload[PayloadCapacity];
-    size_t bytes = encodeBatch(batch, device, mac, payload, sizeof(payload));
+    size_t bytes = encodeBatch(batch, device, mac, uploadPayload, sizeof(uploadPayload));
     if (!bytes) {
       ++uploadFailures;
       nextAt = millis() + 60000;
@@ -458,6 +462,7 @@ void uploader(void *) {
     cfg.session.keepalive = 15;
     connected = false;
     subscribed = false;
+    mqttTaskStarted = false;
     assembling.size = 0;
     received = 0;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
@@ -482,7 +487,7 @@ void uploader(void *) {
           // Written by this task now. An enqueued message waits for the MQTT
           // task's next read poll (up to ~1 s), and a game poll in between
           // cancels the session and discards it before it is ever sent.
-          sent = esp_mqtt_client_publish(client, topic, payload, int(bytes), 1,
+          sent = esp_mqtt_client_publish(client, topic, uploadPayload, int(bytes), 1,
                                          0) >= 0;
           if (!sent)
             break;
@@ -512,6 +517,20 @@ void uploader(void *) {
         if(success && (probeMessage<0 || publishedMessage==probeMessage ||
                        uint32_t(millis()-acknowledgedAt)>=50)) break;
         vTaskDelay(pdMS_TO_TICKS(5));
+      }
+      // esp_mqtt_client_start() only creates mqtt_task, which sets client->run
+      // once it runs. A session cancelled before that made stop() return at
+      // once and destroy() free the client under the starting task: field
+      // panics, LoadProhibited at esp_mqtt_task/run_event_loop with a NULL
+      // client->config. Wait for the task's first event; then stop() waits for
+      // it to finish. The bound only covers a task that exits before that
+      // event (transport allocation failure), which has already stopped.
+      if (attempted) {
+        const uint32_t waitFrom = millis();
+        while (!mqttTaskStarted && uint32_t(millis() - waitFrom) < 10000)
+          vTaskDelay(pdMS_TO_TICKS(5));
+        if (!mqttTaskStarted)
+          ++mqttStartTimeouts;
       }
       // SDK stop/destroy can exceed the session target. Only this task waits;
       // neither device task nor OTA ever waits for it. Stop discards bounded
@@ -608,7 +627,9 @@ bool BlackBox::begin(const Config &c) {
     return false;
   }
   if (broker[0] &&
-      xTaskCreate(uploader, "bb-upload", 8192, nullptr, 1, nullptr) != pdPASS)
+      // 8 KiB with the 4 KiB payload on the stack left 200-360 bytes in the
+      // field; with it static, 6 KiB leaves about 2 KiB.
+      xTaskCreate(uploader, "bb-upload", 6144, nullptr, 1, nullptr) != pdPASS)
     ++uploadFailures;
   const auto reset=esp_reset_reason();
   const bool warm=reset==ESP_RST_SW || reset==ESP_RST_PANIC || reset==ESP_RST_INT_WDT ||
