@@ -59,8 +59,16 @@ latest name. Suspension forgets an outstanding command, including one whose
 completion never arrived, and an answer from the stopping controller completes
 nothing. `resume()` replays the whole Reset..Enable sequence for the current name,
 and also retries a failed boot startup. If the restart fails, diagnostics report
-`StartupFailed` and BLE stays off until the next suspend/resume or reboot. Static
-controller memory is never released, so `resume()` remains possible.
+`StartupFailed` and BLE stays off until the next suspend/resume or reboot.
+
+`releaseMemory()`, after a `suspend()` whose controller stop succeeded, also gives
+the controller's static memory to the heap through Arduino's `btMemRelease()`.
+Arduino already released the Classic memory at boot, so this frees the BLE and
+shared regions (about 22 KiB by the ESP-IDF region table, the largest block about
+10 KiB). It cannot be undone: BLE starts
+again only after a reboot, and `resume()` then reports `StartupFailed` without
+calling the controller. The generator uses it for GitHub OTA and restarts when
+the OTA returns.
 
 `setDeviceName()` and `poll()` allocate no heap, start no task, and contain no
 sleep or wait loops. `poll()` sends at most one HCI command and checks send-ready

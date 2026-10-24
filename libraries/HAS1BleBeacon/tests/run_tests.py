@@ -46,6 +46,7 @@ def main():
             "suspend_finishes_outstanding_command_first",
             "suspend_ignores_stopped_controller_event",
             "suspend_before_begin_resume_failure",
+            "release_memory_after_stop", "release_memory_refused",
         ):
             subprocess.run([str(adapter), scenario], check=True, env=environment, timeout=30)
 

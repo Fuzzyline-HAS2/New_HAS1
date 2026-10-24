@@ -7,7 +7,7 @@ import os, subprocess, tempfile
 ROOT=Path(__file__).resolve().parents[1]
 LIB=ROOT.parents[1]/'libraries/HAS2_Wifi'
 JSON=Path(os.environ['ARDUINOJSON_INCLUDE'])
-network=(ROOT/'network.ino').read_text().replace('#include <esp_task_wdt.h>','').replace('#include <esp_attr.h>','').replace('#include <esp_system.h>','')
+network=(ROOT/'network.ino').read_text().replace('#include <esp_task_wdt.h>','').replace('#include <esp_attr.h>','').replace('#include <esp_system.h>','').replace('#include <esp_timer.h>','')
 contrib=(ROOT/'contrib.ino').read_text()
 wifi=(ROOT/'wifi.ino').read_text()
 actual_activate=wifi[wifi.index('void ActivateFunc(void)'):wifi.index('// game_state == \"ready\"')].replace('void ActivateFunc(void)', 'void ProductionActivateFunc(void)')
@@ -53,6 +53,8 @@ void BlackBoxRecoveryState(unsigned,bool,bool,bool,bool) {assert(depth==0);}
 void BlackBoxValidSnapshot(bool) {assert(depth==0);}
 void BlackBoxPollResult(bool) {assert(depth==0);}
 void BlackBoxBeforeRestart() {assert(depth==0);}
+static std::vector<uint32_t> otaRestartLogs;
+void BlackBoxOtaRestart(uint32_t attempts) {assert(depth==0);otaRestartLogs.push_back(attempts);}
 void BlackBoxOfflineRecovery(int,uint32_t,uint32_t,uint32_t) {assert(depth==0);}
 uint32_t millis(){return now;}
 using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_TYPE=int;
@@ -64,8 +66,23 @@ using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_
 #define ESP_OK 0
 #define WL_CONNECTED 3
 #define RTC_NOINIT_ATTR
+#define ESP_RST_POWERON 1
 #define ESP_RST_SW 3
-int esp_reset_reason(){return 1;}
+#define ESP_RST_PANIC 4
+#define ESP_RST_INT_WDT 5
+#define ESP_RST_TASK_WDT 6
+#define ESP_RST_WDT 7
+static int resetReason=ESP_RST_POWERON;
+int esp_reset_reason(){return resetReason;}
+using esp_timer_handle_t=void*;
+struct esp_timer_create_args_t {void (*callback)(void*);void *arg;int dispatch_method;const char *name;bool skip_unhandled_events;};
+#define ESP_TIMER_TASK 0
+static int guardCreates=0,guardArms=0,guardStops=0;
+static bool guardArmed=false;
+int esp_timer_create(const esp_timer_create_args_t *args,esp_timer_handle_t *handle){assert(args->callback&&args->dispatch_method==ESP_TIMER_TASK);++guardCreates;*handle=(void*)1;return 0;}
+int esp_timer_start_once(esp_timer_handle_t,uint64_t us){assert(us==300000000ull&&!guardArmed);guardArmed=true;++guardArms;return 0;}
+int esp_timer_stop(esp_timer_handle_t){guardArmed=false;++guardStops;return 0;}
+void esp_restart(){}
 #define FIRMWARE_VER 27
 struct Yield{};
 void vTaskDelay(uint32_t ms){assert(worker&&depth==0);now+=ms;throw Yield();}
@@ -77,7 +94,8 @@ int xTaskCreatePinnedToCore(void(*)(void*),const char*,unsigned,void*,int,TaskHa
 static int wifiStatusCalls=0;static bool reconnectOnRecheck=false;
 struct Wifi{int status(){if(reconnectOnRecheck&&++wifiStatusCalls==2)online=true;return online?3:0;}}WiFi;
 struct Esp{void restart(){assert(!worker);++restarts;} uint32_t getFreeHeap(){return 48000;} uint32_t getMaxAllocHeap(){return 38900;}}ESP;
-struct Ota{void check(){assert(!worker);++otaChecks;otaTrace.emplace_back("ota");}}ota;
+static void (*duringOta)()=nullptr;
+struct Ota{void check(){assert(!worker&&guardArmed);++otaChecks;otaTrace.emplace_back("ota");if(duringOta){duringOta();}}}ota;
 JsonDocument my,tag,shift_machine;
 bool receiveMineOn=false;
 void ContribEnd(int);
@@ -139,14 +157,10 @@ Result get(const char*,uint16_t,const char *path,const Options &options){
 }
 '''
 application_stubs=r'''
-static bool bleResumeFails=false;
 namespace Has1BleBeacon {
- enum class Step {Unavailable,Idle};
- struct Diagnostics {Step step=Step::Idle;unsigned lastError=0;};
  void setDeviceName(const char*){}
  void suspend(){otaTrace.emplace_back("ble-off");}
- void resume(){otaTrace.emplace_back("ble-on");}
- Diagnostics diagnostics(){Diagnostics d;if(bleResumeFails){d.step=Step::Unavailable;d.lastError=1;}return d;}
+ bool releaseMemory(){otaTrace.emplace_back("ble-release");return true;}
 }
 static int gameTimerDeletes=0;
 struct Timer {void deleteTimer(int){++gameTimerDeletes;} int setInterval(unsigned,void(*)()){return 1;} bool isEnabled(int){return true;}} GameTimer,BlinkTimer;
@@ -215,7 +229,8 @@ static void reset(){
  networkPollPending=networkPollEvent=networkPollSuccess=networkPollAwaitingRefresh=false;networkUrgentRun=0;networkWorkerActiveId=0;networkScanPending=networkDriverFault=false;networkRefreshPending=networkRefreshInFlight=networkResetCyclePending=false;activations=0;networkBootReady=true;
  networkVersionSent=true;networkWatchdogPending=networkWatchdogRequested=false;networkWasConnected=true;
  networkMaintenance=networkMaintenanceLegacy=false;networkRefreshAt=0;networkIdentity[0]=networkGame[0]=0;
- otaTrace.clear();blackboxUploadIdle=true;bleResumeFails=false;
+ otaTrace.clear();blackboxUploadIdle=true;duringOta=nullptr;networkOtaRestartPending=false;NetworkOtaAttemptsSet(0);
+ otaRestartLogs.clear();resetReason=ESP_RST_POWERON;guardArms=guardStops=0;guardArmed=false;
  pendingContributionCount=0;starterContribUser="";
  networkCompletionGeneration=0;networkCompletionToken=1;networkCompletion[0]=0;networkCompletionSent=networkCompletionVerify=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
  networkCompletionAttempts=0;NetworkCompletionResendClear();networkCompletionWireCount=-1;networkCompletionWireGeneration=0;networkCompletionWireBypass=false;
@@ -324,20 +339,58 @@ int main(){
  reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance();
  for(int i=0;i<10;++i){now+=1000;mainTurn();}
  assert(networkMaintenance&&otaChecks==0&&otaTrace.empty());
- blackboxUploadIdle=true;mainTurn();assert(!networkMaintenance&&otaChecks==1);
- assert((otaTrace==std::vector<std::string>{"pause","ble-off","ota","ble-on","unpause"}));
+ blackboxUploadIdle=true;mainTurn();assert(otaChecks==1&&networkMaintenance&&networkOtaRestartPending&&restarts==0);
+ assert((otaTrace==std::vector<std::string>{"pause","ble-off","ble-release","ota","unpause"}));
  {bool logged=false;for(const auto &line:diagnostics){if(line.find("OTA memory")!=std::string::npos){logged=true;}}assert(logged);}
- assert(restarts==0);
- pass("GitHub OTA waits for the MQTT session to end, then stops BLE only around the check");
+ assert(NetworkOtaAttempts()==1&&guardArms==1&&guardStops==1&&!guardArmed);
+ mainTurn();assert(restarts==1&&NetworkOtaAttempts()==1&&otaChecks==1);
+ assert((otaRestartLogs==std::vector<uint32_t>{1}));
+ pass("GitHub OTA waits for the MQTT session, releases BLE memory, then restarts when it returns");
 
- reset();bleResumeFails=true;GeneratorNetworkRequestMaintenance();mainTurn();
- assert(otaChecks==1&&!networkMaintenance&&restarts==1);
- assert((otaTrace==std::vector<std::string>{"pause","ble-off","ota","ble-on","unpause"}));
- pass("BLE that does not come back after a failed OTA restarts the device rather than play without a beacon");
+ reset();duringOta=[](){assert(NetworkOtaAttempts()==1);};GeneratorNetworkRequestMaintenance();mainTurn();
+ assert(otaChecks==1);
+ pass("the attempt is counted before the check, so a crash inside it still counts");
+
+ reset();duringOta=[](){assert(GeneratorNetworkSend("TG","device_state","setting"));};
+ GeneratorNetworkRequestMaintenance();mainTurn();assert(otaChecks==1&&used()==1);
+ mainTurn();assert(restarts==0);
+ reply("{}");workerTurn();assert(paths.size()==1&&paths[0].find("value=setting")!=std::string::npos);
+ mainTurn();assert(restarts==1);
+ pass("restart after OTA waits for the callback's device_state report to leave");
+
+ reset();duringOta=[](){assert(GeneratorNetworkSend("TG","device_state","setting"));};
+ GeneratorNetworkRequestMaintenance();mainTurn();online=false;
+ now+=9999;mainTurn();assert(restarts==0);
+ now+=1;mainTurn();assert(restarts==1&&requestCalls==0);
+ pass("an undeliverable OTA report delays the restart by at most ten seconds");
+
+ reset();
+ for(uint32_t i=1;i<=3;++i) {
+  GeneratorNetworkRequestMaintenance();mainTurn();assert(otaChecks==int(i)&&NetworkOtaAttempts()==i);
+  mainTurn();assert(restarts==int(i)&&!networkMaintenance);
+ }
+ GeneratorNetworkRequestMaintenance();assert(!networkMaintenance);
+ mainTurn();assert(otaChecks==3&&restarts==3);
+ GeneratorNetworkRequestMaintenance(true);assert(networkMaintenance&&networkMaintenanceLegacy);
+ pass("three GitHub OTA attempts stop further GitHub attempts; local update is still allowed");
+
+ reset();
+ const int kept[]={ESP_RST_SW,ESP_RST_PANIC,ESP_RST_INT_WDT,ESP_RST_TASK_WDT,ESP_RST_WDT};
+ for(int reason:kept){NetworkOtaAttemptsSet(2);resetReason=reason;networkTask=nullptr;GeneratorNetworkBegin();assert(NetworkOtaAttempts()==2);}
+ NetworkOtaAttemptsSet(2);resetReason=ESP_RST_POWERON;networkTask=nullptr;GeneratorNetworkBegin();assert(NetworkOtaAttempts()==0);
+ pass("the attempt count survives software, panic and watchdog resets but not power-on");
+
+ reset();NetworkOtaAttemptsSet(2);networkRefreshPending=true;assert(NetworkQueueRefresh());
+ reply("{\"device_name\":\"TG\",\"game_state\":\"setting\",\"device_state\":\"github\"}");workerTurn();mainTurn();
+ assert(NetworkOtaAttempts()==2);
+ networkRefreshPending=true;assert(NetworkQueueRefresh());
+ reply("{\"device_name\":\"TG\",\"game_state\":\"setting\",\"device_state\":\"setting\"}");workerTurn();mainTurn();
+ assert(NetworkOtaAttempts()==0);
+ pass("any device_state other than github clears the GitHub OTA attempt count");
 
  reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance();
  now+=14999;mainTurn();assert(otaChecks==0);
- now+=1;mainTurn();assert(otaChecks==1&&!networkMaintenance);
+ now+=1;mainTurn();assert(otaChecks==1&&networkOtaRestartPending);
  pass("a stuck MQTT stop delays GitHub OTA by at most 15 seconds");
 
  reset();blackboxUploadIdle=false;GeneratorNetworkRequestMaintenance(true);mainTurn();

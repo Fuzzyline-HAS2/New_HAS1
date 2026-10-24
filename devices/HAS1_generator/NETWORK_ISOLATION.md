@@ -88,15 +88,27 @@ firmware release or installation has been performed by this change.
   free (largest block 31-45 KiB). Every GitHub request failed at connect (HTTP -1).
   Before `ota.check()` the main task therefore waits (up to 15 seconds after the
   request) for the blackbox MQTT session to end, then stops the BLE controller
-  (`Has1BleBeacon::suspend()`), logs `[NET] OTA memory` heap/largest before and
-  after, and runs the check. A successful update restarts the device. A failed or
-  skipped one restarts BLE (`resume()`), which replays its full advertising setup,
-  and logs `[NET] OTA returned without update`. If BLE does not come back, the
-  device restarts so no game runs without its beacon. GitHub maintenance starts
-  only when `device_state` changes to `github` (including the first snapshot after
-  boot), so a failed attempt is retried after the state changes away and back or
-  after a reboot, as before. A restart for BLE therefore repeats the attempt while
-  the server stays at `github`, until staff change the state. The local HTTP update
+  (`Has1BleBeacon::suspend()`). Stopping it alone freed ~20 KiB and the TLS
+  session connected, but the update still failed: `Update.begin()` could not get
+  its 4 KiB buffer once the download started (`[OTA] OTA 시작 공간 부족`, TLS minimum
+  free heap 2.3 KiB). The controller's static memory is therefore released too
+  (`releaseMemory()`, about 22 KiB by the ESP-IDF region table, one ~10 KiB
+  block; the `[NET] OTA memory` heap/largest before and after shows the real
+  gain). A successful update restarts the device. Since BLE can only start again
+  at boot, a failed or skipped one also ends in a restart: the main task first
+  lets the OTA callback's `device_state` report leave (at most ten seconds),
+  records `ota.github.restart` in the blackbox, then restarts. The loop task is off
+  its watchdog during the check, so a five-minute `esp_timer` restarts the device
+  if SecureOTA ever stalls beyond its own timeouts.
+- GitHub maintenance starts only when `device_state` changes to `github`,
+  including the first snapshot after boot, so with the server still at `github`
+  every restart starts another attempt. A retained RTC counter, incremented just
+  before each check, stops this after three attempts: `[NET] GitHub OTA not
+  retried` is logged and BLE and gameplay continue. Because the count is taken
+  before the check, a panic or watchdog reset inside it is bounded too. Software,
+  panic and watchdog resets keep the counter; power-on, brownout and external
+  resets, or any `device_state` other than `github`, clear it. A skipped check
+  (already up to date) reports `setting`, which clears it after the restart. The local HTTP update
   (`device_state=update`) needs no TLS and keeps its path without these steps, so
   it remains the fallback if the new path misbehaves.
 
