@@ -20,6 +20,13 @@ struct Diagnostics {
   // data, 6 erase, 7 write, 8 record conflict).
   uint32_t partitionSize = 0;
   uint8_t ringStatus = 0;
+  // Uploader task minimum free stack in bytes (0 = not measured yet).
+  uint32_t uploaderStackFree = 0;
+  // Saved coredump at boot: 0 none, 1 from this boot's reset (PANIC/WDT),
+  // 2 an older crash still stored. Task name is sanitized to [A-Za-z0-9_.-].
+  uint8_t crashState = 0;
+  uint32_t crashPc = 0, crashCause = 0;
+  char crashTask[16] = {};
 };
 class BlackBox {
 public:

@@ -7,6 +7,8 @@
 #include <esp_attr.h>
 #include <Arduino.h>
 #include <atomic>
+#include <cstdio>
+#include <esp_core_dump.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_partition.h>
@@ -42,8 +44,9 @@ std::atomic<bool> started{false}, isReady{false}, paused{false}, allowed{false};
 std::atomic<uint32_t> generation{0}, accepted{0}, persisted{0}, dropped{0},
     flashErrors{0}, uploadFailures{0}, uploaded{0}, firstFailed{0},
     completed{0}, eraseCalls{0}, maxEraseUs{0}, overwritten{0},
-    partitionBytes{0};
-std::atomic<uint8_t> ringStatus{0};
+    partitionBytes{0}, uploaderStackFree{0}, crashPc{0}, crashCause{0};
+std::atomic<uint8_t> ringStatus{0}, crashState{0};
+char crashTask[16]{}; // written once before crashState is published
 uint32_t bootId = 0;
 RTC_NOINIT_ATTR RetainedEvidence retainedEvidence;
 ClockCoverage clockCoverage;
@@ -141,6 +144,62 @@ void markFailure(uint32_t ticket) {
   uint32_t zero = 0;
   firstFailed.compare_exchange_strong(zero, ticket);
 }
+// One-shot task: summarize the coredump the panic handler saved in flash.
+// Parsing runs on its own stack (the writer's has little headroom) and the
+// image is kept for USB analysis, so an older crash is re-reported on later
+// boots with crashState 2. Records use the "prior." prefix: they describe a
+// previous boot and are not copied into the RTC evidence slots.
+void coreDumpTask(void *) {
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+  esp_core_dump_summary_t summary{};
+  while (paused || xSemaphoreTake(flashGuard, pdMS_TO_TICKS(5)) != pdTRUE)
+    vTaskDelay(pdMS_TO_TICKS(5));
+  const bool found = esp_core_dump_image_check() == ESP_OK &&
+                     esp_core_dump_get_summary(&summary) == ESP_OK;
+  xSemaphoreGive(flashGuard);
+  if (found) {
+    const esp_reset_reason_t reason = esp_reset_reason();
+    const bool fresh = reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT ||
+                       reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT;
+    size_t n = 0;
+    for (; n + 1 < sizeof(crashTask) && summary.exc_task[n]; ++n) {
+      const char c = summary.exc_task[n];
+      const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
+      crashTask[n] = plain ? c : '_';
+    }
+    crashTask[n] = 0;
+    uint32_t cause = 0, vaddr = 0;
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+    cause = summary.ex_info.exc_cause;
+    vaddr = summary.ex_info.exc_vaddr;
+#endif
+    crashPc = summary.exc_pc;
+    crashCause = cause;
+    crashState = fresh ? 1 : 2;
+    const uint32_t depth = summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth;
+    char text[28];
+    std::snprintf(text, sizeof(text), "prior.core:%s", crashTask);
+    // v[3]: backtrace depth | corrupted 0x100 | fresh 0x200 | reset reason << 16
+    blackbox.log(EventType::Crash, int32_t(summary.exc_pc), int32_t(cause), int32_t(vaddr),
+                 int32_t(depth | (summary.exc_bt_info.corrupted ? 0x100U : 0U) |
+                         (fresh ? 0x200U : 0U) | (uint32_t(reason) << 16)),
+                 text);
+    for (uint32_t i = 0; i < depth; i += 4) {
+      std::snprintf(text, sizeof(text), "prior.core.bt%lu", (unsigned long)(i / 4));
+      const uint32_t *bt = summary.exc_bt_info.bt;
+      blackbox.log(EventType::Crash, int32_t(bt[i]), int32_t(i + 1 < depth ? bt[i + 1] : 0),
+                   int32_t(i + 2 < depth ? bt[i + 2] : 0),
+                   int32_t(i + 3 < depth ? bt[i + 3] : 0), text);
+    }
+    // Matches esp_app_get_elf_sha256() of the build that crashed.
+    std::snprintf(text, sizeof(text), "prior.core.elf:%.9s",
+                  reinterpret_cast<const char *>(summary.app_elf_sha256));
+    blackbox.log(EventType::Crash, int32_t(summary.core_dump_version), 0, 0, 0, text);
+  }
+#endif
+  vTaskDelete(nullptr);
+}
 void writer(void *) {
   flash.p = esp_partition_find_first(
       ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
@@ -167,6 +226,9 @@ void writer(void *) {
   isReady = ok;
   if (!ok)
     ++flashErrors;
+  // After ring discovery so its records are persisted; failure only loses the
+  // crash summary.
+  xTaskCreate(coreDumpTask, "bb-core", 4096, nullptr, 1, nullptr);
   uint32_t retryAt = 0, lastDrop = 0, lastSummary = millis();
   Batch outstanding{};
   bool hasOutstanding = false, degraded = false;
@@ -291,6 +353,12 @@ void writer(void *) {
             int32_t(uxTaskGetStackHighWaterMark(nullptr)), "erase/lost/stack");
         if (summaryOk)
           summaryOk = ring.append(flashStats) == AppendResult::Persisted;
+        Record uploadStats = Record::make(
+            EventType::Logger, bootId, millis(), int32_t(uploaderStackFree.load()),
+            int32_t(uploaded.load()), int32_t(uploadFailures.load()), 0,
+            "upload/stack");
+        if (summaryOk)
+          summaryOk = ring.append(uploadStats) == AppendResult::Persisted;
         if (!summaryOk) {
           ++flashErrors;
           degraded = true;
@@ -421,6 +489,8 @@ void uploader(void *) {
       esp_mqtt_client_stop(client);
       esp_mqtt_client_destroy(client);
     }
+    // Lifetime minimum: covers the payload buffer and publish/subscribe paths.
+    uploaderStackFree = uint32_t(uxTaskGetStackHighWaterMark(nullptr));
     if (success) {
       failures = 0;
       nextAt = millis() + 5000;
@@ -574,7 +644,7 @@ void BlackBox::endLedOutput() {
 }
 bool BlackBox::ready() const { return isReady; }
 Diagnostics BlackBox::diagnostics() const {
-  return {accepted.load(),
+  Diagnostics d{accepted.load(),
           persisted.load(),
           dropped.load(),
           flashErrors.load(),
@@ -588,6 +658,14 @@ Diagnostics BlackBox::diagnostics() const {
           overwritten.load(),
           partitionBytes.load(),
           ringStatus.load()};
+  d.uploaderStackFree = uploaderStackFree.load();
+  d.crashState = crashState.load();
+  if (d.crashState) {
+    d.crashPc = crashPc.load();
+    d.crashCause = crashCause.load();
+    std::memcpy(d.crashTask, crashTask, sizeof(d.crashTask));
+  }
+  return d;
 }
 FlushResult BlackBox::flushThrough(uint32_t ticket, uint32_t timeoutMs) {
   if (!started || !ticket || ticket > accepted)

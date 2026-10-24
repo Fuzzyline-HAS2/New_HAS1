@@ -36,6 +36,12 @@ unchanged `HMAC_SECRET` secret and validation. No credentials appear in command
 arguments or public build configuration. The normal release assets and OTA
 structure remain unchanged.
 
+Every deploy also keeps `firmware-elf-<device>-v<version>-<run_id>` (the sketch
+`.ino.elf` and `.map`, 90 days) and prints the ELF SHA256 in the log, so device
+coredump PCs logged as `prior.core*` records can be decoded with addr2line. The
+ELF holds the same compiled-in secrets as `update.bin`; it is deliberately not a
+public Release asset. Download it only to decode a crash.
+
 After deployment, verify one idle device produces a stored SQLite batch and ACK
 before rolling out broadly. Games/photo/OTA intentionally suppress upload;
 absence of a live upload during those periods is not an offline diagnosis.

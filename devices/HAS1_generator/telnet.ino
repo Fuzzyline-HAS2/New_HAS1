@@ -122,7 +122,8 @@ static size_t TelnetFormatDiagnostics(char *buffer, size_t capacity) {
       "ble_pending=%u ble_awaiting=%u ble_timeout=%u "
       "ble_commands=%lu ble_failures=%lu "
       "bb_ready=%u bb_status=%u bb_partition=%lu bb_flash_errors=%lu "
-      "bb_uploaded=%lu bb_upload_failures=%lu bb_dropped=%lu\r\n",
+      "bb_uploaded=%lu bb_upload_failures=%lu bb_dropped=%lu bb_upload_stack=%lu "
+      "bb_core_state=%u bb_core=%.15s bb_core_pc=0x%08lx bb_core_cause=%lu\r\n",
       static_cast<unsigned>(FIRMWARE_VER), deviceName ? deviceName : "",
       static_cast<unsigned>(mac[0]), static_cast<unsigned>(mac[1]),
       static_cast<unsigned>(mac[2]), static_cast<unsigned>(mac[3]),
@@ -144,7 +145,10 @@ static size_t TelnetFormatDiagnostics(char *buffer, size_t capacity) {
       static_cast<unsigned long>(bb.flashErrors),
       static_cast<unsigned long>(bb.uploaded),
       static_cast<unsigned long>(bb.uploadFailures),
-      static_cast<unsigned long>(bb.dropped));
+      static_cast<unsigned long>(bb.dropped),
+      static_cast<unsigned long>(bb.uploaderStackFree),
+      static_cast<unsigned>(bb.crashState), bb.crashTask[0] ? bb.crashTask : "-",
+      static_cast<unsigned long>(bb.crashPc), static_cast<unsigned long>(bb.crashCause));
   return length > 0 && static_cast<size_t>(length) < capacity ? static_cast<size_t>(length) : 0;
 }
 

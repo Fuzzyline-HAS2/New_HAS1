@@ -269,6 +269,21 @@ jobs:
           if [ "${{ inputs.update_partition }}" = "true" ]; then
             cp "$RUNNER_TEMP/build-out"/*.ino.partitions.bin "$DEVICE_DIR/partitions.bin"
           fi
+          echo "ELF sha256 (앞 9자리가 블랙박스 prior.core.elf와 일치):"
+          sha256sum "$RUNNER_TEMP/build-out"/*.ino.elf
+
+      # 장치 coredump의 PC/백트레이스를 함수·줄로 바꾸려면 같은 빌드의 ELF가 필요하다.
+      # 블랙박스 "prior.core.elf:<sha>"는 이 ELF의 app ELF SHA256 앞 9자리와 맞춘다.
+      # update.bin과 같은 비밀값이 들어 있으므로 Release가 아닌 Actions artifact로만 둔다.
+      - name: 크래시 해석용 ELF 보관
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-elf-${{ inputs.device }}-v${{ steps.bump.outputs.NEW_VER }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/build-out/*.ino.elf
+            ${{ runner.temp }}/build-out/*.ino.map
+          retention-days: 90
+          if-no-files-found: error
 
       - name: 서명 + Release 업로드 + 소스 커밋
         env:

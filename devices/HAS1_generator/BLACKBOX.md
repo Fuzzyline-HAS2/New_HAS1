@@ -34,8 +34,11 @@ Each Telnet session's first `[diagnostics]` line ends with the logger state:
 `bb_ready` (0/1), `bb_status` (library `RingStatus`: 0 unopened, 1 ready, 2 bad
 size, 3 read error, 4 metadata conflict, 5 foreign data left untouched, 6 erase
 error, 7 write error, 8 record conflict), `bb_partition` (spiffs bytes, 0 = none),
-`bb_flash_errors`, `bb_uploaded`, `bb_upload_failures` and `bb_dropped`. A logger
-that never connects to the broker can be diagnosed from this line without USB. Up to eight valid prior RTC events are queued as paired event/time records before
+`bb_flash_errors`, `bb_uploaded`, `bb_upload_failures`, `bb_dropped`, the uploader's
+minimum free stack `bb_upload_stack`, and the saved coredump: `bb_core_state` (0 none,
+1 from this reset, 2 older), crashing task `bb_core`, `bb_core_pc` and Xtensa
+`bb_core_cause`. A logger that never connects to the broker, or a panic, can be
+diagnosed from this line without USB; see the library README to decode PCs. Up to eight valid prior RTC events are queued as paired event/time records before
 RTC initialization: earliest retained negative-code fault plus the newest seven
 when that fault is outside the tail, otherwise the newest eight. This copy is best effort and
 not evidence preserved through power removal.
