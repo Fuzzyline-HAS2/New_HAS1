@@ -107,7 +107,33 @@ static void currentDarkFrameIsPreserved() {
   assert(refresh.update(out.motor, false, 1500) && out.lit == 0);
 }
 
+static void flashContentionDoesNotConsumeRefresh() {
+  PixelRefresh committed;
+  assert(committed.update(false, true, 0));
+  PixelRefresh candidate=committed;
+  assert(!candidate.update(true, false, 100));
+  committed=candidate; // Motor edges still advance when no frame is needed.
+  candidate=committed;
+  assert(candidate.update(true, false, 600)); // Writer owns guard; no commit.
+  candidate=committed;
+  assert(candidate.update(true, false, 601)); // Retry stays due on next loop.
+  committed=candidate; // Actual output accepted.
+  candidate=committed;
+  assert(!candidate.update(true, false, 1100));
+  assert(candidate.update(true, false, 1101));
+  candidate=committed;
+  assert(!candidate.update(false, false, 1200));
+  committed=candidate;
+  candidate=committed;
+  assert(candidate.update(false, false, 1250)); // Denied post-motor resend.
+  candidate=committed;
+  assert(candidate.update(false, false, 1251));
+  committed=candidate;
+  assert(!committed.update(false, false, 1252));
+}
+
 int main() {
+  flashContentionDoesNotConsumeRefresh();
   continuousMotorAndIdle();
   shortDoublePulseAndRestart();
   visualChangesStayImmediate();

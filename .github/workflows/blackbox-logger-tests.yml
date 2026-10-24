@@ -1,0 +1,55 @@
+name: Blackbox logger tests
+on:
+  pull_request:
+    paths:
+      - 'tools/windows-blackbox-logger/**'
+      - 'libraries/HAS1BlackBox/**'
+      - '.github/workflows/blackbox-logger-tests.yml'
+  push:
+    paths:
+      - 'tools/windows-blackbox-logger/**'
+      - 'libraries/HAS1BlackBox/**'
+      - '.github/workflows/blackbox-logger-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  collector:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r tools/windows-blackbox-logger/requirements.txt
+      - name: Install real MQTT broker for integration tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y mosquitto
+      - name: Unit, crash recovery, and MQTT tests
+        run: python -m unittest discover -s tools/windows-blackbox-logger/tests -v
+  windows-service:
+    # Disposable hosted runner only. Normal unit tests never register services.
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise actual LocalService installation and recovery
+        shell: powershell
+        run: |
+          $python = (Get-Command python.exe).Source
+          & tools/windows-blackbox-logger/tests/windows_service_smoke.ps1 -PythonExe $python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve service smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackbox-windows-service-smoke
+          path: tools/windows-blackbox-logger/service-smoke-results/
+          if-no-files-found: ignore

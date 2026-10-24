@@ -42,7 +42,6 @@ struct FakeWiFi {
 } WiFi;
 struct HAS2_WifiCandidate { const char *ssid; const char *password; };
 const int WIFI_COUNT = 3;
-const unsigned long WIFI_CONNECT_TIMEOUT_MS = 3000;
 HAS2_WifiCandidate badland_wifi_candidates[WIFI_COUNT] = {
   {"synthetic-other-one", "synthetic-only-a"},
   {"badland_shoot", "synthetic-only-target"},

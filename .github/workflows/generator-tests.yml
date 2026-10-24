@@ -6,6 +6,7 @@ on:
       - devices/HAS1_generator/**
       - libraries/DFRobotDFPlayerMini/**
       - libraries/HAS2_Wifi/**
+      - libraries/HAS1BlackBox/**
       - .github/workflows/deploy-firmware.yml
       - .github/workflows/generator-tests.yml
   workflow_dispatch:
@@ -23,6 +24,8 @@ jobs:
           python-version: '3.12'
       - name: Bounded NeoPixel transport with fault injection
         run: python devices/HAS1_generator/tests/run_neopixel_tests.py
+      - name: Blackbox admission and LED retry with fault injection
+        run: python devices/HAS1_generator/tests/run_blackbox_tests.py
       - name: Boot TCP/IP initialization before worker and Telnet sockets
         run: python devices/HAS1_generator/tests/run_boot_network_tests.py
       - name: Completion-based polling and isolated crash reporting

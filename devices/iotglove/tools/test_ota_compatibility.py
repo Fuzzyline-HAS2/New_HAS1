@@ -13,19 +13,35 @@ GLOVE = ROOT / "devices/iotglove"
 HARNESS = r'''
 #include "wifi_client.h"
 #include <IoTGloveOtaClient.h>
+#include <BlackBoxEvidence.h>
+#include <HAS2HttpResult.h>
 #include <atomic>
 #include <cassert>
 #include <cstring>
 #include <string>
 using namespace iotglove;
-using String = std::string;
+class String : public std::string {
+ public:
+  using std::string::string;
+  String(const std::string& value) : std::string(value) {}
+};
 uint32_t now = 0;
 uint32_t millis() { return now; }
 int diagnosticsMux;
 #define portENTER_CRITICAL(p) (void)(p)
 #define portEXIT_CRITICAL(p) (void)(p)
 NetworkDiagnostics diagnostics;
+void blackBoxOperation(int) {}
+namespace has1blackbox {
+ struct Logger {
+  bool paused=false;
+  unsigned pauses=0,resumes=0,logs=0;
+  void log(EventType,int32_t,int32_t,int32_t,int32_t,const char*) { ++logs; }
+  void setPaused(bool value) {paused=value;if(value)++pauses;else ++resumes;}
+ } blackbox;
+}
 bool otaOperation = false;
+int diagnosticHttpKind=1;
 std::atomic<NetworkOtaStatus> otaState{NetworkOtaStatus::Idle};
 struct OtaRequest { uint32_t targetVersion = 0; char sourceCommand[40] = {}; };
 int version = 6000, partitionVersion = 2;
@@ -37,17 +53,20 @@ int refreshCalls = 0, acknowledged = 0, latestCalls = 0, pinnedCalls = 0;
 enum class Outcome { Skipped, Failed, Reboot };
 Outcome outcome = Outcome::Skipped;
 struct Restart {};
-enum class HAS2HttpPhase { Connect, Body, Complete };
-struct HAS2HttpResult {
-  uint8_t error = 0; HAS2HttpPhase phase = HAS2HttpPhase::Complete;
-  int status = 200; uint32_t elapsedMs = 0, bytes = 0;
-};
-struct Wifi { HAS2HttpResult LastHttpResult() { return {}; } } wifi;
+struct Wifi {
+  unsigned resultReads=0;
+  HAS2HttpResult LastHttpResult() {
+    ++resultReads; HAS2HttpResult result;
+    result.status=200; result.phase=HAS2HttpPhase::Body;
+    return result;
+  }
+} wifi;
 void observeResponseBackoff(const HAS2HttpResult&) {}
 void remoteConsoleLogf(const char*, ...) {}
 void httpProgress(HAS2HttpPhase, uint32_t, void*);
 void assertOtaSafe() {
   assert(otaOperation && diagnostics.phase == NetworkPhase::Ota);
+  assert(has1blackbox::blackbox.paused);
   now += 180000;
   assert(!networkWorkerStalled(diagnostics, now));
   assert(otaState.load() == NetworkOtaStatus::Running);
@@ -55,10 +74,14 @@ void assertOtaSafe() {
 bool refresh() {
   ++refreshCalls;
   const bool inOta = otaOperation;
+  const unsigned reads=wifi.resultReads, logs=has1blackbox::blackbox.logs;
   httpProgress(HAS2HttpPhase::Connect, 0, nullptr);
   httpProgress(HAS2HttpPhase::Body, 100, nullptr);
   httpProgress(HAS2HttpPhase::Complete, 100, nullptr);
-  if (inOta) assertOtaSafe();
+  if (inOta) {
+    assert(wifi.resultReads==reads && has1blackbox::blackbox.logs==logs);
+    assertOtaSafe();
+  }
   return refreshWorks;
 }
 bool send(const char* field, const String& value) {
@@ -107,6 +130,7 @@ CheckResult checkPinned(const char* board, uint32_t target, uint32_t current,
 CASES = r'''
 void reset() {
   now = 0; diagnostics = NetworkDiagnostics{}; otaOperation = false;
+  has1blackbox::blackbox = {};
   otaState.store(NetworkOtaStatus::Queued); latest = ServerSnapshot{};
   refreshWorks = true; refreshCalls = acknowledged = latestCalls = pinnedCalls = 0;
   std::strcpy(lastDeviceState, "update");
@@ -114,6 +138,8 @@ void reset() {
 }
 void checkReturned(NetworkOtaStatus status) {
   assert(otaState.load() == status && !otaOperation);
+  assert(!has1blackbox::blackbox.paused);
+  assert(has1blackbox::blackbox.pauses==1 && has1blackbox::blackbox.resumes==1);
   assert(diagnostics.phase == NetworkPhase::Idle);
   assert(!networkWorkerStalled(diagnostics, now + 19999));
   assert(networkWorkerStalled(diagnostics, now + 20000));
@@ -187,7 +213,9 @@ class OtaCompatibilityTests(unittest.TestCase):
                     binary = Path(work) / ("compile-only" if compile_only else "runtime")
                     command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                                "-Werror", "-pedantic", "-I", str(GLOVE), "-I",
-                               str(ROOT / "libraries/IoTGloveProtocol/src")]
+                               str(ROOT / "libraries/IoTGloveProtocol/src"), "-I",
+                               str(ROOT / "libraries/HAS1BlackBox/src"), "-I",
+                               str(GLOVE / "tools/bounded_http")]
                     if compile_only:
                         command.append("-DIOTGLOVE_COMPILE_ONLY=1")
                     subprocess.run(command + [str(cpp), "-o", str(binary)], check=True)

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+config.json
+data/
+mosquitto/passwords
+mosquitto/mosquitto.conf
+mosquitto/acl
+*.sqlite3*
+private-provision.json
+*-provision.private.json
+macs.txt

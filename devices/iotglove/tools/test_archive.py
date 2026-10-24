@@ -48,6 +48,14 @@ def tagmachine_assets(device="HAS1_tagmachine_sub", firmware_version=4):
     return archive.signed_assets(captured, image, signature, SECRET, COMMIT)
 
 
+class BlackboxArchiveTests(unittest.TestCase):
+    def test_source_provenance_includes_blackbox_only_for_glove(self):
+        for target in archive.DEVICES:
+            paths = archive.source_paths(ROOT, target)
+            included = any(p.startswith("libraries/HAS1BlackBox/") for p in paths)
+            self.assertEqual(included, target == "iotglove", target)
+
+
 class FakeGitHub:
     def __init__(self):
         self.release = None

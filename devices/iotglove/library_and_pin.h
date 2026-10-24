@@ -41,3 +41,19 @@ constexpr unsigned kResetPulseMs = 150;
 constexpr unsigned kResetCooldownMs = 30000;
 constexpr unsigned kBeetleOtaTimeoutMs = 300000;
 }  // namespace iotglove
+
+// Separate blackbox library. Empty broker URI records locally only. Set enabled
+// to 0 for baseline benchmarks; never use credentials inside the broker URI.
+#ifndef IOTGLOVE_BLACKBOX_ENABLED
+#define IOTGLOVE_BLACKBOX_ENABLED 1
+#endif
+#ifndef IOTGLOVE_BLACKBOX_BROKER_URI
+#define IOTGLOVE_BLACKBOX_BROKER_URI ""
+#endif
+
+#ifndef IOTGLOVE_BLACKBOX_MQTT_USERNAME
+#define IOTGLOVE_BLACKBOX_MQTT_USERNAME ""
+#endif
+#ifndef IOTGLOVE_BLACKBOX_MQTT_PASSWORD
+#define IOTGLOVE_BLACKBOX_MQTT_PASSWORD ""
+#endif

@@ -52,6 +52,7 @@ bool number(const Value& v, long low, long high, long& out) {
   return !*end && out >= low && out <= high;
 }
 ChipReportPolicy chipReport;
+int diagnosticHttpKind = 0;
 std::atomic<uint8_t> physicalChip{2};
 std::atomic<bool> forceSnapshot{false};
 uint32_t now = 0;
@@ -62,8 +63,9 @@ void remoteConsoleLogf(const char*, ...) {}
 struct Wifi {
   unsigned writes = 0;
   bool apply = true, ready = true, transportAck = true, changeDuringWrite = false;
-  bool ReceiveMineChecked() { my = server; return true; }
+  bool ReceiveMineChecked() { assert(diagnosticHttpKind == 1); my = server; return true; }
   bool SetGloveChipChecked(const char* name, bool present) {
+    assert(diagnosticHttpKind == 4);
     assert(server["device_name"].text == name);
     ++writes;
     if (apply) server["life_chip"].text = present ? "1" : "0";

@@ -31,6 +31,7 @@ static bool generatorTcpIpReady = false;
 // WiFi 연결과 OTA 콜백을 등록하고, 마지막으로 게임 상태 머신을 대기 상태로 세팅한다.
 // ---------------------------------------------------------------------------------
 void setup() {
+    BlackBoxBegin(); // Durable logger starts before blocking peripheral initialization.
     DiagnosticInit(); // Capture previous RTC evidence before any initialization can block.
     Serial.begin(115200);
     has2wifi.SetHttpDiagnosticHook(DiagnosticHttpHook);
@@ -101,6 +102,8 @@ void setup() {
 // ---------------------------------------------------------------------------------
 void loop() {
     DiagnosticLoop();
+    BlackBoxLoop();
+    NeoRetryPending();
     if (!generatorTcpIpReady) {
         // Keep reset evidence readable over UART and yield without opening any
         // sockets, starting network work, or repeatedly rebooting on init failure.

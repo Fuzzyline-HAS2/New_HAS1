@@ -25,6 +25,13 @@ on:
         description: "파티션 스키마도 업데이트 (partitions.bin/sig 재생성 + 배포)"
         type: boolean
         default: false
+      blackbox_mode:
+        description: "글러브/발전기 로그: flash=내부 기록, mqtt=설정된 수집기로 전송"
+        type: choice
+        options:
+          - flash
+          - mqtt
+        default: flash
       republish_version:
         description: "HAS1_generator 동일 버전 복구용 (빈 값이면 기존 버전 증가)"
         type: string
@@ -83,10 +90,24 @@ jobs:
         run: |
           python3 scripts/firmware_targets.py "$TARGET_DEVICE" >> "$GITHUB_ENV"
 
-      - name: 배포 서명 키 확인 및 secrets.h 생성
+      - name: 배포 서명 키 및 블랙박스 설정 확인
         env:
+          TARGET_DEVICE: ${{ inputs.device }}
+          BLACKBOX_MODE: ${{ inputs.blackbox_mode || 'flash' }}
           HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
-        run: python3 scripts/write_firmware_secret.py "$DEVICE_DIR"
+          BLACKBOX_BROKER_URI: ${{ vars.BLACKBOX_BROKER_URI }}
+          BLACKBOX_MQTT_PASSWORD: ${{ secrets.BLACKBOX_MQTT_PASSWORD }}
+        run: |
+          python3 scripts/write_blackbox_release_config.py \
+            --device "$TARGET_DEVICE" --mode "$BLACKBOX_MODE" \
+            --public-config "$RUNNER_TEMP/blackbox-release-config.json"
+
+      - name: 공개 블랙박스 빌드 설정 보관 (인증 정보 제외)
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackbox-config-${{ inputs.device }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/blackbox-release-config.json
+          if-no-files-found: error
 
       - name: TagMachine 파티션 OTA 차단
         if: inputs.update_partition && (inputs.device == 'HAS1_tagmachine_main' || inputs.device == 'HAS1_tagmachine_sub')
@@ -210,6 +231,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/build-out"
           EXTRA_LIBRARIES=()
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "HAS1_generator" ]]; then
+            EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/HAS1BlackBox")
+          fi
           if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" || "$TARGET_DEVICE" == "HAS1_tagmachine_main" || "$TARGET_DEVICE" == "HAS1_tagmachine_sub" ]]; then
             EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/IoTGloveProtocol")
           fi

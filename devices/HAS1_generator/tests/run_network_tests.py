@@ -37,6 +37,19 @@ struct String:std::string {
 static uint32_t now=100;
 static bool worker=false,online=true,failWatchdog=false;
 static int depth=0,restarts=0,dataChanges=0,otaChecks=0,requestCalls=0;
+namespace has1blackbox {
+ struct Logger {
+  void setUploadAllowed(bool) { assert(depth==0); }
+  void setPaused(bool) { assert(depth==0); }
+ } blackbox;
+}
+void BlackBoxNetwork(bool,bool,uint32_t,int,uint32_t,uint32_t,uint32_t) {assert(depth==0);}
+void BlackBoxHttp(int,int,int,uint32_t,bool) {assert(depth==0);}
+void BlackBoxHttpDetail(const NetworkRequest &,const Has2BoundedTransport::Result &,bool,int) {assert(depth==0);}
+void BlackBoxRecoveryState(unsigned,bool,bool,bool,bool) {assert(depth==0);}
+void BlackBoxValidSnapshot(bool) {assert(depth==0);}
+void BlackBoxPollResult(bool) {assert(depth==0);}
+void BlackBoxBeforeRestart() {assert(depth==0);}
 uint32_t millis(){return now;}
 using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_TYPE=int;
 #define portMUX_INITIALIZER_UNLOCKED 0

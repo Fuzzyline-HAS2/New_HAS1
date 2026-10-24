@@ -52,6 +52,7 @@ static void DiagnosticRecord(uint16_t event,uint8_t phase,uint32_t id,
   r.sequence=diagnosticSequence;
   GeneratorDiagnostic::append(diagnosticRtc,r);
   portEXIT_CRITICAL(&diagnosticMux);
+  BlackBoxDiagnostic(event,phase,id,code,elapsed,detail);
 }
 uint32_t DiagnosticBegin(uint16_t event,uint32_t detail,bool &verbose) {
   const uint32_t now=millis();
@@ -126,6 +127,30 @@ void DiagnosticInit() {
       reason==ESP_RST_DEEPSLEEP;
   diagnosticPriorCount=GeneratorDiagnostic::recover(diagnosticRtc,FIRMWARE_VER,
       diagnosticPriorWarm,diagnosticPrior,diagnosticPriorInvalid);
+  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,diagnosticPriorCount,
+      diagnosticPriorInvalid,diagnosticPriorCount>8?diagnosticPriorCount-8:0,
+      diagnosticPriorWarm,"prior.rtc.coverage");
+  // Bound startup traffic to eight events. Preserve the earliest retained
+  // fault plus the newest seven, rather than discarding every older fault.
+  // This is only the prior 32-event RTC window, not indefinite first-fault pinning.
+  unsigned selected[8], selectedCount=0;
+  if(diagnosticPriorCount>8) {
+    unsigned firstFault=0;
+    for(unsigned n=0;n<diagnosticPriorCount;++n) {
+      if(diagnosticPrior[n].code<0) {firstFault=n;break;}
+    }
+    if(firstFault<diagnosticPriorCount-7)selected[selectedCount++]=firstFault;
+  }
+  const unsigned tail=selectedCount?7:8;
+  for(unsigned n=diagnosticPriorCount>tail?diagnosticPriorCount-tail:0;n<diagnosticPriorCount;++n)
+    selected[selectedCount++]=n;
+  for(unsigned n=0;n<selectedCount;++n) {
+    const auto &r=diagnosticPrior[selected[n]];
+    has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
+        r.sequence,(uint32_t(r.event)<<8)|r.phase,r.code,r.detail,"prior.rtc.event");
+    has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
+        r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time");
+  }
   GeneratorDiagnostic::initialize(diagnosticRtc,FIRMWARE_VER);
   DiagnosticPoint(GeneratorDiagnostic::Boot,static_cast<int32_t>(reason),ESP.getFreeHeap());
   DiagnosticPrintf("[GD] BOOT fw=%u reset=%d heap=%lu min_heap=%lu prior_records=%u prior_invalid=%u warm=%u\r\n",

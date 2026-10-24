@@ -19,6 +19,15 @@ using portMUX_TYPE=int;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(x) do { (void)x; assert(++criticalDepth==1); } while(0)
 #define portEXIT_CRITICAL(x) do { (void)x; assert(--criticalDepth==0); } while(0)
+void BlackBoxDiagnostic(uint16_t,uint8_t,uint32_t,int32_t,uint32_t,uint32_t) { assert(criticalDepth==0); }
+namespace has1blackbox {
+ enum class EventType {Crash};
+ struct Captured {int32_t a,b,c,d;std::string text;};
+ static std::vector<Captured> captured;
+ struct Logger {void log(EventType,int32_t a,int32_t b,int32_t c,int32_t d,const char* text) {
+  assert(criticalDepth==0);captured.push_back({a,b,c,d,text});
+ }} blackbox;
+}
 static uint32_t clockMs=0;
 unsigned long millis() { return clockMs; }
 enum esp_reset_reason_t { ESP_RST_UNKNOWN,ESP_RST_POWERON,ESP_RST_EXT,ESP_RST_SW,
@@ -65,6 +74,17 @@ static void journalTests() {
  puts("PASS rate limits across millis rollover; denied events do not push deadline");
 }
 static void runtimeTests() {
+ initialize(diagnosticRtc,26);
+ for(unsigned i=1;i<=32;++i) {Record r=record(i);if(i==3)r.code=-42;append(diagnosticRtc,r);}
+ resetReason=ESP_RST_SW;has1blackbox::captured.clear();DiagnosticInit();
+ std::vector<int32_t> selected;
+ bool coverage=false;
+ for(const auto &r:has1blackbox::captured) {
+  if(r.text=="prior.rtc.event")selected.push_back(r.a);
+  if(r.text=="prior.rtc.coverage")coverage=r.a==32 && r.b==0 && r.c==24 && r.d==1;
+ }
+ assert(coverage && selected.size()==8 && selected.front()==3 && selected[1]==26 && selected.back()==32);
+ puts("PASS earliest retained RTC fault plus newest seven; omission count explicit");
  resetReason=ESP_RST_POWERON; DiagnosticInit(); output.clear();
  DiagnosticHttpHook("Loop","request.begin",0,0,0);
  DiagnosticHttpHook("Loop","get.end",200,700,0);
