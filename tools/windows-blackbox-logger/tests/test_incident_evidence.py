@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from incident_evidence import summarize, wait_seconds
+from incident_evidence import DEVICE_FETCH, MAX_ROWS, summarize, wait_seconds
 from incidents import _open_telemetry
 from telemetry import Event, TelemetryStore
 
@@ -23,6 +23,11 @@ def device(seq, observed, kind="State", text="", values=(0, 0, 0, 0), boot=48574
                  occurred_utc=None, clock_quality="uptime_only", mac=MAC, device_id="iotglove", event_type=kind,
                  fields={"ring": "r1", "seq": seq, "boot": boot, "uptime_ms": 60000 + seq * 1000 if uptime is None else uptime,
                          "values": list(values), "text": text})
+
+
+def gate(seq, observed, flags=0, wifi=3, **boot):
+    """worker.queue.gates: queue depth flips 0/1 about once a second; flags are driver fault etc.; wifi 3 is connected."""
+    return device(seq, observed, "Recovery", "worker.queue.gates", (seq % 2, flags, wifi, 0), **boot)
 
 
 def server(kind, when, **fields):
@@ -174,6 +179,139 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(kept), 6)
         self.assertTrue(kept[0].startswith("와이파이 요약"))
         self.assertIn("복구 동작", kept[-1])
+
+    def test_queue_gate_noise_collapses_and_keeps_the_reboot_explanation(self):
+        # Generator BG (firmware 39): worker.queue.gates logged depth 0/1 every second; its 40 rows hid the
+        # reboot, the Boot record, the dump and the Wi-Fi event, and "일부만 표시했습니다" explained nothing.
+        at, boot2 = "2026-10-24T03:03:30.000000+00:00", dict(boot=2994054713, uptime=0)
+        result = self.summarize_boots(
+            "queue-gates.db",
+            *[gate(seq, at) for seq in range(2, 152)],
+            device(152, at, "Boot", "device.boot", (1, 39, 1, 0), **boot2),
+            device(153, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), **boot2),
+            device(154, at, "Crash", "prior.core.bt0", (1074326982, 1074327000, 1074327100, 1074327200), **boot2),
+            device(155, at, "Crash", "prior.core.elf:abcdef123", (1, 123456, 0, 0), **boot2),
+            device(156, at, "WifiEvent", "ap:ACA7F1C619E8", (113, 202, 1, 0), **boot2),
+            *[gate(seq, at, **boot2) for seq in range(157, 187)])
+        rows = [row for row in result["rows"] if row[0] == "장치"]
+        texts = [row[2] for row in rows]
+        self.assertLessEqual(len(result["rows"]), MAX_ROWS)
+        self.assertFalse(result["truncated"])
+        self.assertEqual(len(rows), 9)
+        self.assertEqual(texts[1], "작업 큐 상태 변경 150건")
+        self.assertEqual(rows[1][1], "부팅 1 · 켜진 뒤 0:01:02~0:03:31 (수신 12:03:30)")
+        self.assertEqual(texts[2], "🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐")
+        self.assertTrue(texts[3].startswith("부팅 · device.boot"))
+        self.assertTrue(all(text.startswith("이전 크래시 기록 · prior.core") for text in texts[4:7]))
+        self.assertIn("끊김 원인 202 AUTH_FAIL", texts[7])
+        self.assertEqual(texts[8], "작업 큐 상태 변경 30건")
+        self.assertFalse(any("worker.queue.gates" in text for text in texts))
+        # The gate records say nothing about reboots, Wi-Fi or dumps: the chat one-liner is unchanged.
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)", "와이파이 끊김 원인 202 AUTH_FAIL",
+                                                "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
+
+    def test_queue_gate_with_a_flag_set_stays_visible_as_its_own_row(self):
+        # Driver fault (4), maintenance (8), scan pending (2) and mailbox (1) are informative; only flags 0 is noise.
+        at = "2026-10-24T03:03:30.000000+00:00"
+        result = self.summarize_boots(
+            "queue-flags.db",
+            *[gate(seq, at) for seq in range(2, 22)],
+            gate(22, at, flags=4),
+            *[gate(seq, at) for seq in range(23, 43)])
+        texts = [row[2] for row in result["rows"] if row[0] == "장치"]
+        self.assertEqual(len(texts), 4)
+        self.assertEqual(texts[1], "작업 큐 상태 변경 20건")
+        self.assertEqual(texts[2], "복구 동작 · worker.queue.gates · queue_depth 0 · flags 4 · wifi_status 3")
+        self.assertEqual(texts[3], "작업 큐 상태 변경 20건")
+
+    def test_queue_gate_runs_do_not_merge_with_output_runs_or_across_a_reboot(self):
+        at, boot2 = "2026-10-24T03:03:30.000000+00:00", dict(boot=2994054713, uptime=0)
+        result = self.summarize_boots(
+            "queue-runs.db",
+            device(2, at, "State", "motor.applied", (1, 4, 0, 0)),
+            gate(3, at),
+            gate(4, at),
+            gate(5, at, **boot2))
+        texts = [row[2] for row in result["rows"] if row[0] == "장치"]
+        self.assertEqual(texts[1:], ["모터·LED 출력 변경 1건", "작업 큐 상태 변경 2건",
+                                     "🔁 재부팅 (부팅 1 → 2)", "작업 큐 상태 변경 1건"])
+
+    def test_queue_gate_flood_does_not_starve_the_key_fetch(self):
+        # More routine gate records than DEVICE_FETCH before the reboot: the key query must not spend its cap on them.
+        at, boot2 = "2026-10-24T03:03:30.000000+00:00", dict(boot=2994054713, uptime=0)
+        flood = DEVICE_FETCH + 50
+        result = self.summarize_boots(
+            "queue-flood.db",
+            *[gate(seq, at) for seq in range(2, 2 + flood)],
+            device(2 + flood, at, "Boot", "device.boot", (1, 39, 1, 0), **boot2),
+            device(3 + flood, at, "WifiEvent", "ap:ACA7F1C619E8", (113, 202, 1, 0), **boot2),
+            gate(4 + flood, at, flags=4, **boot2))
+        texts = [row[2] for row in result["rows"] if row[0] == "장치"]
+        self.assertTrue(result["truncated"])
+        self.assertIn(f"작업 큐 상태 변경 {DEVICE_FETCH}건", texts)
+        self.assertIn("🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐", texts)
+        self.assertTrue(any(text.startswith("부팅 · device.boot") for text in texts))
+        self.assertTrue(any("끊김 원인 202 AUTH_FAIL" in text for text in texts))
+        # A flagged gate record is key too: it is fetched even past the cap.
+        self.assertTrue(any("worker.queue.gates" in text and "flags 4" in text for text in texts))
+        self.assertEqual(result["highlights"][0], "재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)")
+
+    def test_boot_crash_wifi_and_reboot_rows_outrank_other_key_rows_at_the_limit(self):
+        # Wi-Fi retries alone overflow the table: the rows that explain the reboot must not be cut with them.
+        at, boot2 = "2026-10-24T03:03:30.000000+00:00", dict(boot=2994054713, uptime=0)
+        result = self.summarize_boots(
+            "key-tiers.db",
+            *[device(seq, at, "WifiTry", "connect.begin") for seq in range(2, 62)],
+            device(62, at, "Boot", "device.boot", (1, 39, 1, 0), **boot2),
+            device(63, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), **boot2),
+            device(64, at, "WifiEvent", "ap:ACA7F1C619E8", (113, 202, 1, 0), **boot2),
+            *[device(seq, at, "WifiTry", "connect.begin", **boot2) for seq in range(65, 125)])
+        texts = [row[2] for row in result["rows"]]
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(texts), MAX_ROWS)
+        self.assertIn("🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐", texts)
+        self.assertTrue(any(text.startswith("부팅 · device.boot") for text in texts))
+        self.assertTrue(any(text.startswith("이전 크래시 기록 · prior.core") for text in texts))
+        self.assertTrue(any("끊김 원인 202 AUTH_FAIL" in text for text in texts))
+        # The rest of the room goes to the other key rows, still the first and the last of them.
+        retries = [row for row in result["rows"] if "connect.begin" in row[2]]
+        self.assertEqual(len(retries), MAX_ROWS - 4 - 1)  # minus the four rows above and the Wi-Fi summary
+        self.assertTrue(result["rows"][0][2].startswith("와이파이 요약"))
+        self.assertIn("connect.begin", texts[-1])
+
+    def test_queue_gate_runs_split_where_the_wifi_status_changes(self):
+        # Flags 0 is routine, but wifi_status (values[2]) 5/6 is the link dropping: it must not fold into the connected run.
+        at = "2026-10-24T03:03:30.000000+00:00"
+        result = self.summarize_boots(
+            "queue-wifi-status.db",
+            *[gate(seq, at) for seq in range(2, 7)],
+            *[gate(seq, at, wifi=6) for seq in range(7, 11)],
+            *[gate(seq, at) for seq in range(11, 14)],
+            *[gate(seq, at, wifi=5) for seq in range(14, 16)])
+        texts = [row[2] for row in result["rows"] if row[0] == "장치"]
+        self.assertEqual(texts[1:], ["작업 큐 상태 변경 5건", "작업 큐 상태 변경 4건 · 와이파이 상태 6",
+                                     "작업 큐 상태 변경 3건", "작업 큐 상태 변경 2건 · 와이파이 상태 5"])
+
+    def test_reboot_marker_and_boot_row_outrank_wifi_disconnects_at_the_limit(self):
+        # A Wi-Fi disconnect storm on both sides of a reset: the marker and the Boot row are what the
+        # chat highlight ("재부팅 1번") points at, so they must survive the first-and-last halves of the Wi-Fi tier.
+        at, boot2 = "2026-10-24T03:03:30.000000+00:00", dict(boot=2994054713, uptime=0)
+        result = self.summarize_boots(
+            "wifi-storm.db",
+            *[device(seq, at, "WifiEvent", "ap:ACA7F1C619E8", (113, 201, 1, 0)) for seq in range(2, 62)],
+            device(62, at, "Boot", "device.boot", (3, 39, 1, 0), **boot2),
+            *[device(seq, at, "WifiEvent", "ap:ACA7F1C619E8", (113, 201, 1, 0), **boot2) for seq in range(63, 123)])
+        texts = [row[2] for row in result["rows"]]
+        self.assertTrue(result["truncated"])
+        self.assertLessEqual(len(texts), MAX_ROWS)
+        self.assertIn("🔁 재부팅 (부팅 1 → 2) · 리셋 원인 3 SW 소프트웨어 재시작", texts)
+        self.assertTrue(any(text.startswith("부팅 · device.boot") for text in texts))
+        self.assertEqual(result["highlights"][0], "재부팅 1번(리셋 원인 3 SW 소프트웨어 재시작)")
+        # The Wi-Fi tier is what gets halved: its first and its last rows stay.
+        wifi = [row for row in result["rows"] if "NO_AP_FOUND" in row[2]]
+        self.assertEqual(len(wifi), MAX_ROWS - 2)  # everything but the marker and the Boot row; the Wi-Fi summary goes first
+        self.assertIn("부팅 1 ·", wifi[0][1])
+        self.assertIn("부팅 2 ·", wifi[-1][1])
 
     def test_reset_reason_comes_from_the_evidence_boot_record_too(self):
         # Game 1659 G2P7: the table was built before device.boot arrived; evidence.* already had the reason.

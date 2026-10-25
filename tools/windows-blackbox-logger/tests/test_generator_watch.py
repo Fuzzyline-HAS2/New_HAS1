@@ -143,6 +143,49 @@ class WatchTests(unittest.TestCase):
                          ["panic", "int_wdt", "task_wdt", "wdt", "brownout", "pwr_glitch", "cpu_lockup", None, None])
         self.watch.game(True, "game-1", at(0))
         self.assertEqual([self.watch.reboot_label(reason) for reason in (1, 2, 3)], ["poweron", "ext", None])
+        # An always-watched device's power-on counts game or not; a game generator's only in a game.
+        watch = GeneratorWatch(GENERATORS, always={"AG": AG})
+        self.assertEqual([watch.reboot_label(1, AG), watch.reboot_label(1, GENERATORS["BG"]), watch.reboot_label(3, AG)],
+                         ["poweron", None, None])
+
+    def test_always_watched_device_is_reported_game_or_not(self):
+        watch = GeneratorWatch(GENERATORS, always={"AG": AG})
+        watch.server("boot-1", at(0))
+        for second in range(0, 5):
+            watch.request(GLOVE, at(second))
+            watch.request(AG, at(second))
+        # No game: the game generators are not watched, AG is, counted from its own last request.
+        opened = [action for second in range(5, 30) for action in watch.request(GLOVE, at(second))]
+        self.assertEqual([(item["names"], item["always"], item["since"], item["at"]) for item in opened], [(["AG"], True, at(4), at(24))])
+        # Neither a game nor a server restart ends it: only its own return does.
+        self.assertEqual(watch.game(True, "game-1", at(30)), [])
+        self.assertEqual(watch.game(False, None, at(31)), [])
+        self.assertEqual(watch.server("boot-2", at(32)), [])
+        self.assertEqual([item["type"] for item in watch.request(AG, at(33))], ["recover"])
+        # Off since before the collector started: counted from the first request it saw.
+        fresh = GeneratorWatch(GENERATORS, always={"AG": AG})
+        opened = [action for second in range(0, 21) for action in fresh.request(GLOVE, at(second))]
+        self.assertEqual([(item["names"], item["since"], item["last_seen"]) for item in opened], [(["AG"], at(0), None)])
+
+    def test_always_watched_device_is_never_grouped(self):
+        watch = GeneratorWatch(GENERATORS, always={"AG": AG})
+        watch.server("boot-1", at(0))
+        watch.game(True, "game-1", at(0))
+        for second in range(0, 3):
+            for mac in [GLOVE, AG, *GENERATORS.values()]:
+                watch.request(mac, at(second))
+        opened = [action for second in range(3, 30) for action in watch.request(GLOVE, at(second))]
+        self.assertEqual(sorted((tuple(item["names"]), item["always"]) for item in opened),
+                         [(("AG",), True), (("BG", "LG", "SG", "TG", "UG"), False)])
+        group = next(item["key"] for item in opened if not item["always"])
+        self.assertEqual(watch.game(False, None, at(31)), [{"type": "end", "key": group, "reason": "game_ended"}])
+
+    def test_restored_always_watched_outage_adopts_no_game(self):
+        watch = GeneratorWatch(GENERATORS, always={"AG": AG})
+        watch.restore("ag-1", [AG], at(0), "게임외-20261025", always=True)
+        self.assertIsNone(watch.session)
+        self.assertEqual(watch.game(True, "game-1", at(1)), [])
+        self.assertEqual(watch.request(AG, at(2))[0], {"type": "recover", "key": "ag-1", "at": at(2)})
 
     def test_replay_reads_server_and_device_events(self):
         def server(kind, second, **fields):
@@ -162,14 +205,14 @@ class WatchTests(unittest.TestCase):
 
     def test_config(self):
         self.assertEqual(validate_generators({"enabled": False}),
-                         {"enabled": False, "devices": {}, "reboot_only": {}, "silence_seconds": 20, "group_min": 3})
+                         {"enabled": False, "devices": {}, "always": {}, "silence_seconds": 20, "group_min": 3})
         self.assertEqual(validate_generators({"enabled": True, "devices": {"BG": "a4:f0:0f:d9:0b:cc"}})["devices"], {"BG": "a4:f0:0f:d9:0b:cc"})
-        self.assertEqual(validate_generators({"enabled": True, "reboot_only": {"AG": AG}})["reboot_only"], {"AG": AG})
+        self.assertEqual(validate_generators({"enabled": True, "always": {"AG": AG}})["always"], {"AG": AG})
         for bad in ({"enabled": True}, {"enabled": True, "devices": {"BG": "nope"}},
                     {"enabled": True, "devices": {"BG": GLOVE, "LG": GLOVE}}, {"devices": {}, "silence_seconds": 5},
                     {"devices": {}, "extra": 1}, {"enabled": "yes", "devices": {}}, {"devices": {"B G": GLOVE}},
-                    {"devices": {"BG": AG}, "reboot_only": {"AG": AG}}, {"devices": {"AG": GLOVE}, "reboot_only": {"AG": AG}},
-                    {"reboot_only": ["AG"]}):
+                    {"devices": {"BG": AG}, "always": {"AG": AG}}, {"devices": {"AG": GLOVE}, "always": {"AG": AG}},
+                    {"always": ["AG"]}, {"devices": {}, "reboot_only": {"AG": AG}}):
             with self.assertRaises(ValueError):
                 validate_generators(bad)
 
@@ -184,7 +227,7 @@ def snapshot(second, seq, active=True, session="game-1"):
     return Event(site_id="store-1", source="game_server", source_id="server-1", event_id=f"s{seq}",
                  observed_utc=stamp(second), occurred_utc=stamp(second), event_type="game_monitor_snapshot",
                  fields={"boot_id": "server-1", "event_seq": seq, "game_session_id": session if active else None,
-                         "game_group": "g2" if active else None, "game_active": active, "snapshot_complete": True,
+                         "game_group": "g2" if active else None, "game_active": active, "snapshot_complete": True, "theme": "origin",
                          "participants": [{"device_id": "G2P4", "mac": GLOVE, "role": "player", "incident_id": None}] if active else [],
                          "active_incidents": []})
 
@@ -207,11 +250,15 @@ class IncidentFlowTests(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
-    def open_store(self):
+    def open_store(self, always=None):
         store = IncidentStore(self.path)
         store.start_run("run-1")
-        store.attach_generators(GeneratorWatch(GENERATORS), "server-1")
+        store.attach_generators(GeneratorWatch(GENERATORS, always=always), "server-1")
         return store
+
+    def watch_ag(self):
+        self.store.close()
+        self.store = self.open_store(always={"AG": AG})
 
     def process(self, item, second):
         self.seq += 1
@@ -397,15 +444,93 @@ class IncidentFlowTests(unittest.TestCase):
         refresh = self.queued()[-1]
         self.assertEqual((refresh[0], refresh[1], refresh[2]["reboot"]["label"], refresh[2]["slack_ts"]), (4, "slack", "poweron", CARD))
 
-    def test_reboot_only_device_gets_crash_alerts_only(self):
-        self.store.attach_generators(GeneratorWatch(GENERATORS, reboot_only={"AG": AG}), "server-1")
+    def test_game_times_come_from_its_snapshots(self):
+        self.process(snapshot(0, 1, active=False), 0)
+        self.process(snapshot(5, 2), 5)
+        self.process(snapshot(10, 3), 10)
+        times = self.store._session_time("store-1", "game-1")
+        self.assertEqual((times["started_utc"], times["ended_utc"], times["game_group"], times["theme"]), (stamp(5), None, "g2", "origin"))
+        self.process(snapshot(4, 4), 4)  # a late line of the same game moves its start back
+        self.assertEqual(self.store._session_time("store-1", "game-1")["started_utc"], stamp(4))
+        partial = snapshot(11, 5)
+        partial.fields.update(game_active=False, snapshot_complete=False, game_group=None)
+        self.process(partial, 11)  # an incomplete snapshot does not end the game
+        self.assertIsNone(self.store._session_time("store-1", "game-1")["ended_utc"])
+        self.traffic(11, 30, silent=("BG",))
+        self.announce()
+        # The game ends: recorded, and its card edited once more so it shows the end.
+        self.process(snapshot(31, 9000, active=False), 31)
+        self.assertEqual(self.store._session_time("store-1", "game-1")["ended_utc"], stamp(31))
+        refresh = [payload for version, destination, payload in self.queued() if payload.get("refresh")]
+        self.assertEqual([(item["slack_ts"], item["reboot"]) for item in refresh], [(CARD, None)])
+        self.assertEqual(self.queued()[0][2]["session_started_utc"], stamp(4))  # for the Notion session title
+        # A late line stamped before the next game began does not end it.
+        self.process(snapshot(40, 9001, session="game-2"), 40)
+        self.process(snapshot(35, 9002, active=False), 35)
+        self.assertIsNone(self.store._session_time("store-1", "game-2")["ended_utc"])
+        # Seen running after a recorded end (a wrong end): open again; a late line before it changes nothing.
+        self.process(snapshot(41, 9003, active=False), 41)
+        self.process(snapshot(39, 9004, session="game-2"), 39)
+        self.assertEqual(self.store._session_time("store-1", "game-2")["ended_utc"], stamp(41))
+        self.process(snapshot(42, 9005, session="game-2"), 42)
+        self.assertIsNone(self.store._session_time("store-1", "game-2")["ended_utc"])
+        self.assertEqual(self.store.slack_session(self.store.db.execute("SELECT incident_id FROM incident_state").fetchone()[0])["ended_utc"], stamp(31))
+
+    def test_always_watched_power_cycle_outside_games_is_one_incident(self):
+        self.watch_ag()
+        self.process(snapshot(0, 1, active=False), 0)
+        for second in range(0, 3):
+            self.process(request(AG, second, 2000 + second), second)
+        self.traffic(3, 25, game=False)  # AG switched off at 3s; no game running
+        self.assertEqual(self.incidents(), [("AG", "open", "generator_silent")])
+        row = self.store.db.execute("SELECT session_id,details FROM incident_state").fetchone()
+        self.assertEqual((row[0], json.loads(row[1])["watch"]), ("게임외-20261025", "always"))
+        # Sent although the server runs no game (or another one).
+        row = self.claim()
+        self.assertEqual((row["version"], row["payload"]["device_id"], row["payload"]["game_session_id"]), (1, "AG", "게임외-20261025"))
+        self.assertIn("while always watched", row["payload"]["summary"])
+        self.deliver(row, remote_id=CARD if row["destination"] == "slack" else PAGE)
+        self.announce()
+        self.process(snapshot(26, 5000), 26)  # a game starts and ends meanwhile
+        self.process(snapshot(27, 5001, active=False), 27)
+        self.assertEqual(self.incidents(), [("AG", "open", "generator_silent")])
+        self.process(request(AG, 40, 2999), 40)  # switched back on
+        self.process(boot("AG", 1, 52, mac=AG, device_boot=3), 52)
+        self.assertEqual(self.incidents(), [("AG", "recovered", "reconnected")])
+        self.assertEqual([item["label"] for item in self.details()["reboots"]], ["poweron"])
+
+    def test_always_watched_outage_ends_once_nothing_watches_it(self):
+        self.watch_ag()
+        self.process(snapshot(0, 1, active=False), 0)
+        self.process(request(AG, 0, 2000), 0)
+        self.traffic(1, 25, game=False)
+        self.store.close()
+        self.store = self.open_store()  # AG taken out of the config while it is still off
+        self.process(snapshot(26, 5000, active=False), 26)
+        self.assertEqual(self.incidents(), [("AG", "closed", "watch_removed")])
+
+    def test_restarted_collector_keeps_an_always_watched_outage(self):
+        self.watch_ag()
+        self.process(snapshot(0, 1, active=False), 0)
+        self.process(request(AG, 0, 2000), 0)
+        self.traffic(1, 25, game=False)
+        self.watch_ag()  # the collector restarts while AG is still off
+        self.assertIsNone(self.store.watch.session)  # the day card is no game to adopt
+        self.process(snapshot(26, 5000), 26)
+        self.process(snapshot(27, 5001, active=False), 27)
+        self.assertEqual(self.incidents(), [("AG", "open", "generator_silent")])
+        self.process(request(AG, 28, 2999), 28)
+        self.assertEqual(self.incidents(), [("AG", "recovered", "reconnected")])
+
+    def test_always_watched_crash_in_a_game_goes_to_the_day_card(self):
+        self.watch_ag()
         self.process(snapshot(0, 1), 0)
-        self.traffic(0, 40)  # AG never requests during the game: not watched for silence
-        self.process(boot("AG", 1, 41, mac=AG, device_boot=1), 41)  # its power-on during an origin game
-        self.assertEqual(self.incidents(), [])
-        self.process(boot("AG", 4, 42, mac=AG, device_boot=2), 42)
+        for second in range(0, 11):
+            self.process(request(AG, second, 2000 + second), second)
+            self.traffic(second, second)
+        self.process(boot("AG", 4, 12, mac=AG, device_boot=2), 12)  # back within seconds: no outage
         self.assertEqual(self.incidents(), [("AG", "recovered", "generator_reboot")])
-        # Filed with the day's out-of-game reboots, not on the card of a game it is not part of.
+        # Filed with the day's out-of-game events, not on the card of a game it is not part of.
         self.assertEqual(self.store.db.execute("SELECT session_id FROM incident_state").fetchone()[0], "게임외-20261025")
 
     def test_reboots_that_are_not_announced(self):
@@ -556,11 +681,11 @@ class CardTests(unittest.TestCase):
             return {"status": 200, "body": '{"ok": true, "ts": "1700000000.000100"}'}
         result = _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", self.REBOOT)
         self.assertEqual(result.state, "delivered")
-        self.assertEqual(calls, [("chat.postMessage", None, None), ("chat.postMessage", "1700000000.000100", False)])
-        # An unrecovered device at game end is still shown in the channel too.
+        self.assertEqual(calls, [("chat.postMessage", None, None), ("chat.postMessage", "1700000000.000100", None)])
+        # So does a device unrecovered at game end: no reply is shown in the channel.
         calls.clear()
         _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", dict(self.REBOOT, status="monitoring_ended"))
-        self.assertEqual(calls[-1][2], True)
+        self.assertEqual(calls[-1][1:], ("1700000000.000100", None))
 
     def test_a_reboot_noted_on_its_silence_shows_in_that_line(self):
         reboots = json.dumps([{"name": "BG", "label": "poweron"}])  # as the collector's json_extract returns it
@@ -578,7 +703,7 @@ class CardTests(unittest.TestCase):
         silence = dict(self.REBOOT, device_id="BG", status="recovered", kind="silence", slack_ts=CARD, refresh=True)
         noted = dict(silence, reboot={"name": "BG", "label": "poweron", "firmware": 39, "observed_utc": stamp(35)})
         self.assertEqual(_send_slack_session(call, "xoxb-synthetic-token", "C0123456789", noted).state, "delivered")
-        self.assertEqual([item[:3] for item in calls], [("chat.update", None, None), ("chat.postMessage", CARD, False)])
+        self.assertEqual([item[:3] for item in calls], [("chat.update", None, None), ("chat.postMessage", CARD, None)])
         self.assertIn("BG 재부팅 · 전원 투입 · 펌웨어 39", calls[1][3])
         calls.clear()
         _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", silence)  # nothing to note: the edit is all

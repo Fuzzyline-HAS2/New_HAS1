@@ -47,8 +47,14 @@ DUMP_HEADER, DUMP_FRESH = "prior.core:", 0x200
 OLDER_DUMP_LABEL = "이전 크래시 기록"
 # Haptic/LED output changes repeat every few hundred ms during play and say nothing about the link.
 OUTPUT_TAGS = {"motor.applied", "output.applied", "motor.suppressed"}
+# The worker queue gate (Recovery) logs depth flips about once a second in normal operation. With no
+# flag set (values[1]: driver fault, maintenance, ...) it is routine like output changes; a set flag is not.
+# Its wifi_status (values[2]) is the Arduino wl_status_t: 3 connected, 5 lost, 6 disconnected.
+QUEUE_GATE_TAG, WIFI_CONNECTED = "worker.queue.gates", 3
 # What explains an outage: fetched separately and kept ahead of routine rows at the row limit.
 KEY_KINDS = ("Boot", "Crash", "WifiEvent", "WifiTry", "WifiSummary", "Recovery", "Lost", "Dropped")
+# Of those, the order they survive the row limit in: reset and crash dump, then Wi-Fi disconnects, then the rest.
+KEY_TIERS = {"Boot": 0, "Crash": 0, "WifiEvent": 1}
 FIELD_LABELS = {"disconnect_reason": "끊김 원인", "outage_ms": "끊김 시간", "attempts": "시도",
                 "actual_reset_reason": "리셋 원인", "reported_battery_mv": "배터리", "http_status": "HTTP",
                 "elapsed_ms": "소요", "down_age_ms": "끊긴 지", "connect_failures": "접속 실패", "ap_bssid": "AP"}
@@ -159,10 +165,33 @@ def _older_dumps(events):
     return verdicts
 
 
-def _device_rows(events):
-    """[(row, key)] in sequence order: output-change runs collapsed into one row, reboots marked.
+def _routine_gate(event):
+    """True for a worker.queue.gates record with no flag set: queue depth flipping, nothing wrong."""
+    fields = event.get("fields") or {}
+    values = fields.get("values")
+    return fields.get("text") == QUEUE_GATE_TAG and isinstance(values, list) and len(values) > 1 and values[1] == 0
 
-    Boot ids are random per boot, so they are shown as 1, 2, ... in order of appearance.
+
+def _run_label(event):
+    """(name, note) of the run a routine record belongs to; None when it gets its own row.
+
+    A queue gate run ends where wifi_status changes, and says so when the link is not connected.
+    """
+    if event.get("event_type") == "State" and (event.get("fields") or {}).get("text") in OUTPUT_TAGS:
+        return "모터·LED 출력 변경", ""
+    if not _routine_gate(event):
+        return None
+    values = event["fields"]["values"]
+    status = values[2] if len(values) > 2 and type(values[2]) is int and values[2] != UNAVAILABLE else WIFI_CONNECTED
+    return "작업 큐 상태 변경", "" if status == WIFI_CONNECTED else f" · 와이파이 상태 {status}"
+
+
+def _device_rows(events):
+    """[(row, rank)] in sequence order: routine runs collapsed into one row, reboots marked.
+
+    Rank 0 is the reboot marker, boot and crash rows, 1 Wi-Fi disconnects, 2 the other key kinds,
+    3 routine rows. Boot ids are random per boot, so they are shown as 1, 2, ... in order of
+    appearance.
     """
     boots, reasons, rows, run = {}, {}, [], []
     for event in events:
@@ -186,7 +215,8 @@ def _device_rows(events):
 
     def flush():
         if run:
-            rows.append((["장치", when(run[0], run[-1] if len(run) > 1 else None), f"모터·LED 출력 변경 {len(run)}건"], False))
+            name, note = _run_label(run[0])
+            rows.append((["장치", when(run[0], run[-1] if len(run) > 1 else None), f"{name} {len(run)}건{note}"], 3))
             run.clear()
 
     previous = object()
@@ -198,13 +228,17 @@ def _device_rows(events):
         if previous in boots and boot != previous:
             flush()
             detail = f"🔁 재부팅 (부팅 {boots[previous]} → {boots[boot]})"
-            rows.append((["장치", when(event), detail + (f" · 리셋 원인 {reasons[boot]}" if boot in reasons else "")], True))
+            rows.append((["장치", when(event), detail + (f" · 리셋 원인 {reasons[boot]}" if boot in reasons else "")], 0))
         previous = boot
-        if event.get("event_type") == "State" and fields.get("text") in OUTPUT_TAGS:
+        label = _run_label(event)
+        if label:
+            if run and _run_label(run[0]) != label:
+                flush()
             run.append(event)
             continue
         flush()
-        rows.append((["장치", when(event), describe_device(event, older.get(index, False))], event.get("event_type") in KEY_KINDS))
+        kind = event.get("event_type")
+        rows.append((["장치", when(event), describe_device(event, older.get(index, False))], KEY_TIERS.get(kind, 2 if kind in KEY_KINDS else 3)))
     flush()
     return rows
 
@@ -229,13 +263,16 @@ def _device_events(raw, incident, limit):
         "SELECT ring,seq FROM event_times WHERE site_id=? AND source='device' AND mac=? AND observed_utc<=? AND seq IS NOT NULL ORDER BY observed_utc DESC,seq DESC LIMIT 1",
         (site, mac, incident["opened_utc"])).fetchone()
     select = "SELECT e.payload FROM event_times t JOIN telemetry_events e USING(site_id,source,source_id,event_id) WHERE t.site_id=? AND t.source='device' AND t.mac=? "
-    key_only = "AND json_extract(e.payload,'$.event_type') IN (" + ",".join("?" * len(KEY_KINDS)) + ") "
+    # IS compares NULLs too, so a record without text or values is never mistaken for a routine gate.
+    key_only = ("AND json_extract(e.payload,'$.event_type') IN (" + ",".join("?" * len(KEY_KINDS)) + ") "
+                "AND NOT (json_extract(e.payload,'$.fields.text') IS ? AND json_extract(e.payload,'$.fields.values[1]') IS 0) ")
 
     def merged(where, params, order):
-        # Output-change spam can fill `limit` first; key records are read on their own so a
-        # reboot, crash or Wi-Fi record after it is never lost to the fetch cap.
+        # Output-change and queue-gate spam can fill `limit` first; key records are read on their own
+        # (without routine gates, which are Recovery too) so a reboot, crash or Wi-Fi record after it
+        # is never lost to the fetch cap.
         everything = _rows(raw, select + where + order + "LIMIT ?", (*params, limit + 1))
-        key = _rows(raw, select + where + key_only + order + "LIMIT ?", (*params, *KEY_KINDS, limit + 1))
+        key = _rows(raw, select + where + key_only + order + "LIMIT ?", (*params, *KEY_KINDS, QUEUE_GATE_TAG, limit + 1))
         events = {}
         for event in everything[:limit] + key[:limit]:
             fields = event.get("fields") or {}
@@ -304,14 +341,18 @@ def summarize(raw, incident, now, limit=MAX_ROWS):
     device_rows = _device_rows(device)
     budget = max(0, limit - len(rows))
     if len(device_rows) > budget:
-        # Over the limit, drop routine rows before boot, crash, Wi-Fi and recovery rows; if even
-        # those overflow (repeated Wi-Fi retries), keep how the outage began and how it ended.
+        # Over the limit, drop routine rows first, then the other key kinds (Wi-Fi retries, recovery), then
+        # Wi-Fi disconnects, and last the reboot marker, boot and crash rows. A tier that overflows what is
+        # left keeps how it began and how it ended (routine rows keep only the start).
         cut = True
-        key = [index for index, (_, important) in enumerate(device_rows) if important]
-        if len(key) > budget:
-            key = key[:budget // 2] + key[len(key) - (budget - budget // 2):]
-        other = [index for index, (_, important) in enumerate(device_rows) if not important][:budget - len(key)]
-        device_rows = [device_rows[index] for index in sorted(key + other)]
+        kept = []
+        for rank in (0, 1, 2, 3):
+            tier = [index for index, (_, row_rank) in enumerate(device_rows) if row_rank == rank]
+            room = budget - len(kept)
+            if len(tier) > room:
+                tier = tier[:room] if rank == 3 else tier[:room // 2] + tier[len(tier) - (room - room // 2):]
+            kept += tier
+        device_rows = [device_rows[index] for index in sorted(kept)]
     rows += [row for row, _ in device_rows]
     pending = bool(incident["mac"]) and _first_upload_since_outage(raw, incident) is None
     return {"rows": [[str(cell)[:300] for cell in row] for row in rows[:limit]], "truncated": cut or len(rows) > limit,
