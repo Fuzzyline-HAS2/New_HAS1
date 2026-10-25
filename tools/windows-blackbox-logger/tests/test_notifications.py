@@ -133,17 +133,22 @@ class NotificationsTests(unittest.TestCase):
 
     def test_slack_bot_first_event_opens_one_card_for_the_game_session(self):
         sender, calls = self.bot_sender([self.slack_ok()])
-        result = sender.send('slack', dict(PAYLOAD, device_id='G1P1', status='offline', slack_session=self.session()))
+        game = {'started_utc': '2026-10-24T22:24:50Z', 'ended_utc': None, 'game_group': 'g2', 'theme': 'origin'}
+        result = sender.send('slack', dict(PAYLOAD, device_id='G1P1', status='offline', slack_session=self.session(**game)))
         self.assertEqual((result.state, result.remote_id, result.parent_id), ('delivered', self.CARD, self.CARD))
         self.assertEqual(len(calls), 1)  # one card; nothing in its thread yet
         card = calls[0]['body']
         self.assertEqual((calls[0]['url'], card['channel']), ('https://slack.com/api/chat.postMessage', 'C0123456789'))
         self.assertNotIn('thread_ts', card)
         self.assertNotIn('xoxb', json.dumps(card))
-        self.assertEqual(card['blocks'][0]['text']['text'], '🔴 장애 진행 중 1건 · 세션 1657 · store-1')
+        # A short title, which game, its incidents, a divider, the device lines, then where to look next.
+        self.assertEqual([block['type'] for block in card['blocks']], ['header', 'context', 'context', 'divider', 'section', 'context'])
+        self.assertEqual(card['blocks'][0]['text']['text'], '🔴 장애 진행 중 1건 · 세션 1657')
+        self.assertEqual(card['text'], '🔴 장애 진행 중 1건 · 세션 1657 · store-1')  # the notification names the store
         texts = self.texts(card)
-        self.assertIn(('plain_text', '장애\n2건 (복구 1 · 미복구 0 · 진행 중 1)'), texts)
-        self.assertIn(('plain_text', '심각도\nSEV3 · 자동 판정'), texts)
+        self.assertIn(('plain_text', 'G2 · origin · 10/25 07:24:50 시작 · store-1'), texts)  # still running: no end
+        self.assertIn(('plain_text', '장애 2건 (진행 중 1, 복구 1) · 첫 장애 07:25:29 · SEV3 자동 판정'), texts)
+        self.assertIn(('plain_text', '원인 미확정 · 장치별 경과는 스레드'), texts)
         self.assertIn(('plain_text', '🔴 G1P1 · 10/25 07:25:29 끊김 → 장애중\n🟢 G1P5 · 10/25 07:25:29 끊김 → 18초 만에 복구'), texts)
         link = 'https://www.notion.so/' + SESSION_PAGE.replace('-', '')
         self.assertIn(('mrkdwn', f'<{link}|📒 노션 장애 페이지>'), texts)
@@ -157,19 +162,20 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual((result.state, result.remote_id), ('delivered', self.CARD))
         self.assertEqual([call['url'] for call in calls], ['https://slack.com/api/chat.update'])
         self.assertEqual(calls[0]['body']['ts'], self.CARD)
-        self.assertEqual(calls[0]['body']['blocks'][0]['text']['text'], '🟢 모두 복구 · 세션 1657 · store-1')
+        self.assertEqual(calls[0]['body']['blocks'][0]['text']['text'], '🟢 모두 복구 · 세션 1657')
         self.assertIn(('plain_text', '🟢 G1P1 · 10/25 07:25:29 끊김 → 35초 만에 복구\n🟢 G1P5 · 10/25 07:25:29 끊김 → 18초 만에 복구'),
                       self.texts(calls[0]['body']))
 
-    def test_slack_bot_unrecovered_end_threads_and_broadcasts(self):
+    def test_slack_bot_unrecovered_end_threads_without_broadcast(self):
         sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000300.000200')])
         payload = dict(PAYLOAD, device_id='G1P1', status='monitoring_ended', close_reason='snapshot_no_longer_active',
                        opened_at='2026-10-24T22:25:29Z', slack_session=self.session(self.CARD, 'closed'))
         self.assertEqual(sender.send('slack', payload).state, 'delivered')
         update, reply = calls
-        self.assertEqual(update['body']['blocks'][0]['text']['text'], '🟠 미복구 종료 포함 · 세션 1657 · store-1')
-        self.assertIn(('plain_text', '심각도\nSEV2 · 미복구 있음'), self.texts(update['body']))
-        self.assertEqual((reply['body']['thread_ts'], reply['body']['reply_broadcast']), (self.CARD, True))
+        self.assertEqual(update['body']['blocks'][0]['text']['text'], '🟠 미복구 종료 포함 · 세션 1657')
+        self.assertTrue(self.texts(update['body'])[2][1].endswith('· SEV2 미복구 있음'))
+        self.assertEqual(reply['body']['thread_ts'], self.CARD)
+        self.assertNotIn('reply_broadcast', reply['body'])  # the thread only, never the channel
         self.assertEqual(reply['body']['text'], '⚪ G1P1 미복구 종료 · 게임 종료 또는 서버 목록에서 제외 · 끊긴 시각 10/25 07:25:29')
         self.assertIn(('mrkdwn', f"<https://www.notion.so/{PAGE.replace('-', '')}|📒 노션 이벤트>"), self.texts(reply['body']))
 
@@ -220,13 +226,14 @@ class NotificationsTests(unittest.TestCase):
         both_open = self.session(self.CARD, counts={'open': 2})
         self.assertEqual(sender.send('slack', dict(PAYLOAD, device_id='G1P5', status='offline', slack_session=both_open)).state, 'delivered')
         self.assertEqual(len(calls), 1)
-        # A new drop after everything else had ended: thread it and surface it in the channel.
+        # A new drop after everything else had ended: thread it (not in the channel).
         sender, calls = self.bot_sender([self.slack_ok(), self.slack_ok(ts='1700000600.000600')])
         settled = self.session(self.CARD, counts={'open': 1, 'recovered': 2})
         self.assertEqual(sender.send('slack', dict(PAYLOAD, device_id='G1P1', status='offline', gap_ms=20100,
                                                    slack_session=settled)).state, 'delivered')
         update, reply = calls
-        self.assertEqual((reply['body']['thread_ts'], reply['body']['reply_broadcast']), (self.CARD, True))
+        self.assertEqual(reply['body']['thread_ts'], self.CARD)
+        self.assertNotIn('reply_broadcast', reply['body'])
         self.assertTrue(reply['body']['text'].startswith('🔴 G1P1 연결 끊김 · '))
         self.assertIn('무응답 20초', reply['body']['text'])
 
@@ -241,7 +248,25 @@ class NotificationsTests(unittest.TestCase):
                  'updated_utc': '2026-10-24T22:25:47Z'} for n in range(14)]
         card = slack_session_card(PAYLOAD, self.session(incidents=many, counts={'recovered': 70}))
         self.assertTrue(any(text.endswith('외 58건') for kind, text in self.texts(card) if kind == 'plain_text'))
-        self.assertIn(('plain_text', '장애\n70건 (복구 70 · 미복구 0 · 진행 중 0)'), self.texts(card))
+        self.assertIn('장애 70건 (복구 70)', self.texts(card)[2][1])  # zero counts are left out
+
+    def test_slack_session_card_names_the_game_and_when_it_ran(self):
+        ended = self.session(started_utc='2026-10-25T00:55:57.203Z', ended_utc='2026-10-25T00:59:50.228Z', game_group='G2', theme='origin')
+        texts = self.texts(slack_session_card(PAYLOAD, ended))
+        self.assertEqual(texts[1], ('plain_text', 'G2 · origin · 10/25 09:55:57 시작 ~ 09:59:50 종료 · store-1'))
+        # Across midnight the end and the first incident keep their date.
+        after = [{'device_id': 'G1P1', 'state': 'recovered', 'opened_utc': '2026-10-25T15:00:30Z', 'updated_utc': '2026-10-25T15:00:40Z'}]
+        late = self.session(started_utc='2026-10-25T14:59:00Z', ended_utc='2026-10-25T15:01:00Z', incidents=after)
+        texts = self.texts(slack_session_card(PAYLOAD, late))
+        self.assertEqual(texts[1], ('plain_text', '10/25 23:59:00 시작 ~ 10/26 00:01:00 종료 · store-1'))
+        self.assertIn('첫 장애 10/26 00:00:30', texts[2][1])
+        # Outside games there is no game to describe: the day is the title, the store the line.
+        card = slack_session_card(PAYLOAD, self.session(session_id='게임외-20261025', incidents=[]))
+        self.assertEqual(card['blocks'][0]['text']['text'], '🟢 모두 복구 · 게임 외 10/25')
+        self.assertEqual(self.texts(card)[1], ('plain_text', 'store-1'))
+        # An unreadable time leaves its part out instead of failing the card.
+        broken = self.session(started_utc='9999-12-31T23:59:59Z', incidents=[dict(self.session()['incidents'][0], opened_utc='9999-12-31T23:59:59Z')])
+        self.assertEqual(self.texts(slack_session_card(PAYLOAD, broken))[1], ('plain_text', 'store-1'))
 
     def test_slack_evidence_notice_is_a_quiet_reply_with_the_notion_link(self):
         notice = dict(PAYLOAD, evidence_notice=True, device_id='G2P1',
@@ -391,6 +416,18 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual((props['장치'], props['역할']), ({'select': {'name': 'G2P5'}}, {'select': {'name': 'player'}}))
         self.assertNotIn('종료 시각', props)
         self.assertEqual(props['요약']['rich_text'][0]['text']['content'], '<!channel> test')
+
+    def test_notion_session_page_names_the_game_and_its_start(self):
+        payload = dict(PAYLOAD, status='offline', opened_at='2026-10-24T19:58:00Z', occurred_at='2026-10-24T19:58:00Z',
+                       session_started_utc='2026-10-24T19:55:57Z', session_group='g2')
+        sender, calls = self.sender([found(), found(), created(SESSION_PAGE), created(PAGE)])
+        self.assertEqual(sender.send('notion', payload).state, 'delivered')
+        self.assertEqual(calls[4]['body']['properties']['장애']['title'][0]['text']['content'], 'store-1 · 세션 game-1 · G2 · 10/25 04:55 시작')
+        # A day outside games keeps its first incident's time and reads as a date.
+        day = dict(payload, game_session_id='게임외-20261025', session_started_utc=None, session_group=None)
+        sender, calls = self.sender([found(), found(), created(SESSION_PAGE), created(PAGE)])
+        sender.send('notion', day)
+        self.assertEqual(calls[4]['body']['properties']['장애']['title'][0]['text']['content'], 'store-1 · 04:58 · 게임 외 10/25')
 
     def test_notion_session_resolved_once_per_process(self):
         # Two devices of one session drop together: the second must not query (and miss) the new page.

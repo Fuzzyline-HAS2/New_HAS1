@@ -40,29 +40,29 @@ KST = timezone(timedelta(hours=9))
 
 
 def validate_generators(value):
-    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "reboot_only", "silence_seconds", "group_min"}:
+    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "always", "silence_seconds", "group_min"}:
         raise ValueError("incidents generators contains unknown fields")
     enabled = value.get("enabled", False)
     if type(enabled) is not bool:
         raise ValueError("incidents generators enabled must be boolean")
-    # devices: silence and reboot alerts; reboot_only: crash reboots of devices no watched game uses.
-    devices, reboot_only = value.get("devices", {}), value.get("reboot_only", {})
-    for group in (devices, reboot_only):
+    # devices: watched during games; always: watched game or not (one no game uses).
+    devices, always = value.get("devices", {}), value.get("always", {})
+    for group in (devices, always):
         if not isinstance(group, dict) or len(group) > 16:
-            raise ValueError("incidents generators devices/reboot_only must map up to 16 names to MACs")
+            raise ValueError("incidents generators devices/always must map up to 16 names to MACs")
         for name, mac in group.items():
             if not isinstance(name, str) or not 0 < len(name) <= 32 or not name.isalnum():
                 raise ValueError("incidents generator names must be short alphanumeric")
             normalize_mac(mac)
-    if enabled and not (devices or reboot_only):
-        raise ValueError("incidents generators needs devices or reboot_only")
+    if enabled and not (devices or always):
+        raise ValueError("incidents generators needs devices or always")
     silence, group = value.get("silence_seconds", SILENCE_SECONDS), value.get("group_min", GROUP_MIN)
     if type(silence) is not int or not 10 <= silence <= 300:
         raise ValueError("incidents generators silence_seconds must be 10..300")
     if type(group) is not int or not 2 <= group <= 16:
         raise ValueError("incidents generators group_min must be 2..16")
-    GeneratorWatch(devices, reboot_only=reboot_only)  # unique names and MACs across both
-    return {"enabled": enabled, "devices": dict(devices), "reboot_only": dict(reboot_only),
+    GeneratorWatch(devices, always=always)  # unique names and MACs across both
+    return {"enabled": enabled, "devices": dict(devices), "always": dict(always),
             "silence_seconds": silence, "group_min": group}
 
 
@@ -166,6 +166,13 @@ class IncidentStore:
             site_id TEXT NOT NULL, session_id TEXT NOT NULL, destination TEXT NOT NULL,
             remote_id TEXT NOT NULL, PRIMARY KEY(site_id,session_id,destination)
           );
+          CREATE TABLE IF NOT EXISTS session_times (
+            site_id TEXT NOT NULL, source_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            started_utc TEXT NOT NULL, ended_utc TEXT, game_group TEXT, theme TEXT,
+            PRIMARY KEY(site_id,source_id,session_id)
+          );
+          CREATE INDEX IF NOT EXISTS session_times_open ON session_times(site_id,source_id) WHERE ended_utc IS NULL;
+          CREATE INDEX IF NOT EXISTS session_times_by_session ON session_times(site_id,session_id,started_utc);
           PRAGMA application_id=1212303665;
           PRAGMA user_version=1;
           COMMIT;
@@ -182,11 +189,11 @@ class IncidentStore:
             details = json.loads(row["details"])
             try:
                 watch.restore(row["incident_id"], details.get("member_macs") or [], parse_utc(details["since_utc"]),
-                              row["session_id"], parse_utc(row["opened_utc"]))
+                              row["session_id"], parse_utc(row["opened_utc"]), always=details.get("watch") == "always")
                 if row["incident_id"] in watch.open:
                     self.watch_ids[row["incident_id"]] = row["incident_id"]
             except (KeyError, ValueError, TypeError):
-                pass  # Ends at the next game change like any incident the watch no longer tracks.
+                pass  # Ends at the next snapshot like any incident the watch no longer tracks.
 
     def cursor(self):
         row = self.db.execute("SELECT value FROM incident_meta WHERE key='cursor'").fetchone()
@@ -224,7 +231,8 @@ class IncidentStore:
         elif kind in ("silence", "group"):
             reboots = details.get("reboots") or []
             rebooted = "; rebooted: " + ", ".join(f"{item.get('name')} ({item.get('label')})" for item in reboots) if reboots else ""
-            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms during the game; last_seen={details.get('last_seen_utc', 'unknown')}{rebooted}. Cause not determined."
+            when = "while always watched" if details.get("watch") == "always" else "during the game"
+            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms {when}; last_seen={details.get('last_seen_utc', 'unknown')}{rebooted}. Cause not determined."
         else:
             summary = f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined."
         payload = {"incident_id": row["incident_id"], "site_id": row["site_id"],
@@ -235,6 +243,9 @@ class IncidentStore:
                    "role": role, "server_reason": details.get("reason"), "close_reason": row["reason"],
                    "opened_at": row["opened_utc"], "last_seen_utc": details.get("last_seen_utc"),
                    "gap_ms": details.get("gap_ms")}
+        # Which game this was, for the Notion session page title.
+        times = self._session_time(row["site_id"], row["session_id"])
+        payload.update(session_started_utc=times.get("started_utc"), session_group=times.get("game_group"))
         if kind:
             payload.update(kind=kind, members=details.get("members"), reset_label=details.get("reset_label"),
                            firmware=details.get("firmware"))
@@ -365,15 +376,50 @@ class IncidentStore:
             since = action["since"].isoformat(timespec="microseconds")
             opened = action["at"].isoformat(timespec="microseconds")
             last_seen = action["last_seen"].isoformat(timespec="microseconds") if action.get("last_seen") else None
+            # An always-watched device is in no game: its outages share the day's card, like reboots outside games.
+            session = "게임외-" + action["at"].astimezone(KST).strftime("%Y%m%d") if action["always"] else self.watch.session
             details = {"role": "generator", "kind": "silence" if single else "group", "members": names,
                        "member_macs": macs, "since_utc": since, "last_seen_utc": last_seen, "gap_ms": action["gap_ms"],
-                       "boot_id": self.watch.boot, "game_session_id": self.watch.session, "reason": "generator_silent"}
+                       "boot_id": self.watch.boot, "game_session_id": session, "reason": "generator_silent"}
+            if action["always"]:
+                details["watch"] = "always"
             inserted = self.db.execute("INSERT OR IGNORE INTO incident_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (incident, site_id, self.watch_source, self.watch.boot or "unknown", self.watch.session,
+                (incident, site_id, self.watch_source, self.watch.boot or "unknown", session,
                  names[0] if single else "발전기 " + "·".join(names), macs[0] if single else None,
                  "open", "generator_silent", opened, opened, canonical_json(details))).rowcount
             if inserted:
                 self._queue(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident,)).fetchone(), channels, 1, "offline")
+
+    def _session_times(self, event, fields, session, channels):
+        """When each game ran, as its snapshots show it: the server sends no start or end time.
+
+        Read in log order, stale snapshots included, so a collector catching up still sees the start."""
+        state = fields.get("game_active")
+        active = session if state is True else None
+        # Only a complete, well-formed snapshot ends a game; a late line from before it started never does.
+        ends = fields.get("snapshot_complete") is True and type(state) is bool and (state is False or session)
+        for (ended,) in [] if not ends else self.db.execute("SELECT session_id FROM session_times WHERE site_id=? AND source_id=? AND ended_utc IS NULL "
+                                        "AND session_id IS NOT ? AND started_utc<?", (event.site_id, event.source_id, active, event.occurred_utc)).fetchall():
+            self.db.execute("UPDATE session_times SET ended_utc=? WHERE site_id=? AND source_id=? AND session_id=?",
+                            (event.occurred_utc, event.site_id, event.source_id, ended))
+            # A card whose last edit came before the game ended would never show the end.
+            card = self.db.execute("SELECT i.* FROM incident_state i JOIN incident_outbox o USING(incident_id) WHERE i.site_id=? AND i.session_id=? "
+                                   "AND o.destination='slack' AND o.version=1 AND o.state='delivered' AND o.remote_id IS NOT NULL "
+                                   "ORDER BY i.opened_utc DESC LIMIT 1", (event.site_id, ended)).fetchone()
+            if card and "slack" in channels:
+                self._refresh(card, ["slack"], None)
+        if active:
+            self.db.execute("INSERT INTO session_times(site_id,source_id,session_id,started_utc,game_group,theme) VALUES (?,?,?,?,?,?) "
+                            "ON CONFLICT(site_id,source_id,session_id) DO UPDATE SET started_utc=min(started_utc,excluded.started_utc), "
+                            # Still running after a recorded end: that end was wrong.
+                            "ended_utc=CASE WHEN ended_utc<excluded.started_utc THEN NULL ELSE ended_utc END, "
+                            "game_group=coalesce(game_group,excluded.game_group), theme=coalesce(theme,excluded.theme)",
+                            (event.site_id, event.source_id, active, event.occurred_utc, _text(fields.get("game_group")), _text(fields.get("theme"))))
+
+    def _session_time(self, site_id, session_id):
+        row = self.db.execute("SELECT started_utc,ended_utc,game_group,theme FROM session_times WHERE site_id=? AND session_id=? "
+                              "ORDER BY started_utc LIMIT 1", (site_id, session_id)).fetchone()
+        return {"started_utc": row[0], "ended_utc": row[1], "game_group": row[2], "theme": row[3]} if row else {}
 
     def _merge_reboot(self, event, found, observed, device_boot, channels):
         """A reboot during this generator's silence (still open, or ended within minutes) caused that
@@ -420,7 +466,7 @@ class IncidentStore:
         if not label:
             return
         # Outside a game the day's reboots share one card and one Notion page; so do the
-        # reboot-only devices' (the academy's AG), which no watched game uses.
+        # always-watched devices' (the academy's AG), which no watched game uses.
         game = self.watch.session if event.mac in self.watch.watched else None
         session = game or "게임외-" + observed.astimezone(KST).strftime("%Y%m%d")
         quiet = (observed - timedelta(seconds=REBOOT_QUIET_SECONDS)).isoformat(timespec="microseconds")
@@ -467,6 +513,8 @@ class IncidentStore:
                 recovered = event.event_type == "device_recovered" and fields.get("reason") == "reconnected" and _fresh(event, now)
                 self._close(incident, "recovered" if recovered else "closed", _text(fields.get("reason")) or "unknown", event.occurred_utc, channels)
             return
+        if event.event_type == "game_monitor_snapshot" and event.occurred_utc:
+            self._session_times(event, fields, session, channels)
         if event.event_type != "game_monitor_snapshot" or not boot or not _fresh(event, now):
             return
         sequence = fields.get("event_seq")
@@ -519,9 +567,16 @@ class IncidentStore:
         for row in rows:
             if row["reason"] == "generator_silent":
                 # Not in the server's list by design: the generator watch ends it with the game.
-                # One it no longer tracks (watch disabled, unreadable details) ends here instead.
+                # One it no longer tracks (watch disabled, unreadable details) ends here instead; an
+                # always-watched one has no game to end with, so it ends as soon as nothing watches it.
                 tracked = self.watch and row["incident_id"] in self.watch_ids.values()
-                if not tracked and (row["boot_id"] != boot or row["session_id"] != session or not fields["game_active"]):
+                try:
+                    always = json.loads(row["details"]).get("watch") == "always"
+                except (ValueError, AttributeError):
+                    always = False
+                if not tracked and always:
+                    self._close(row["incident_id"], "closed", "watch_removed", event.occurred_utc, channels)
+                elif not tracked and (row["boot_id"] != boot or row["session_id"] != session or not fields["game_active"]):
                     self._close(row["incident_id"], "closed", "game_ended", event.occurred_utc, channels)
                 continue
             if row["boot_id"] != boot or row["session_id"] != session or row["incident_id"] not in ids:
@@ -544,14 +599,16 @@ class IncidentStore:
             self.db.execute("UPDATE incident_outbox SET state='canceled',error_code='stale_reboot' WHERE version=1 AND state IN ('pending','retryable') "
                             "AND incident_id IN (SELECT incident_id FROM incident_state WHERE reason='generator_reboot' AND opened_utc<?)", (stale,))
             # A first alert needs the incident in the server's current list. The collector's own
-            # generator silences need only the same server boot and game; a generator reboot is
-            # already over and needs only a healthy source.
-            rows = self.db.execute("""SELECT o.*,i.site_id,i.source_id,i.boot_id,i.session_id,i.state AS incident_state,i.reason AS incident_reason
+            # generator silences need only the same server boot and game (an always-watched one, only
+            # to be still open); a generator reboot is already over and needs only a healthy source.
+            rows = self.db.execute("""SELECT o.*,i.site_id,i.source_id,i.boot_id,i.session_id,i.state AS incident_state,i.reason AS incident_reason,
+                json_extract(i.details,'$.watch') AS incident_watch
               FROM incident_outbox o JOIN incident_state i USING(incident_id)
               JOIN incident_sources s ON s.site_id=i.site_id AND s.source_id=i.source_id
               WHERE o.state IN ('pending','retryable') AND o.next_attempt<=?
                 AND s.validated_run=? AND s.deadline>=?
                 AND (o.version>1 OR i.reason='generator_reboot'
+                  OR (i.state='open' AND i.reason='generator_silent' AND json_extract(i.details,'$.watch')='always')
                   OR (i.state='open' AND s.boot_id=i.boot_id AND s.session_id=i.session_id
                   AND (i.reason='generator_silent' OR EXISTS(SELECT 1 FROM json_each(s.active_ids) WHERE value=i.incident_id))))
               ORDER BY o.id LIMIT 1""", (now_epoch,run_id,mono)).fetchall()
@@ -560,7 +617,9 @@ class IncidentStore:
                 if not source or source["validated_run"] != run_id or source["deadline"] < mono:
                     continue
                 listed = row["incident_reason"] == "generator_silent" or row["incident_id"] in json.loads(source["active_ids"])
-                if row["version"] == 1 and row["incident_reason"] != "generator_reboot" and (row["incident_state"] != "open" or source["boot_id"] != row["boot_id"] or source["session_id"] != row["session_id"] or not listed):
+                same_game = source["boot_id"] == row["boot_id"] and source["session_id"] == row["session_id"]
+                if row["version"] == 1 and row["incident_reason"] != "generator_reboot" and (row["incident_state"] != "open" or not listed
+                                                                                              or not (same_game or row["incident_watch"] == "always")):
                     continue
                 self.db.execute("UPDATE incident_outbox SET state='sending',attempts=attempts+1 WHERE id=?", (row["id"],))
                 result = dict(row)
@@ -633,7 +692,8 @@ class IncidentStore:
         counts = dict(self.db.execute("SELECT state,count(*) " + announced + " GROUP BY state", params).fetchall())
         return {"site_id": row["site_id"], "session_id": row["session_id"], "ts": links.get("slack"),
                 "notion_page": links.get("notion"), "event_page": event[0] if event else None,
-                "incident_id": incident_id, "incidents": incidents, "counts": counts}
+                "incident_id": incident_id, "incidents": incidents, "counts": counts,
+                **self._session_time(row["site_id"], row["session_id"])}
 
     def defer(self, delivery_id, *, now_epoch, delay):
         # Waiting for late device uploads sends nothing, so it is not a delivery attempt.
@@ -716,7 +776,7 @@ class IncidentRuntime:
 
     def _watch_generators(self, state):
         if self.generators.get("enabled"):
-            state.attach_generators(GeneratorWatch(self.generators["devices"], reboot_only=self.generators.get("reboot_only"),
+            state.attach_generators(GeneratorWatch(self.generators["devices"], always=self.generators.get("always"),
                 silence_seconds=self.generators["silence_seconds"], group_min=self.generators["group_min"]), self.source_id)
 
     def _routed(self, event, state):

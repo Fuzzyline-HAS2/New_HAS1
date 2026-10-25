@@ -472,7 +472,9 @@ class RuntimeTests(unittest.TestCase):
                     raw.save(Event(site_id="store-1",source="device",source_id=MAC,event_id="r1:9",observed_utc=uploaded,clock_quality="uptime_only",mac=MAC,event_type="WifiEvent",fields={"ring":"r1","seq":9,"boot":3,"uptime_ms":5000,"values":[21,200,6,0],"text":"ap:112233445566"}))
                     raw.save(event("alarm_cleared",seq=2,when=closed))
                     raw.save(event(seq=3,when=utc_now(),active=False,session=None))
-                    wait_for(6)
+                    wait_for(7)
+                    # The game's end edits its card once (to show when it ended); nothing else extra.
+                    self.assertEqual([channel for channel,payload in calls if payload.get("refresh")],["slack"])
                     channel,notice=calls[-1]
                     self.assertEqual((channel,notice["evidence_notice"],notice["highlights"]),("slack",True,["와이파이 끊김 원인 200 BEACON_TIMEOUT"]))
                     self.assertEqual(notice["slack_session"]["event_page"],page)

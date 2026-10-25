@@ -294,7 +294,7 @@ KST = timezone(timedelta(hours=9), "KST")
 SLACK_HEADERS = {"offline": "🔴 장치 연결 끊김", "recovered": "🟢 장치 복구됨",
                  "monitoring_ended": "⚪ 모니터링 종료 (복구 확인 안 됨)", "rebooted": "🔁 장치 재부팅"}
 CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active": "게임 종료 또는 서버 목록에서 제외",
-                 "game_ended": "게임 종료", "server_restarted": "서버 재시작"}
+                 "game_ended": "게임 종료", "server_restarted": "서버 재시작", "watch_removed": "감시 대상에서 제외"}
 # generator_watch reboot labels (esp_reset_reason_t).
 REBOOT_LABELS = {"panic": "패닉(크래시)", "int_wdt": "인터럽트 워치독", "task_wdt": "태스크 워치독", "wdt": "워치독",
                  "brownout": "전압 저하", "pwr_glitch": "전원 글리치", "cpu_lockup": "CPU 잠김",
@@ -429,10 +429,23 @@ def _session_counts(session):
     return number("open"), number("recovered"), number("closed")
 
 
+def _session_label(game):
+    # The collector's own day session for events outside games reads as a date, not an ID.
+    day = re.fullmatch(r"게임외-\d{4}(\d{2})(\d{2})", game or "")
+    return f"게임 외 {day[1]}/{day[2]}" if day else f"세션 {game}" if game else None
+
+
+def _kst_since(value, base):
+    """KST time of value, without its date when that is the date of base."""
+    shown, since = _kst(value), _kst(base)
+    return shown[6:] if shown and since and shown[:5] == since[:5] else shown
+
+
 def slack_session_card(payload, session):
     """One incident card per game session, edited in place like PagerDuty/Opsgenie alerts.
 
-    plain_text only, except the Notion link whose URL and label the collector builds itself.
+    A short title, which game it was, a summary of its incidents, the device lines, then where to
+    look next. plain_text only, except the Notion link whose URL and label the collector builds itself.
     """
     items = [item for item in session.get("incidents") or [] if isinstance(item, dict)]
     open_count, recovered, unrecovered = _session_counts(session)
@@ -445,24 +458,33 @@ def slack_session_card(payload, session):
         overall = "🟠 미복구 종료 포함"
     else:
         overall = "🟢 모두 복구"
-    title = " · ".join(part for part in (overall, f"세션 {game}" if game else None, site) if part)
+    title = " · ".join(part for part in (overall, _session_label(game)) if part)
     opened = [stamp for stamp in (_parse_time(item.get("opened_utc")) for item in items) if stamp]
-    counts = f"{total}건 (복구 {recovered} · 미복구 {unrecovered} · 진행 중 {open_count})"
+    states = ", ".join(f"{label} {count}" for label, count in (("진행 중", open_count), ("미복구", unrecovered), ("복구", recovered)) if count)
     # Same automatic rule as the Notion incident DB; SEV1 (game stopped, refund) is set by people.
-    severity = "SEV2 · 미복구 있음" if unrecovered else "SEV3 · 자동 판정"
-    fields = [("매장", site), ("게임 세션", game), ("처음 끊김", _kst(min(opened).isoformat()) if opened else None),
-              ("장애", counts), ("심각도", severity)]
+    severity = "SEV2 미복구 있음" if unrecovered else "SEV3 자동 판정"
+    # Which game: group, theme and when it ran, as the collector saw its snapshots (none outside games).
+    started, ended = session.get("started_utc"), session.get("ended_utc")
+    group, theme = _text(session.get("game_group"), 20), _text(session.get("theme"), 40)
+    end = _kst_since(ended, started)
+    period = _kst(started) and _kst(started) + " 시작" + (f" ~ {end} 종료" if end else "")
+    which = [group and group.upper(), theme, period, site]
+    first = _kst_since(min(opened).isoformat(), started) if opened else None
+    summary = [f"장애 {total}건" + (f" ({states})" if states else ""), first and "첫 장애 " + first, severity]
     # The collector lists unresolved incidents first, then the newest.
     lines = [_session_item_line(item) for item in items[:SESSION_LINES]]
     if total > len(lines):
         lines.append(f"외 {total - len(lines)}건")
-    context = [{"type": "plain_text", "text": "원인은 아직 확정되지 않았습니다. 장치별 경과는 스레드에 있습니다."}]
     link = _notion_link(session.get("notion_page"), "📒 노션 장애 페이지")
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
-              {"type": "section", "fields": [{"type": "plain_text", "text": f"{label}\n{value}"} for label, value in fields if value]},
+              *[{"type": "context", "elements": [{"type": "plain_text", "text": " · ".join(part for part in parts if part)}]}
+                for parts in (which, summary) if any(parts)],
+              {"type": "divider"},
               {"type": "section", "text": {"type": "plain_text", "text": ("\n".join(lines) or "장치 정보 없음")[:2900]}},
-              {"type": "context", "elements": ([link] if link else []) + context}]
-    return {"text": _fallback(title), "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+              {"type": "context", "elements": ([link] if link else []) + [{"type": "plain_text", "text": "원인 미확정 · 장치별 경과는 스레드"}]}]
+    # The notification preview names the store too: the title alone does not.
+    return {"text": _fallback(" · ".join(part for part in (title, site) if part)), "blocks": blocks,
+            "unfurl_links": False, "unfurl_media": False}
 
 
 def slack_event_reply(payload, session):
@@ -519,7 +541,7 @@ def _slack_api(call, token, method, body):
 
 
 def _send_slack_session(call, token, channel_id, payload):
-    """Edit (or open) the game session's card; only an unrecovered device is also posted to its thread.
+    """Edit (or open) the game session's card, and reply in its thread to what needs a person.
 
     Drops and recoveries live on the card, so the thread stays free for people working the incident.
     """
@@ -565,9 +587,8 @@ def _send_slack_session(call, token, channel_id, payload):
     reopened = payload.get("status") == "offline" and edited and open_count == 1 and recovered + unrecovered > 0
     if payload.get("status") not in ("monitoring_ended", "rebooted") and not reopened:
         return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
-    # A reboot stays in the thread; only what needs a person now is also shown in the channel.
-    reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent,
-                 reply_broadcast=payload.get("status") != "rebooted")
+    # Replies stay in the thread, never also shown in the channel: the channel holds only the cards.
+    reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent)
     _, failure = _slack_api(call, token, "chat.postMessage", reply)
     if failure:
         # The card exists either way; keep its ts so the retry threads under it.
@@ -685,8 +706,12 @@ def _notion_session(call, token, source_id, site, session, payload, cache):
         return None, failure
     if not page_id:
         opened = _iso(_opened_at(payload, payload.get("status")))
-        when = _kst(opened)
-        properties = {"장애": {"title": _rich(" · ".join(part for part in (site, when and when[:11], "세션 " + session) if part))},
+        when, started, group = _kst(opened), _kst(payload.get("session_started_utc")), _text(payload.get("session_group"), 20)
+        # A game is named by its group and start; a day outside games by its first incident.
+        day = session.startswith("게임외-")  # its label already carries the date
+        title = (site, _session_label(session), group and group.upper(), started[:11] + " 시작") if started else \
+            (site, when and (when[6:11] if day else when[:11]), _session_label(session))
+        properties = {"장애": {"title": _rich(" · ".join(part for part in title if part))},
                       "세션 키": {"rich_text": _rich(key)}, "매장": {"select": {"name": site}},
                       "게임 세션 ID": {"rich_text": _rich(session)}}
         if opened:
