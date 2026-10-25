@@ -16,7 +16,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from generator_watch import GROUP_MIN, SILENCE_SECONDS, GeneratorWatch, boot_reason
+from generator_watch import ALWAYS_REPORTED, GROUP_MIN, RESET_LABELS, SILENCE_SECONDS, GeneratorWatch, boot_reason
 from incident_evidence import GIVE_UP_SECONDS, summarize, wait_seconds
 from telemetry import Event, canonical_json, normalize_mac, parse_utc, utc_now
 
@@ -33,29 +33,37 @@ REBOOT_FRESH_SECONDS = 300
 REBOOT_QUIET_SECONDS = 600
 # A reboot alert still undelivered after this (source down overnight) is no longer news.
 REBOOT_DELIVERY_SECONDS = 3600
+# A Boot record arrives after the generator is back (upload, then import): a silence that ended
+# this recently is the outage that reboot caused.
+REBOOT_MERGE_SECONDS = 300
 KST = timezone(timedelta(hours=9))
 
 
 def validate_generators(value):
-    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "silence_seconds", "group_min"}:
+    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "reboot_only", "silence_seconds", "group_min"}:
         raise ValueError("incidents generators contains unknown fields")
     enabled = value.get("enabled", False)
     if type(enabled) is not bool:
         raise ValueError("incidents generators enabled must be boolean")
-    devices = value.get("devices", {})
-    if not isinstance(devices, dict) or len(devices) > 16 or (enabled and not devices):
-        raise ValueError("incidents generators devices must map 1-16 names to MACs")
-    for name, mac in devices.items():
-        if not isinstance(name, str) or not 0 < len(name) <= 32 or not name.isalnum():
-            raise ValueError("incidents generator names must be short alphanumeric")
-        normalize_mac(mac)
+    # devices: silence and reboot alerts; reboot_only: crash reboots of devices no watched game uses.
+    devices, reboot_only = value.get("devices", {}), value.get("reboot_only", {})
+    for group in (devices, reboot_only):
+        if not isinstance(group, dict) or len(group) > 16:
+            raise ValueError("incidents generators devices/reboot_only must map up to 16 names to MACs")
+        for name, mac in group.items():
+            if not isinstance(name, str) or not 0 < len(name) <= 32 or not name.isalnum():
+                raise ValueError("incidents generator names must be short alphanumeric")
+            normalize_mac(mac)
+    if enabled and not (devices or reboot_only):
+        raise ValueError("incidents generators needs devices or reboot_only")
     silence, group = value.get("silence_seconds", SILENCE_SECONDS), value.get("group_min", GROUP_MIN)
     if type(silence) is not int or not 10 <= silence <= 300:
         raise ValueError("incidents generators silence_seconds must be 10..300")
     if type(group) is not int or not 2 <= group <= 16:
         raise ValueError("incidents generators group_min must be 2..16")
-    GeneratorWatch(devices)  # unique names and MACs
-    return {"enabled": enabled, "devices": dict(devices), "silence_seconds": silence, "group_min": group}
+    GeneratorWatch(devices, reboot_only=reboot_only)  # unique names and MACs across both
+    return {"enabled": enabled, "devices": dict(devices), "reboot_only": dict(reboot_only),
+            "silence_seconds": silence, "group_min": group}
 
 
 def validate_config(value, base_path, telemetry_database, device_database, server):
@@ -206,7 +214,7 @@ class IncidentStore:
     def expire(self, run_id, mono):
         self.db.execute("UPDATE incident_sources SET validated_run=NULL,health='server_stale' WHERE validated_run=? AND deadline<?", (run_id, mono))
 
-    def _queue(self, row, channels, version, status):
+    def _payload(self, row, status):
         details = json.loads(row["details"])
         role = _text(details.get("role")) or "unknown"
         reason = row["reason"] or "unknown"
@@ -214,7 +222,9 @@ class IncidentStore:
         if kind == "reboot":
             summary = f"Generator {row['device_id']} rebooted: reset reason {details.get('reset_reason')} ({details.get('reset_label')}), firmware {details.get('firmware')}. Cause not determined."
         elif kind in ("silence", "group"):
-            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms during the game; last_seen={details.get('last_seen_utc', 'unknown')}. Cause not determined."
+            reboots = details.get("reboots") or []
+            rebooted = "; rebooted: " + ", ".join(f"{item.get('name')} ({item.get('label')})" for item in reboots) if reboots else ""
+            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms during the game; last_seen={details.get('last_seen_utc', 'unknown')}{rebooted}. Cause not determined."
         else:
             summary = f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined."
         payload = {"incident_id": row["incident_id"], "site_id": row["site_id"],
@@ -228,6 +238,39 @@ class IncidentStore:
         if kind:
             payload.update(kind=kind, members=details.get("members"), reset_label=details.get("reset_label"),
                            firmware=details.get("firmware"))
+        return payload, kind
+
+    def current(self, incident_id, queued):
+        """A refresh as of now: one retried after the incident recovered must not show it open again."""
+        row = self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident_id,)).fetchone()
+        if not row:
+            return queued
+        payload, _ = self._payload(row, {"open": "offline", "recovered": "recovered"}.get(row["state"], "monitoring_ended"))
+        return dict(payload, refresh=True, **{key: queued[key] for key in ("slack_ts", "notion_page_id", "reboot") if key in queued})
+
+    def _refresh(self, row, channels, reboot):
+        """Re-render what was already sent for this incident. Card edits and page updates notify nobody."""
+        # Alerts still queued carry the summary from when they were queued.
+        for pending in self.db.execute("SELECT id,payload FROM incident_outbox WHERE incident_id=? AND version<=2 AND state IN ('pending','retryable')",
+                                       (row["incident_id"],)).fetchall():
+            queued = json.loads(pending["payload"])
+            queued["summary"] = self._payload(row, queued.get("status"))[0]["summary"]
+            self.db.execute("UPDATE incident_outbox SET payload=? WHERE id=?", (canonical_json(queued), pending["id"]))
+        payload = self.current(row["incident_id"], {})
+        for channel in channels:
+            sent = self.db.execute("SELECT remote_id FROM incident_outbox WHERE incident_id=? AND destination=? AND version=1 AND state='delivered'",
+                                   (row["incident_id"], channel)).fetchone()
+            if not sent or not sent[0]:
+                continue  # Not announced yet: the first alert carries the details.
+            # Slack also notes the reboot quietly in the card's thread.
+            linked = {"slack_ts": sent[0], "reboot": reboot} if channel == "slack" else {"notion_page_id": sent[0]}
+            version = max(4, self.db.execute("SELECT coalesce(max(version),0)+1 FROM incident_outbox WHERE incident_id=? AND destination=?",
+                                             (row["incident_id"], channel)).fetchone()[0])
+            self.db.execute("INSERT INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)",
+                            (row["incident_id"], channel, version, canonical_json(dict(payload, **linked))))
+
+    def _queue(self, row, channels, version, status):
+        payload, kind = self._payload(row, status)
         for channel in channels:
             linked = {}
             if version > 1:
@@ -332,24 +375,59 @@ class IncidentStore:
             if inserted:
                 self._queue(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident,)).fetchone(), channels, 1, "offline")
 
+    def _merge_reboot(self, event, found, observed, device_boot, channels):
+        """A reboot during this generator's silence (still open, or ended within minutes) caused that
+        outage: one event, so note it on that line instead of a second line and blackbox table."""
+        stamp = observed.isoformat(timespec="microseconds")
+        since = (observed - timedelta(seconds=REBOOT_MERGE_SECONDS)).isoformat(timespec="microseconds")
+        name = self.watch.names[event.mac]
+        # Only an outage that is or will be announced: one whose alert was canceled or failed would hide the reboot.
+        for row in self.db.execute("SELECT * FROM incident_state i WHERE site_id=? AND source_id=? AND opened_utc<=? "
+                                   "AND (state='open' OR updated_utc>=?) AND json_extract(details,'$.kind') IN ('silence','group') "
+                                   "AND EXISTS(SELECT 1 FROM incident_outbox o WHERE o.incident_id=i.incident_id AND o.version=1 "
+                                   "AND o.state IN ('pending','retryable','sending','delivered')) "
+                                   "ORDER BY opened_utc DESC", (event.site_id, self.watch_source, stamp, since)).fetchall():
+            details = json.loads(row["details"])
+            if event.mac not in (details.get("member_macs") or []):
+                continue
+            if details.get("kind") == "group" and found[0] in ALWAYS_REPORTED:
+                return False  # a crash in a shared outage is news of its own, with its blackbox table
+            reboots = details.get("reboots") or []
+            if any(item.get("name") == name for item in reboots):
+                return False  # its second reboot is news of its own
+            entry = {"name": name, "label": RESET_LABELS.get(found[0], f"reset_{found[0]}"), "firmware": found[1],
+                     "device_boot": device_boot, "observed_utc": stamp}
+            details["reboots"] = reboots + [entry]
+            self.db.execute("UPDATE incident_state SET details=? WHERE incident_id=?", (canonical_json(details), row["incident_id"]))
+            # Its card and page were usually sent before this upload arrived: edit them.
+            self._refresh(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (row["incident_id"],)).fetchone(), channels, entry)
+            return True
+        return False
+
     def _generator_boot(self, event, now, channels):
         """A crash reboot is over by the time its Boot record arrives: announced once, never left open."""
         found = boot_reason({"event_type": event.event_type, "fields": event.fields}) if self.watch else None
         if not found or event.mac not in self.watch.names:
             return
-        label = self.watch.reboot_label(found[0])
         age = (parse_utc(now) - parse_utc(event.observed_utc)).total_seconds()
-        if not label or not -2 <= age <= REBOOT_FRESH_SECONDS:
+        if not -2 <= age <= REBOOT_FRESH_SECONDS:
             return
         observed = parse_utc(event.observed_utc)
-        # Outside a game the day's reboots share one card and one Notion page.
-        session = self.watch.session or "게임외-" + observed.astimezone(KST).strftime("%Y%m%d")
+        device_boot = event.fields.get("boot")
+        if self._merge_reboot(event, found, observed, device_boot, channels):
+            return
+        label = self.watch.reboot_label(found[0], event.mac)
+        if not label:
+            return
+        # Outside a game the day's reboots share one card and one Notion page; so do the
+        # reboot-only devices' (the academy's AG), which no watched game uses.
+        game = self.watch.session if event.mac in self.watch.watched else None
+        session = game or "게임외-" + observed.astimezone(KST).strftime("%Y%m%d")
         quiet = (observed - timedelta(seconds=REBOOT_QUIET_SECONDS)).isoformat(timespec="microseconds")
         # Within one session only: a reboot once a game starts is news again.
         if self.db.execute("SELECT 1 FROM incident_state WHERE reason='generator_reboot' AND site_id=? AND mac=? AND session_id=? AND opened_utc>=?",
                            (event.site_id, event.mac, session, quiet)).fetchone():
             return
-        device_boot = event.fields.get("boot")
         details = {"role": "generator", "kind": "reboot", "reset_reason": found[0], "reset_label": label,
                    "firmware": found[1], "device_boot": device_boot, "game_session_id": session,
                    # The blackbox table is anchored on this record, not on the upload's arrival time.
@@ -508,6 +586,11 @@ class IncidentStore:
                 self.db.execute("INSERT OR REPLACE INTO session_links VALUES (?,?,?,?)", (incident["site_id"], incident["session_id"], row["destination"], parent))
             if on_delivered and state == "delivered":
                 on_delivered()  # same transaction: a follow-up cannot be lost between the two writes
+            if row["version"] == 1 and state == "delivered" and result.remote_id:
+                # Reboots noted while this alert was on its way skipped this channel: edit it now.
+                noted = json.loads(incident["details"]).get("reboots") or []
+                for entry in noted if row["destination"] == "slack" else noted[-1:]:
+                    self._refresh(incident, [row["destination"]], entry)
             if row["version"] == 1 and incident["reason"] == "generator_reboot":
                 if state == "delivered" and row["destination"] == "notion" and result.remote_id:
                     # No follow-up exists for a reboot; its page gets the blackbox table (crash records) directly.
@@ -545,7 +628,7 @@ class IncidentStore:
         params = (row["site_id"], row["session_id"], incident_id)
         # Unresolved first, then newest: a flapping session must not hide the device that is down now.
         incidents = [dict(item) for item in self.db.execute(
-            "SELECT incident_id,device_id,state,opened_utc,updated_utc,reason " + announced +
+            "SELECT incident_id,device_id,state,opened_utc,updated_utc,reason,json_extract(details,'$.reboots') AS reboots " + announced +
             " ORDER BY state='open' DESC,opened_utc DESC,incident_id LIMIT 64", params)]
         counts = dict(self.db.execute("SELECT state,count(*) " + announced + " GROUP BY state", params).fetchall())
         return {"site_id": row["site_id"], "session_id": row["session_id"], "ts": links.get("slack"),
@@ -633,7 +716,7 @@ class IncidentRuntime:
 
     def _watch_generators(self, state):
         if self.generators.get("enabled"):
-            state.attach_generators(GeneratorWatch(self.generators["devices"],
+            state.attach_generators(GeneratorWatch(self.generators["devices"], reboot_only=self.generators.get("reboot_only"),
                 silence_seconds=self.generators["silence_seconds"], group_min=self.generators["group_min"]), self.source_id)
 
     def _routed(self, event, state):
@@ -756,6 +839,8 @@ class IncidentRuntime:
                             if delay:
                                 state.defer(row["id"], now_epoch=time.time(), delay=delay)
                                 continue
+                        if payload.get("refresh") is True:
+                            payload = state.current(row["incident_id"], payload)
                         if row["destination"] == "slack" and self.slack_cards:
                             payload = dict(payload, slack_session=state.slack_session(row["incident_id"]))
                         result = sender.send(row["destination"],payload)

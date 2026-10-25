@@ -32,14 +32,20 @@ SERVER_PAUSE_SECONDS = 5
 # esp_reset_reason_t values from the generator's device.boot record.
 ALWAYS_REPORTED = {4: "panic", 5: "int_wdt", 6: "task_wdt", 7: "wdt", 9: "brownout", 14: "pwr_glitch", 15: "cpu_lockup"}
 IN_GAME_REPORTED = {1: "poweron", 2: "ext"}
+# Every reason a reboot noted on an outage can carry, including the unannounced SW restart.
+RESET_LABELS = {**IN_GAME_REPORTED, 3: "sw", **ALWAYS_REPORTED}
 
 
 class GeneratorWatch:
-    def __init__(self, generators, *, silence_seconds=SILENCE_SECONDS, group_min=GROUP_MIN,
+    def __init__(self, generators, *, reboot_only=None, silence_seconds=SILENCE_SECONDS, group_min=GROUP_MIN,
                  group_window_seconds=GROUP_WINDOW_SECONDS, pause_seconds=SERVER_PAUSE_SECONDS):
-        self.names = {normalize_mac(mac): name for name, mac in generators.items()}
-        if len(self.names) != len(generators) or len(set(self.names.values())) != len(self.names):
+        reboot_only = reboot_only or {}
+        everything = list(generators.items()) + list(reboot_only.items())
+        self.names = {normalize_mac(mac): name for name, mac in everything}
+        if len(self.names) != len(everything) or len(set(self.names.values())) != len(self.names):
             raise ValueError("generator names and MACs must be unique")
+        # Reboot-only devices (the academy's AG) are not used by the games the watch follows.
+        self.watched = {normalize_mac(mac) for mac in generators.values()}
         self.silence = timedelta(seconds=silence_seconds)
         # Never wider than half the silence, or healthy generators would join a single one's group.
         self.window = timedelta(seconds=min(group_window_seconds, silence_seconds / 2))
@@ -67,7 +73,7 @@ class GeneratorWatch:
         """Re-adopt an incident still open in the store after a collector restart.
 
         Its game is adopted too: the next snapshot of that same game must not end it."""
-        macs = sorted((mac for mac in (normalize_mac(item) for item in macs) if mac in self.names), key=lambda mac: self.names[mac])
+        macs = sorted((mac for mac in (normalize_mac(item) for item in macs) if mac in self.watched), key=lambda mac: self.names[mac])
         if macs and session:
             self.open[key] = {"macs": macs, "since": since, "opened": opened or since, "back": set()}
             if self.session is None:
@@ -122,7 +128,7 @@ class GeneratorWatch:
             return []
         # A group member that came back is watched again while the rest are still out.
         busy = {mac for item in self.open.values() for mac in set(item["macs"]) - item["back"]}
-        silent = {mac: self.clock - self._baseline(mac) for mac in self.names if mac not in busy}
+        silent = {mac: self.clock - self._baseline(mac) for mac in self.watched if mac not in busy}
         by_name = lambda mac: self.names[mac]  # noqa: E731
         over = sorted((mac for mac, gap in silent.items() if gap >= self.silence), key=by_name)
         if not over:
@@ -143,11 +149,14 @@ class GeneratorWatch:
                             "gap_ms": int((self.clock - since).total_seconds() * 1000)})
         return actions
 
-    def reboot_label(self, reason):
-        """The reset reason worth a notification, or None (OTA and self-recovery restarts are expected)."""
+    def reboot_label(self, reason, mac=None):
+        """The reset reason worth a notification, or None (OTA and self-recovery restarts are expected).
+
+        A power-on matters only for a generator the running game uses, not a reboot-only one."""
         if reason in ALWAYS_REPORTED:
             return ALWAYS_REPORTED[reason]
-        if self.session is not None and reason in IN_GAME_REPORTED:
+        watched = mac is None or normalize_mac(mac) in self.watched
+        if watched and self.session is not None and reason in IN_GAME_REPORTED:
             return IN_GAME_REPORTED[reason]
         return None
 
@@ -174,7 +183,7 @@ def replay(events, watch):
             except ValueError:
                 continue
             found = boot_reason(event) if mac in watch.names else None
-            label = found and watch.reboot_label(found[0])
+            label = found and watch.reboot_label(found[0], mac)
             if label:
                 decisions.append({"type": "reboot", "name": watch.names[mac], "reason": label,
                                   "firmware": found[1], "at": event.get("observed_utc"), "session": watch.session})
@@ -196,9 +205,11 @@ def main():
     parser = argparse.ArgumentParser(description="Replay stored telemetry through the generator watch (read-only)")
     parser.add_argument("--telemetry-database", required=True)
     parser.add_argument("--device", action="append", required=True, metavar="NAME=MAC")
+    parser.add_argument("--reboot-only", action="append", default=[], metavar="NAME=MAC")
     parser.add_argument("--since", help="ISO UTC start of the replay")
     args = parser.parse_args()
-    watch = GeneratorWatch(dict(item.split("=", 1) for item in args.device))
+    watch = GeneratorWatch(dict(item.split("=", 1) for item in args.device),
+                           reboot_only=dict(item.split("=", 1) for item in args.reboot_only))
     uri = Path(args.telemetry_database).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=5)) as raw:
         rows = raw.execute("SELECT e.payload FROM telemetry_ingest j JOIN telemetry_events e USING(site_id,source,source_id,event_id) "

@@ -1,5 +1,6 @@
 """Generator silence and crash-reboot rule: decisions, incident flow and cards."""
 from datetime import timedelta
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -19,6 +20,8 @@ from telemetry import Event, TelemetryStore, parse_utc
 START = parse_utc("2026-10-24T23:00:00+00:00")
 GENERATORS = {"BG": "A4F00FD90BCC", "LG": "A4F00FD906BC", "SG": "A4F00FD90A74", "TG": "B03FD32DFEE0", "UG": "A4F00FD90930"}
 GLOVE = "A4F00FD90B34"
+AG = "A4F00FD90B44"  # the academy generator: reboot alerts only
+CARD, PAGE = "1700000000.000100", "abcdefab-1234-1234-1234-123456789abc"
 
 
 def at(seconds):
@@ -159,11 +162,14 @@ class WatchTests(unittest.TestCase):
 
     def test_config(self):
         self.assertEqual(validate_generators({"enabled": False}),
-                         {"enabled": False, "devices": {}, "silence_seconds": 20, "group_min": 3})
+                         {"enabled": False, "devices": {}, "reboot_only": {}, "silence_seconds": 20, "group_min": 3})
         self.assertEqual(validate_generators({"enabled": True, "devices": {"BG": "a4:f0:0f:d9:0b:cc"}})["devices"], {"BG": "a4:f0:0f:d9:0b:cc"})
+        self.assertEqual(validate_generators({"enabled": True, "reboot_only": {"AG": AG}})["reboot_only"], {"AG": AG})
         for bad in ({"enabled": True}, {"enabled": True, "devices": {"BG": "nope"}},
                     {"enabled": True, "devices": {"BG": GLOVE, "LG": GLOVE}}, {"devices": {}, "silence_seconds": 5},
-                    {"devices": {}, "extra": 1}, {"enabled": "yes", "devices": {}}, {"devices": {"B G": GLOVE}}):
+                    {"devices": {}, "extra": 1}, {"enabled": "yes", "devices": {}}, {"devices": {"B G": GLOVE}},
+                    {"devices": {"BG": AG}, "reboot_only": {"AG": AG}}, {"devices": {"AG": GLOVE}, "reboot_only": {"AG": AG}},
+                    {"reboot_only": ["AG"]}):
             with self.assertRaises(ValueError):
                 validate_generators(bad)
 
@@ -228,6 +234,20 @@ class IncidentFlowTests(unittest.TestCase):
         self.store.finish(row["id"], SimpleNamespace(state="delivered", retry_after=0, code="ok", remote_id=remote_id),
                           now_epoch=100, channels=["slack", "notion"])
 
+    def announce(self):
+        """Deliver everything queued, as the bot would: a card ts for Slack, a page id for Notion."""
+        row = self.claim()
+        while row:
+            self.deliver(row, remote_id=CARD if row["destination"] == "slack" else PAGE)
+            row = self.claim()
+
+    def queued(self):
+        rows = self.store.db.execute("SELECT version,destination,payload FROM incident_outbox WHERE state='pending' ORDER BY id")
+        return [(version, destination, json.loads(payload)) for version, destination, payload in rows]
+
+    def details(self, reason="reconnected"):
+        return json.loads(self.store.db.execute("SELECT details FROM incident_state WHERE reason=?", (reason,)).fetchone()[0])
+
     def incidents(self):
         return [tuple(row) for row in self.store.db.execute("SELECT device_id,state,reason FROM incident_state ORDER BY opened_utc")]
 
@@ -290,6 +310,103 @@ class IncidentFlowTests(unittest.TestCase):
                          ("rebooted", "panic", "게임외-20261025"))
         # No follow-up for a reboot; the Notion page gets the blackbox table.
         self.assertEqual(self.outbox(), [(1, "slack", "delivered"), (1, "notion", "delivered"), (3, "notion", "pending")])
+
+    def test_power_cycle_in_a_game_is_one_incident(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 25, silent=("BG",))
+        self.announce()
+        self.process(request(GENERATORS["BG"], 30, 9998), 30)
+        self.process(boot("BG", 1, 35), 35)  # its Boot record arrives after it is back (12s in the field)
+        self.assertEqual(self.incidents(), [("BG", "recovered", "reconnected")])
+        self.assertEqual(self.details()["reboots"],
+                         [{"name": "BG", "label": "poweron", "firmware": 39, "device_boot": 7, "observed_utc": stamp(35)}])
+        queued = self.queued()
+        self.assertEqual([(version, destination, payload.get("refresh")) for version, destination, payload in queued],
+                         [(2, "slack", None), (2, "notion", None), (3, "notion", None), (4, "slack", True), (4, "notion", True)])
+        self.assertNotIn("rebooted", [payload.get("status") for _, _, payload in queued])  # no reboot alert of its own
+        # The recovery queued before the Boot record arrived now carries it too.
+        self.assertIn("rebooted: BG (poweron)", queued[1][2]["summary"])
+        self.assertEqual((queued[3][2]["slack_ts"], queued[3][2]["reboot"]["label"]), (CARD, "poweron"))
+        self.assertEqual(queued[4][2]["notion_page_id"], PAGE)
+        incident = self.store.db.execute("SELECT incident_id FROM incident_state").fetchone()[0]
+        line = str(slack_session_card(queued[3][2], self.store.slack_session(incident)))
+        self.assertIn("🟢 BG · 10/25 08:00:20 끊김 → 10초 만에 복구 · 전원 투입 재부팅", line)
+        # A crash with no silence (back within 20s) is still its own reboot line.
+        self.process(boot("SG", 4, 40, device_boot=9), 40)
+        self.assertEqual(sorted(row[2] for row in self.incidents()), ["generator_reboot", "reconnected"])
+
+    def test_refresh_is_rendered_when_sent(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 25, silent=("BG",))
+        self.announce()
+        self.process(boot("BG", 3, 26), 26)  # an unannounced software restart still explains the outage
+        refresh = self.queued()[0][2]
+        self.assertEqual((refresh["status"], refresh["reboot"]["label"]), ("offline", "sw"))
+        self.process(request(GENERATORS["BG"], 30, 9998), 30)
+        # Sent after the recovery (a retry, say): it must not show the outage open again.
+        incident = self.store.db.execute("SELECT incident_id FROM incident_state").fetchone()[0]
+        current = self.store.current(incident, refresh)
+        self.assertEqual((current["status"], current["refresh"], current["slack_ts"], current["reboot"]), ("recovered", True, CARD, refresh["reboot"]))
+
+    def test_reboot_merges_only_into_its_own_recent_outage(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 3)
+        self.traffic(4, 25, silent=("BG", "LG", "SG"))
+        self.assertEqual(self.incidents(), [("발전기 BG·LG·SG", "open", "generator_silent")])
+        self.announce()
+        self.process(boot("SG", 1, 26, device_boot=1), 26)
+        self.process(boot("LG", 1, 27, device_boot=1), 27)
+        self.process(boot("SG", 1, 28, device_boot=2), 28)  # a second reboot of the same member is news
+        self.process(boot("UG", 4, 28, device_boot=1), 28)  # not a member
+        self.process(boot("BG", 4, 29, device_boot=1), 29)  # a crash in a shared outage keeps its own table
+        self.assertEqual([item["name"] for item in self.details("generator_silent")["reboots"]], ["SG", "LG"])
+        self.assertEqual(sorted(row[0] for row in self.incidents() if row[2] == "generator_reboot"), ["BG", "SG", "UG"])
+        incident = self.store.db.execute("SELECT incident_id FROM incident_state WHERE reason='generator_silent'").fetchone()[0]
+        line = str(slack_session_card({}, self.store.slack_session(incident)))
+        self.assertIn("장애중 · SG 전원 투입 재부팅 · LG 전원 투입 재부팅", line)  # a group line names the member
+
+    def test_reboot_long_after_the_outage_is_its_own_event(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 25, silent=("BG",))
+        self.announce()
+        self.process(request(GENERATORS["BG"], 30, 9998), 30)
+        self.process(boot("BG", 1, 331), 331)  # five minutes after it recovered
+        self.assertEqual(sorted(row[2] for row in self.incidents()), ["generator_reboot", "reconnected"])
+        self.assertNotIn("reboots", self.details())
+
+    def test_reboot_is_not_hidden_in_an_outage_never_announced(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 25, silent=("BG",))
+        self.process(request(GENERATORS["BG"], 26, 9999), 26)  # back before its alert went out: canceled
+        self.process(boot("BG", 1, 30), 30)
+        self.assertEqual(sorted(row[2] for row in self.incidents()), ["generator_reboot", "reconnected"])
+        self.traffic(31, 50, silent=("LG",))
+        self.store.db.execute("UPDATE incident_outbox SET state='permanent' WHERE incident_id IN "
+                              "(SELECT incident_id FROM incident_state WHERE device_id='LG')")  # its alert failed for good
+        self.process(boot("LG", 1, 51, device_boot=1), 51)
+        self.assertEqual(sorted(row[0] for row in self.incidents() if row[2] == "generator_reboot"), ["BG", "LG"])
+
+    def test_reboot_noted_before_its_outage_was_announced_is_sent_after_it(self):
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 25, silent=("BG",))
+        self.process(boot("BG", 1, 26), 26)  # its alert is still queued
+        self.assertEqual([(version, destination) for version, destination, _ in self.queued()], [(1, "slack"), (1, "notion")])
+        self.assertIn("rebooted: BG (poweron)", self.queued()[1][2]["summary"])
+        row = self.claim()
+        self.deliver(row, remote_id=CARD)
+        refresh = self.queued()[-1]
+        self.assertEqual((refresh[0], refresh[1], refresh[2]["reboot"]["label"], refresh[2]["slack_ts"]), (4, "slack", "poweron", CARD))
+
+    def test_reboot_only_device_gets_crash_alerts_only(self):
+        self.store.attach_generators(GeneratorWatch(GENERATORS, reboot_only={"AG": AG}), "server-1")
+        self.process(snapshot(0, 1), 0)
+        self.traffic(0, 40)  # AG never requests during the game: not watched for silence
+        self.process(boot("AG", 1, 41, mac=AG, device_boot=1), 41)  # its power-on during an origin game
+        self.assertEqual(self.incidents(), [])
+        self.process(boot("AG", 4, 42, mac=AG, device_boot=2), 42)
+        self.assertEqual(self.incidents(), [("AG", "recovered", "generator_reboot")])
+        # Filed with the day's out-of-game reboots, not on the card of a game it is not part of.
+        self.assertEqual(self.store.db.execute("SELECT session_id FROM incident_state").fetchone()[0], "게임외-20261025")
 
     def test_reboots_that_are_not_announced(self):
         self.process(snapshot(0, 1, active=False), 0)
@@ -432,14 +549,40 @@ class CardTests(unittest.TestCase):
         self.assertEqual(properties["종료 사유"]["select"]["name"], "재부팅 패닉(크래시)")
         self.assertNotIn("지속(초)", properties)
 
-    def test_reboot_is_threaded_so_someone_is_notified(self):
+    def test_reboot_reply_stays_in_the_thread(self):
         calls = []
         def call(url, method, body, token):
-            calls.append((url.rsplit("/", 1)[-1], body.get("thread_ts")))
+            calls.append((url.rsplit("/", 1)[-1], body.get("thread_ts"), body.get("reply_broadcast")))
             return {"status": 200, "body": '{"ok": true, "ts": "1700000000.000100"}'}
         result = _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", self.REBOOT)
         self.assertEqual(result.state, "delivered")
-        self.assertEqual(calls, [("chat.postMessage", None), ("chat.postMessage", "1700000000.000100")])
+        self.assertEqual(calls, [("chat.postMessage", None, None), ("chat.postMessage", "1700000000.000100", False)])
+        # An unrecovered device at game end is still shown in the channel too.
+        calls.clear()
+        _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", dict(self.REBOOT, status="monitoring_ended"))
+        self.assertEqual(calls[-1][2], True)
+
+    def test_a_reboot_noted_on_its_silence_shows_in_that_line(self):
+        reboots = json.dumps([{"name": "BG", "label": "poweron"}])  # as the collector's json_extract returns it
+        line = slack_session_card(self.REBOOT, {"incidents": [{"device_id": "BG", "state": "recovered", "reason": "reconnected",
+                                                              "reboots": reboots, "opened_utc": stamp(0), "updated_utc": stamp(30)}]})
+        self.assertIn("BG · 10/25 08:00:00 끊김 → 30초 만에 복구 · 전원 투입 재부팅", str(line))
+        broken = slack_session_card(self.REBOOT, {"incidents": [{"device_id": "BG", "state": "open", "reboots": "{bad"}]})
+        self.assertIn("장애중", str(broken))
+
+    def test_noted_reboot_edits_the_card_and_stays_in_the_thread(self):
+        calls = []
+        def call(url, method, body, token):
+            calls.append((url.rsplit("/", 1)[-1], body.get("thread_ts"), body.get("reply_broadcast"), body.get("text")))
+            return {"status": 200, "body": json.dumps({"ok": True, "ts": CARD})}
+        silence = dict(self.REBOOT, device_id="BG", status="recovered", kind="silence", slack_ts=CARD, refresh=True)
+        noted = dict(silence, reboot={"name": "BG", "label": "poweron", "firmware": 39, "observed_utc": stamp(35)})
+        self.assertEqual(_send_slack_session(call, "xoxb-synthetic-token", "C0123456789", noted).state, "delivered")
+        self.assertEqual([item[:3] for item in calls], [("chat.update", None, None), ("chat.postMessage", CARD, False)])
+        self.assertIn("BG 재부팅 · 전원 투입 · 펌웨어 39", calls[1][3])
+        calls.clear()
+        _send_slack_session(call, "xoxb-synthetic-token", "C0123456789", silence)  # nothing to note: the edit is all
+        self.assertEqual([item[0] for item in calls], ["chat.update"])
 
     def test_game_end_close_reason_is_readable(self):
         payload = dict(self.REBOOT, status="monitoring_ended", close_reason="game_ended", kind="silence")
