@@ -113,12 +113,15 @@ class EvidenceTests(unittest.TestCase):
             result = summarize(raw, INCIDENT, CLOSED)
             full = [row for row in result["rows"] if row[0] == "장치"]
             tight = summarize(raw, INCIDENT, CLOSED, limit=5)  # exactly the five key rows
-        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)", "와이파이 끊김 원인 202 AUTH_FAIL", "크래시 기록 1건"])
+        # A power-on boot only re-reports the dump kept in flash: not a crash of this reboot.
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)", "와이파이 끊김 원인 202 AUTH_FAIL",
+                                                "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
         texts = [row[2] for row in full]
         self.assertEqual(texts[1], "모터·LED 출력 변경 30건")
         self.assertEqual(full[1][1], "부팅 1 · 켜진 뒤 0:01:02~0:01:31 (수신 12:03:30)")
         self.assertEqual(texts[2], "🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐")
         self.assertIn("리셋 원인 1 POWERON 전원 켜짐", texts[3])
+        self.assertTrue(texts[4].startswith("이전 크래시 기록 · prior.core:mqtt_task"))
         self.assertIn("끊김 원인 202 AUTH_FAIL", texts[5])
         self.assertEqual(texts[6], "모터·LED 출력 변경 1건")
         self.assertTrue(all(row[1].startswith("부팅 2 ") for row in full[2:]))
@@ -186,6 +189,105 @@ class EvidenceTests(unittest.TestCase):
             result = summarize(raw, INCIDENT, CLOSED)
         self.assertIn("🔁 재부팅 (부팅 1 → 2) · 리셋 원인 1 POWERON 전원 켜짐", [row[2] for row in result["rows"]])
         self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)"])
+
+    def summarize_boots(self, name, *records):
+        path = Path(self.temp.name) / name
+        store = TelemetryStore(path)
+        store.save(device(1, "2026-10-24T02:59:00.000000+00:00", "WifiSummary", "wifi", (1, -72, 0, 0)))
+        for record in records:
+            store.save(record)
+        store.close()
+        with closing(_open_telemetry(path)) as raw:
+            return summarize(raw, INCIDENT, CLOSED)
+
+    def test_power_on_boot_reports_the_kept_dump_as_older_not_a_crash(self):
+        # Generator BG (firmware 39), power-off/on test: "크래시 기록 4건" came from the dump kept in flash
+        # (its three records plus the RTC trail marker).
+        boot = dict(boot=2994054713, uptime=0)
+        at = "2026-10-24T03:03:35.000000+00:00"
+        result = self.summarize_boots(
+            "power-on.db",
+            device(2, at, "Boot", "device.boot", (1, 39, 1, 0), **boot),
+            device(3, at, "Crash", "prior.rtc.coverage", (0, 0, 0, 0), **boot),
+            device(4, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), **boot),
+            device(5, at, "Crash", "prior.core.bt0", (1074326982, 1074327000, 1074327100, 1074327200), **boot),
+            device(6, at, "Crash", "prior.core.elf:abcdef123", (1, 123456, 0, 0), **boot))
+        # One dump, not its four records, and no plain crash claim.
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 1 POWERON 전원 켜짐)", "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
+        dump_rows = [row[2] for row in result["rows"] if "prior.core" in row[2]]
+        self.assertEqual(len(dump_rows), 3)
+        self.assertTrue(all(text.startswith("이전 크래시 기록 · prior.core") for text in dump_rows))
+        # The RTC trail is the previous boot's, not a dump: its row keeps its kind.
+        self.assertIn("크래시 · prior.rtc.coverage", [row[2][:len("크래시 · prior.rtc.coverage")] for row in result["rows"]])
+
+    def test_panic_boot_with_a_dump_is_still_a_crash(self):
+        boot = dict(boot=2994054713, uptime=0)
+        at = "2026-10-24T03:03:35.000000+00:00"
+        result = self.summarize_boots(
+            "panic.db",
+            device(2, at, "Boot", "device.boot", (4, 39, 1, 0), **boot),
+            device(3, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 262660), **boot),
+            device(4, at, "Crash", "prior.core.bt0", (1074326982, 1074327000, 1074327100, 1074327200), **boot),
+            device(5, at, "Crash", "prior.core.elf:abcdef123", (1, 123456, 0, 0), **boot))
+        self.assertEqual(result["highlights"], ["재부팅 1번(리셋 원인 4 PANIC 크래시)", "크래시 덤프 1건"])
+        crash_rows = [row[2] for row in result["rows"] if "prior.core" in row[2]]
+        self.assertTrue(all(text.startswith("크래시 · prior.core") for text in crash_rows))
+
+    def test_dump_header_flags_decide_over_the_boot_record(self):
+        at = "2026-10-24T03:03:35.000000+00:00"
+        # A brownout writes no dump: one logged after it is the kept one, whatever the boot says.
+        brownout = self.summarize_boots(
+            "brownout.db",
+            device(2, at, "Boot", "device.boot", (9, 39, 1, 0), boot=1, uptime=0),
+            device(3, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, (9 << 16) | 4), boot=1, uptime=0))
+        self.assertEqual(brownout["highlights"], ["재부팅 1번(리셋 원인 9 BROWNOUT 전압 저하)", "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
+        # A fresh header is this boot's crash even when its Boot record fell outside the window.
+        fresh = self.summarize_boots(
+            "fresh.db", device(2, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 262660), boot=1, uptime=0))
+        self.assertEqual(fresh["highlights"], ["재부팅 1번", "크래시 덤프 1건"])
+        # Firmware from before the flags: the boot's reset reason decides.
+        legacy = self.summarize_boots(
+            "legacy.db",
+            device(2, at, "Boot", "device.boot", (4, 39, 1, 0), boot=1, uptime=0),
+            device(3, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 4), boot=1, uptime=0),
+            device(4, at, "Boot", "device.boot", (1, 39, 1, 0), boot=2, uptime=0),
+            device(5, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 4), boot=2, uptime=0),
+            device(6, at, "Boot", "device.boot", (9, 39, 1, 0), boot=3, uptime=0),  # a brownout writes no dump
+            device(7, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 4), boot=3, uptime=0))
+        self.assertEqual(legacy["highlights"][1:], ["크래시 덤프 1건", "이전 크래시 덤프 2건(이번 재부팅 원인 아님)"])
+        # A glove's link-loss record is Crash-typed but no dump: neither counted nor relabelled.
+        glove = self.summarize_boots(
+            "glove.db",
+            device(2, at, "Boot", "device.boot", (3, 39, 1, 0), boot=1, uptime=0),
+            device(3, at, "Crash", "prior.link_loss", (1, 2, -70, 0), boot=1, uptime=0))
+        self.assertEqual(glove["highlights"], ["재부팅 1번(리셋 원인 3 SW 소프트웨어 재시작)"])
+        self.assertTrue(any(row[2].startswith("크래시 · prior.link_loss") for row in glove["rows"]))
+
+    def test_each_boot_is_judged_by_its_own_reset_reason(self):
+        power_on, watchdog = dict(boot=2994054713, uptime=0), dict(boot=1111111111, uptime=0)
+        at = "2026-10-24T03:03:35.000000+00:00"
+        result = self.summarize_boots(
+            "mixed.db",
+            device(2, at, "Boot", "device.boot", (1, 39, 1, 0), **power_on),
+            device(3, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), **power_on),
+            device(4, at, "Crash", "prior.core.elf:abcdef123", (1, 123456, 0, 0), **power_on),
+            device(5, at, "Boot", "device.boot", (6, 39, 1, 0), **watchdog),
+            device(6, at, "Crash", "prior.core:loopTask", (1074326982, 70, 0, 393732), **watchdog),
+            device(7, at, "Crash", "prior.core.elf:fedcba987", (1, 654321, 0, 0), **watchdog))
+        self.assertEqual(result["highlights"], ["재부팅 2번(리셋 원인 1 POWERON 전원 켜짐)", "크래시 덤프 1건",
+                                                "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
+
+    def test_crash_records_without_a_crash_reset_are_not_claimed_as_crashes(self):
+        # Soft restart: only the RTC trail of the previous boot. Unknown reason: no Boot record in the window.
+        at = "2026-10-24T03:03:35.000000+00:00"
+        restart = self.summarize_boots(
+            "restart.db",
+            device(2, at, "Boot", "device.boot", (3, 39, 1, 0), boot=2994054713, uptime=0),
+            device(3, at, "Crash", "prior.rtc.event", (5, 1, -1, 0), boot=2994054713, uptime=0))
+        self.assertEqual(restart["highlights"], ["재부팅 1번(리셋 원인 3 SW 소프트웨어 재시작)"])
+        unknown = self.summarize_boots(
+            "unknown.db", device(2, at, "Crash", "prior.core:mqtt_task", (1074326982, 70, 0, 65540), boot=2994054713, uptime=0))
+        self.assertEqual(unknown["highlights"], ["재부팅 1번", "이전 크래시 덤프 1건(이번 재부팅 원인 아님)"])
 
     def test_unmapped_wifi_reasons_still_summarize(self):
         # ESP-IDF has many disconnect codes beyond WIFI_REASONS; they must not break the table.

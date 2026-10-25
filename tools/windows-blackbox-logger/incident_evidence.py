@@ -39,7 +39,12 @@ WIFI_REASONS = {1: "UNSPECIFIED", 2: "AUTH_EXPIRE", 3: "AUTH_LEAVE", 4: "ASSOC_E
 # ESP-IDF esp_reset_reason_t, logged as actual_reset_reason by device.boot.
 RESET_REASONS = {0: "UNKNOWN", 1: "POWERON 전원 켜짐", 2: "EXT 외부 리셋", 3: "SW 소프트웨어 재시작",
                  4: "PANIC 크래시", 5: "INT_WDT 워치독", 6: "TASK_WDT 워치독", 7: "WDT 워치독",
-                 8: "DEEPSLEEP 절전 해제", 9: "BROWNOUT 전압 저하", 10: "SDIO"}
+                 8: "DEEPSLEEP 절전 해제", 9: "BROWNOUT 전압 저하", 10: "SDIO", 14: "PWR_GLITCH 전원 글리치",
+                 15: "CPU_LOCKUP CPU 잠김"}
+# Only these resets write a coredump (HAS1BlackBox coreDumpTask): panic and the panicking watchdogs.
+DUMP_RESETS = {4, 5, 6}
+DUMP_HEADER, DUMP_FRESH = "prior.core:", 0x200
+OLDER_DUMP_LABEL = "이전 크래시 기록"
 # Haptic/LED output changes repeat every few hundred ms during play and say nothing about the link.
 OUTPUT_TAGS = {"motor.applied", "output.applied", "motor.suppressed"}
 # What explains an outage: fetched separately and kept ahead of routine rows at the row limit.
@@ -88,11 +93,11 @@ def _value(name, item):
     return item.get("display", value)
 
 
-def describe_device(event):
+def describe_device(event, older=False):
     fields = event.get("fields") or {}
     kind = event.get("event_type")
     text = fields["text"] if isinstance(fields.get("text"), str) else ""
-    parts = [DEVICE_LABELS.get(kind, str(kind))] + ([text] if text else [])
+    parts = [OLDER_DUMP_LABEL if older else DEVICE_LABELS.get(kind, str(kind))] + ([text] if text else [])
     values = fields.get("values")
     if kind in EVENT_KINDS and isinstance(values, list) and len(values) == 4 and all(type(v) is int for v in values):
         decoded = named_values(SimpleNamespace(kind=EVENT_KINDS[kind], text=text, values=tuple(values)))
@@ -110,8 +115,8 @@ def _rows(raw, sql, params):
     return [json.loads(row[0]) for row in raw.execute(sql, params)]
 
 
-def _reset_reason(event):
-    """The boot's reset reason from any Boot record that logs actual_reset_reason.
+def _reset_code(event):
+    """The boot's reset reason code from any Boot record that logs actual_reset_reason.
 
     device.boot can upload later than the evidence boot record (evidence.*), so either one counts.
     """
@@ -122,9 +127,36 @@ def _reset_reason(event):
         return None
     item = named_values(SimpleNamespace(kind=EVENT_KINDS["Boot"], text=text, values=tuple(values))).get("fields", {}).get("actual_reset_reason")
     value = item.get("value") if item else None
-    if type(value) is not int:
+    return value if type(value) is int else None
+
+
+def _reset_reason(event):
+    value = _reset_code(event)
+    if value is None:
         return None
     return f"{value} {RESET_REASONS[value]}" if value in RESET_REASONS else str(value)
+
+
+def _older_dumps(events):
+    """{index: older} for each coredump record (prior.core*): older when it re-reports an earlier crash.
+
+    The firmware keeps a saved dump in flash and logs it again after every power loss. Its header
+    says whether this reset wrote it (fresh 0x200, reset reason from bit 16), even when the Boot
+    record is outside the window; the .bt/.elf records follow their header. Headers logged before
+    those flags existed fall back to the boot's own reset reason.
+    """
+    dump_boots = {(event.get("fields") or {}).get("boot") for event in events if _reset_code(event) in DUMP_RESETS}
+    verdicts, header = {}, {}
+    for index, event in enumerate(events):
+        fields = event.get("fields") or {}
+        text, values, boot = fields.get("text"), fields.get("values"), fields.get("boot")
+        if event.get("event_type") != "Crash" or not isinstance(text, str) or not text.startswith("prior.core"):
+            continue  # other prior.* Crash records are the previous boot's trail, not a dump
+        if text.startswith(DUMP_HEADER):
+            flags = values[3] if isinstance(values, list) and len(values) == 4 and type(values[3]) is int else 0
+            header[boot] = not flags & DUMP_FRESH if (flags >> 16) & 0xFFFF else boot not in dump_boots
+        verdicts[index] = header.get(boot, boot not in dump_boots)
+    return verdicts
 
 
 def _device_rows(events):
@@ -138,6 +170,7 @@ def _device_rows(events):
         boot = (event.get("fields") or {}).get("boot")
         if reason and boot not in reasons:
             reasons[boot] = reason
+    older = _older_dumps(events)
 
     def when(first, last=None):
         fields = first.get("fields") or {}
@@ -157,7 +190,7 @@ def _device_rows(events):
             run.clear()
 
     previous = object()
-    for event in events:
+    for index, event in enumerate(events):
         fields = event.get("fields") or {}
         boot = fields.get("boot")
         if boot not in boots:
@@ -171,7 +204,7 @@ def _device_rows(events):
             run.append(event)
             continue
         flush()
-        rows.append((["장치", when(event), describe_device(event)], event.get("event_type") in KEY_KINDS))
+        rows.append((["장치", when(event), describe_device(event, older.get(index, False))], event.get("event_type") in KEY_KINDS))
     flush()
     return rows
 
@@ -313,18 +346,24 @@ def _highlights(events, pending):
         return ["장치 기록 아직 없음"]
     if not events:
         return ["장치 기록 없음"]
-    reasons, reboots, wifi, crashes, previous = {}, [], [], 0, None
+    reasons, reboots, wifi, crashes, older_dumps, previous = {}, [], [], 0, 0, None
     for event in events:
         reason = _reset_reason(event)
         boot = (event.get("fields") or {}).get("boot")
         if reason and boot not in reasons:
             reasons[boot] = reason
+    older = _older_dumps(events)
     for index, event in enumerate(events):
         boot = (event.get("fields") or {}).get("boot")
         if index and boot != previous:
             reboots.append(boot)
         previous = boot
-        crashes += event.get("event_type") == "Crash"
+        # One dump is several records (prior.core:, .bt*, .elf:): count its header.
+        if index in older and (event.get("fields") or {}).get("text").startswith(DUMP_HEADER):
+            if older[index]:
+                older_dumps += 1
+            else:
+                crashes += 1
         reason = _wifi_reason(event)
         if reason and reason not in wifi:
             wifi.append(reason)
@@ -334,5 +373,7 @@ def _highlights(events, pending):
     if wifi:
         parts.append("와이파이 끊김 원인 " + ", ".join(wifi[:3]))
     if crashes:
-        parts.append(f"크래시 기록 {crashes}건")
+        parts.append(f"크래시 덤프 {crashes}건")
+    if older_dumps:
+        parts.append(f"이전 크래시 덤프 {older_dumps}건(이번 재부팅 원인 아님)")
     return parts or ["재부팅·와이파이 끊김·크래시 기록 없음"]

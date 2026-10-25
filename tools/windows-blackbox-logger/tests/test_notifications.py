@@ -262,6 +262,8 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(calls, [])
         sender, calls = self.sender([])
         self.assertEqual(sender.send('slack', notice).code, 'webhook_mode_skips_evidence_notice')
+        # Nor is an edit of an announced card: a webhook message cannot be edited, only posted again.
+        self.assertEqual(sender.send('slack', dict(PAYLOAD, status='recovered', refresh=True)).code, 'webhook_mode_skips_refresh')
         self.assertEqual(calls, [])
 
     def test_slack_session_card_keeps_device_names_inert(self):

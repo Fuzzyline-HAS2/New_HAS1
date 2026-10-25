@@ -298,7 +298,7 @@ CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active":
 # generator_watch reboot labels (esp_reset_reason_t).
 REBOOT_LABELS = {"panic": "패닉(크래시)", "int_wdt": "인터럽트 워치독", "task_wdt": "태스크 워치독", "wdt": "워치독",
                  "brownout": "전압 저하", "pwr_glitch": "전원 글리치", "cpu_lockup": "CPU 잠김",
-                 "poweron": "전원 투입", "ext": "외부 리셋"}
+                 "poweron": "전원 투입", "ext": "외부 리셋", "sw": "소프트웨어"}
 
 
 def _parse_time(value):
@@ -400,10 +400,21 @@ def _session_item_line(item):
         return f"🔁 {device} · {_kst(item.get('opened_utc')) or '?'} 재부팅"
     opened, updated = _parse_time(item.get("opened_utc")), _parse_time(item.get("updated_utc"))
     line = f"{SESSION_STATES.get(item.get('state'), '❔')} {device} · {_kst(item.get('opened_utc')) or '?'} 끊김"
+    # A generator whose outage was a reboot: one event, so one line. A group names the member.
+    try:
+        reboots = json.loads(item["reboots"]) if isinstance(item.get("reboots"), str) else item.get("reboots")
+    except ValueError:
+        reboots = None
+    rebooted = ""
+    for entry in reboots[:5] if isinstance(reboots, list) else []:
+        if isinstance(entry, dict):
+            name = _text(entry.get("name"), 20)
+            parts = (name if name != device else None, _reboot_reason({"reset_label": entry.get("label")}), "재부팅")
+            rebooted += " · " + " ".join(part for part in parts if part)
     if item.get("state") == "recovered":
         outage = _duration((updated - opened).total_seconds()) if opened and updated else None
-        return line + (f" → {outage} 만에 복구" if outage else " → 복구")
-    return line + (" → 미복구 종료" if item.get("state") == "closed" else " → 장애중")
+        return line + (f" → {outage} 만에 복구" if outage else " → 복구") + rebooted
+    return line + (" → 미복구 종료" if item.get("state") == "closed" else " → 장애중") + rebooted
 
 
 def _session_counts(session):
@@ -541,13 +552,22 @@ def _send_slack_session(call, token, channel_id, payload):
         parent = data.get("ts")
         if not isinstance(parent, str) or not SLACK_TS.fullmatch(parent):
             return DeliveryResult("unknown", "invalid_write_response")
+    if payload.get("refresh"):
+        # A reboot noted on an announced outage: the edited line, plus a quiet note in the thread.
+        reboot = payload.get("reboot")
+        if not isinstance(reboot, dict):
+            return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
+        payload = dict(payload, status="rebooted", device_id=reboot.get("name"), reset_label=reboot.get("label"),
+                       firmware=reboot.get("firmware"), occurred_at=reboot.get("observed_utc"))
     open_count, recovered, unrecovered = _session_counts(session)
-    # Edits notify nobody. Thread and surface what needs a person: a device unrecovered at game end,
-    # a crash reboot, or a new drop on a card that had settled (everything else had already ended).
+    # Edits notify nobody. Thread what needs a person: a device unrecovered at game end, a new drop on
+    # a card that had settled (everything else had already ended), and a reboot (thread only).
     reopened = payload.get("status") == "offline" and edited and open_count == 1 and recovered + unrecovered > 0
     if payload.get("status") not in ("monitoring_ended", "rebooted") and not reopened:
         return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
-    reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent, reply_broadcast=True)
+    # A reboot stays in the thread; only what needs a person now is also shown in the channel.
+    reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent,
+                 reply_broadcast=payload.get("status") != "rebooted")
     _, failure = _slack_api(call, token, "chat.postMessage", reply)
     if failure:
         # The card exists either way; keep its ts so the retry threads under it.
@@ -773,6 +793,9 @@ class NotificationSender:
                 if payload.get("evidence_notice"):
                     # Queued while in bot mode; a webhook has no card to thread under.
                     return DeliveryResult("permanent", "webhook_mode_skips_evidence_notice")
+                if payload.get("refresh"):
+                    # A webhook message cannot be edited; resending would announce it again.
+                    return DeliveryResult("permanent", "webhook_mode_skips_refresh")
                 if payload.get("slack_ts") and payload.get("status") != "recovered":
                     # Queued while in bot mode; webhooks never announce monitoring_ended.
                     return DeliveryResult("permanent", "webhook_mode_skips_monitoring_end")
