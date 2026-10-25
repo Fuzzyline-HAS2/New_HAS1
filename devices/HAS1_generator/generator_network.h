@@ -20,8 +20,10 @@ struct NetworkRequest {
 };
 
 // Generic reports retain legacy at-most-once transmission. Generator completion
-// uses a durable, immutable conditional token and authoritative reconciliation.
+// uses a durable, immutable conditional token and authoritative reconciliation
+// when the server advertises protocol 1, otherwise one legacy Send.
 bool GeneratorNetworkCompletionPending();
+void GeneratorNetworkObserveProtocol(const GeneratorWireSnapshot &);
 bool WireCompletionContext(GeneratorWireSnapshot &);
 void WireRequestContextRefresh();
 void GeneratorNetworkBegin();

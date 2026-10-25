@@ -78,6 +78,8 @@ int digitalRead(int pin) {
 }
 static bool completionPending=false;
 bool GeneratorNetworkCompletionPending(){return completionPending;}
+static int observedProtocol=-1;
+void GeneratorNetworkObserveProtocol(const GeneratorWireSnapshot &snapshot){observedProtocol=snapshot.completionProtocol;}
 JsonDocument my;
 bool batteryFinishDone=false, batteryFinishAudioPlayed=false, receiveMineOn=false;
 int completions=0, refreshes=0, activations=0, renders=0, audio=0;

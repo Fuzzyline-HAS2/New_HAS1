@@ -2,11 +2,12 @@
 
 ## Compatibility and release status
 
-Completion now uses the generator-only `CompleteGenerator` API advertised by
-`completion_protocol: 1` in wire snapshots. Deploy server PR #87 and its PHP
-proxy first. Missing capability blocks completion; there is no legacy Send
-fallback. See [conditional completion recovery](COMPLETION_RECOVERY.md) for the
-protocol, durable intent, deployment gates and field checks.
+Completion uses the generator-only `CompleteGenerator` API when wire snapshots
+advertise `completion_protocol: 1` (server PR #87). A server without it gets one
+legacy `Send device_state` per stage, as before v38, so server and firmware may
+be deployed in either order. A staff `battery_max` override always finishes with
+the legacy Send. See [conditional completion recovery](COMPLETION_RECOVERY.md)
+for the path choice, durable intent, deployment and field checks.
 
 An immutable epoch/revision/target is stored before sending. Ambiguous responses
 are reconciled with a fresh token-bearing read and retried with the original
