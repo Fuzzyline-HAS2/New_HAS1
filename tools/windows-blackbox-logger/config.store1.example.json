@@ -49,6 +49,16 @@
         "notion": {
           "enabled": false
         }
+      },
+      "generators": {
+        "enabled": false,
+        "devices": {
+          "BG": "A4:F0:0F:D9:0B:CC",
+          "LG": "A4:F0:0F:D9:06:BC",
+          "SG": "A4:F0:0F:D9:0A:74",
+          "TG": "B0:3F:D3:2D:FE:E0",
+          "UG": "A4:F0:0F:D9:09:30"
+        }
       }
     }
   }

@@ -176,11 +176,25 @@ def _device_rows(events):
     return rows
 
 
+def _boot_anchor(incident):
+    """The record just before a reboot incident's own Boot record, when it names one.
+
+    Its opened time is the Boot record's arrival, shared by every record of that upload,
+    so an arrival-time anchor could land after the Boot and crash records."""
+    try:
+        details = json.loads(incident["details"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    ring, seq = details.get("device_ring"), details.get("device_seq")
+    return (ring, seq - 1) if isinstance(ring, str) and type(seq) is int and seq > 0 else None
+
+
 def _device_events(raw, incident, limit):
     """(events, more): records around the outage, and whether more than `limit` followed."""
     site, mac = incident["site_id"], incident["mac"]
-    anchor = raw.execute("SELECT ring,seq FROM event_times WHERE site_id=? AND source='device' AND mac=? AND observed_utc<=? AND seq IS NOT NULL ORDER BY observed_utc DESC,seq DESC LIMIT 1",
-                         (site, mac, incident["opened_utc"])).fetchone()
+    anchor = _boot_anchor(incident) or raw.execute(
+        "SELECT ring,seq FROM event_times WHERE site_id=? AND source='device' AND mac=? AND observed_utc<=? AND seq IS NOT NULL ORDER BY observed_utc DESC,seq DESC LIMIT 1",
+        (site, mac, incident["opened_utc"])).fetchone()
     select = "SELECT e.payload FROM event_times t JOIN telemetry_events e USING(site_id,source,source_id,event_id) WHERE t.site_id=? AND t.source='device' AND t.mac=? "
     key_only = "AND json_extract(e.payload,'$.event_type') IN (" + ",".join("?" * len(KEY_KINDS)) + ") "
 
