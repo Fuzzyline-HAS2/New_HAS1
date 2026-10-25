@@ -63,6 +63,12 @@ static uint32_t networkTagToken=1,networkTagRequest=0,networkTagRetryAt=0;
 static bool networkTagReady=false;
 static uint8_t networkTagFailures=0;
 static uint32_t networkCompletionToken=1;
+// Conditional: CompleteGenerator with a durable token (server protocol 1).
+// Legacy: one Send device_state, as before v38 (older server or staff override).
+enum class NetworkCompletionMode:uint8_t {None,Conditional,Legacy};
+static NetworkCompletionMode networkCompletionMode=NetworkCompletionMode::None;
+// -1 until a valid wire snapshot is read; then whether it advertised protocol 1.
+static int8_t networkServerProtocol=-1;
 static void NetworkCompletionObserveSnapshot();
 static bool NetworkOwnBatteryEcho(const JsonDocument &snapshot);
 static void NetworkCompletionResendSubmit();
@@ -392,8 +398,15 @@ static uint32_t NetworkCompletionBackoff() {
   const unsigned exponent=networkCompletionAttempts>4?4:networkCompletionAttempts;
   return (1000u<<exponent)+((networkRecoverySalt+networkCompletionAttempts*977u)%501u);
 }
+// Holds wire writes back only for a conditional token; a legacy Send never did.
 bool GeneratorNetworkCompletionPending() {
-  return networkCompletionStoreFault||(networkCompletionSent&&!networkCompletionConfirmed&&!networkCompletionSuperseded);
+  return networkCompletionStoreFault||(networkCompletionMode==NetworkCompletionMode::Conditional&&
+    networkCompletionSent&&!networkCompletionConfirmed&&!networkCompletionSuperseded);
+}
+void GeneratorNetworkObserveProtocol(const GeneratorWireSnapshot &snapshot) {
+  const int8_t protocol=snapshot.completionProtocol==1?1:0;
+  if(protocol!=networkServerProtocol) DiagnosticPrintf("[NET] server completion_protocol=%d\r\n",int(protocol));
+  networkServerProtocol=protocol;
 }
 static bool NetworkCompletionOwns(const NetworkRequest &request) {
   return request.token==networkCompletionToken;
@@ -421,10 +434,231 @@ static void NetworkCompletionResolve(bool confirmed) {
     WireResetTracking();networkCompletionAwaitResync=true;GeneratorNetworkRefreshCycle();
   }
 }
+// Legacy completion, kept from v37 for servers without completion_protocol 1
+// and for a staff battery_max override (CompleteGenerator requires full wires).
+// A completion Send whose TCP connect never succeeded (connect error or the
+// shared deadline expiring while still connecting) ended before the GET line
+// was written, so the server cannot have applied it. Only that case is resent,
+// a bounded number of times per transaction. The resend is armed only by a
+// successful Verify read, taken after the failed attempt, that still shows the
+// state the transaction started from: the cached state cannot be trusted while
+// connects are failing (staff may have changed the server meanwhile), and a
+// mutation queued through a WiFi outage would otherwise be dispatched first on
+// reconnect. A queued resend is withdrawn while offline or after a short queue
+// lifetime so it can never sit through an outage. It carries the original wire
+// expectations, so the dispatch guard still rejects it if wires or the game
+// changed. Any failure after a request byte was written remains uncertain and
+// is never repeated: an older server applies every duplicate Send.
+static constexpr uint8_t kNetworkLegacyMaxAttempts=3;
+static bool networkLegacyResendPending=false;   // undelivered; waiting for a fresh start-state Verify
+static bool networkLegacyResendWithdrawn=false; // we cancelled the queued resend ourselves (offline/aged)
+static bool networkLegacyWireBypass=false;
+static bool NetworkRequestUndelivered(const Has2BoundedTransport::Result &result) {
+  return (result.error==Has2BoundedTransport::Error::Connect||result.error==Has2BoundedTransport::Error::Deadline)&&
+         result.phase==Has2BoundedTransport::Phase::Connect;
+}
+static void NetworkLegacyCompletionResendClear() {
+  networkLegacyResendPending=false;networkLegacyResendWithdrawn=false;networkCompletionResendId=0;networkCompletionResendEnqueuedAt=0;
+}
+static bool NetworkLegacyCompletionOwnBatteryEcho(const JsonDocument &snapshot) {
+  if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||networkCompletionGeneration!=GeneratorNetworkGeneration()||strcmp(networkCompletion,"battery_max")||
+      strcmp(snapshot["device_name"]|"",networkCompletionDevice)||strcmp(snapshot["game_state"]|"","activate")||strcmp(snapshot["device_state"]|"","battery_max")){ return false; }
+  bool dispatched=networkCompletionDispatched;
+  portENTER_CRITICAL(&networkMux);
+  for(const auto &slot:networkSlots) {
+    if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&slot.request.token==networkCompletionToken&&slot.request.dispatched){ dispatched=true; }
+  }
+  portEXIT_CRITICAL(&networkMux);
+  return dispatched;
+}
+static bool NetworkLegacyCompletionOwns(const NetworkRequest &request) {
+  return request.generation==networkCompletionGeneration&&request.token==networkCompletionToken;
+}
+static void NetworkLegacyCompletionObserveSnapshot() {
+  if(!networkCompletionSent||networkCompletionGeneration!=GeneratorNetworkGeneration()||
+      strcmp(my["device_name"]|"",networkCompletionDevice)||strcmp(my["game_state"]|"","activate")){ return; }
+  const char *state=my["device_state"]|"";
+  const bool wasResolved=networkCompletionConfirmed||networkCompletionSuperseded;
+  // Any authoritative state other than the start state makes an undelivered
+  // resend obsolete, even if the state later returns to the start value. If the
+  // resend is merely pending the transaction stays unresolved (verify loop and
+  // staff warning continue); if it is already queued, the queued-cancel path
+  // below resets the transaction as it always did for queued completions.
+  if(strcmp(state,networkCompletionStartState)){ networkLegacyResendPending=false; }
+  if(!strcmp(state,networkCompletion)||(!strcmp(networkCompletion,"repaired")&&!strcmp(state,"repaired_all"))) {
+    networkCompletionConfirmed=true;
+  } else if(!strcmp(networkCompletion,"battery_max")&&
+      (!strcmp(state,"starter_finish")||!strcmp(state,"repaired")||!strcmp(state,"repaired_all"))) {
+    // A staff command or another fresh snapshot already advanced this stage.
+    // Do not return battery completion to the caller and rewind local gameplay.
+    networkCompletionSuperseded=true;
+  }
+  bool cancelQueued=false;
+  portENTER_CRITICAL(&networkMux);
+  if(strcmp(state,networkCompletionStartState)) {
+    for(auto &slot:networkSlots) {
+      if(slot.occupied&&slot.request.kind==NetworkKind::Completion&&
+          slot.request.token==networkCompletionToken&&!slot.request.dispatched) {
+        slot.request.cancelled=true;cancelQueued=true;
+      }
+    }
+  }
+  if(cancelQueued||(!wasResolved&&(networkCompletionConfirmed||networkCompletionSuperseded))) {
+    ++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }
+  }
+  portEXIT_CRITICAL(&networkMux);
+  if(cancelQueued&&!networkCompletionConfirmed&&!networkCompletionSuperseded) {
+    networkCompletionSent=false;networkCompletionVerify=false;
+    DiagnosticPrintf("[NET] queued completion cancelled after authoritative state override\r\n");
+  }
+  if(cancelQueued||networkCompletionConfirmed||networkCompletionSuperseded){ NetworkLegacyCompletionResendClear(); }
+}
+static void NetworkLegacyCompletionResendSubmit();
+static void NetworkLegacyCompletionVerifyResult(const NetworkRequest &request,const Has2BoundedTransport::Result &result,bool cancelled) {
+  if(!NetworkLegacyCompletionOwns(request)){ return; }
+  networkCompletionVerify=false;networkCompletionRetryAt=millis()+2000;
+  if(!NetworkOk(result,cancelled)){ return; }
+  JsonDocument snapshot;
+  if(deserializeJson(snapshot,result.payload)||!snapshot["device_name"].is<const char*>()||
+      !snapshot["game_state"].is<const char*>()||!snapshot["device_state"].is<const char*>()||
+      strcmp(snapshot["device_name"]|"",networkCompletionDevice)){ return; }
+  const char *state=snapshot["device_state"]|"";
+  const bool match=!strcmp(state,networkCompletion)||(!strcmp(networkCompletion,"repaired")&&!strcmp(state,"repaired_all"));
+  const bool battery=!strcmp(networkCompletion,"battery_max");
+  if(match&&!battery){ receiveMineOn=false; }
+  // Repair confirmation remains authoritative after card removal/gauge decay.
+  NetworkApplySnapshot(result,cancelled,match&&battery);
+  // Fresh evidence: the server still holds the start state and the link just
+  // worked. Only now may an undelivered completion be resent.
+  if(networkLegacyResendPending&&!networkCompletionConfirmed&&!networkCompletionSuperseded&&
+      networkCompletionGeneration==GeneratorNetworkGeneration()&&
+      !strcmp(state,networkCompletionStartState)&&!strcmp(snapshot["game_state"]|"","activate")) {
+    NetworkLegacyCompletionResendSubmit();
+  }
+}
+static void NetworkLegacyCompletionSendResult(const NetworkRequest &request,const Has2BoundedTransport::Result &result,bool cancelled) {
+  if(!NetworkLegacyCompletionOwns(request)){ return; }
+  const bool resend=networkCompletionResendId!=0&&request.id==networkCompletionResendId;
+  if(resend){ networkCompletionResendId=0;networkCompletionResendEnqueuedAt=0; }
+  if(cancelled&&!request.dispatched) {
+    if(resend&&networkLegacyResendWithdrawn) {
+      // We withdrew our own queued resend (offline or aged in the queue). The
+      // transaction is unchanged; a later fresh start-state Verify may arm again.
+      networkLegacyResendWithdrawn=false;networkLegacyResendPending=true;
+      DiagnosticPrintf("[NET] completion target=%s resend withdrawn before dispatch; waiting for a fresh verify\r\n",networkCompletion);
+      return;
+    }
+    // Definite pre-dispatch cancellation has no server side effect. A fresh
+    // gameplay completion check may enqueue again once its prerequisites hold.
+    networkCompletionSent=false;networkCompletionVerify=false;NetworkLegacyCompletionResendClear();
+    portENTER_CRITICAL(&networkMux);++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }portEXIT_CRITICAL(&networkMux);
+    return;
+  }
+  if(request.dispatched&&networkCompletionAttempts<UINT8_MAX){ ++networkCompletionAttempts; }
+  const bool undelivered=!cancelled&&request.dispatched&&NetworkRequestUndelivered(result);
+  // An undelivered attempt cannot have produced a server echo, so a later
+  // battery_max snapshot must be treated as a staff action, not our own.
+  if(request.dispatched&&!undelivered){ networkCompletionDispatched=true; }
+  if(undelivered) {
+    if(networkCompletionAttempts<kNetworkLegacyMaxAttempts) {
+      networkLegacyResendPending=true;
+      DiagnosticPrintf("[NET] completion target=%s undelivered (connect failed before any request byte); attempt %u/%u, resend armed by the next start-state verify\r\n",
+        networkCompletion,unsigned(networkCompletionAttempts),unsigned(kNetworkLegacyMaxAttempts));
+    } else {
+      networkLegacyResendPending=false;
+      DiagnosticPrintf("[NET] completion target=%s undelivered; resend budget exhausted, read-only verification continues\r\n",networkCompletion);
+    }
+  }
+  // HTTP 200 alone is not proof of an applied mutation. Always read actual state.
+  networkCompletionRetryAt=millis();
+}
+static void NetworkLegacyCompletionResendSubmit() {
+  // Called from a successful Verify result only. Same transaction and token;
+  // the original wire expectations let the dispatch guard reject wire changes.
+  String path="/has2.php?request=Send&table=device&key="+NetworkEncode(networkCompletionDevice)+"&column=device_state&value="+NetworkEncode(networkCompletion);
+  const uint32_t id=NetworkSubmit(NetworkKind::Completion,path,true,networkCompletionGeneration,networkCompletionToken,NetworkLegacyCompletionSendResult,
+      networkCompletionWireCount,networkCompletionWireGeneration,networkLegacyWireBypass);
+  if(id) {
+    networkLegacyResendPending=false;networkLegacyResendWithdrawn=false;
+    networkCompletionResendId=id;networkCompletionResendEnqueuedAt=millis();
+    DiagnosticPrintf("[NET] completion target=%s resend enqueued after fresh start-state verify (attempts used %u/%u)\r\n",
+      networkCompletion,unsigned(networkCompletionAttempts),unsigned(kNetworkLegacyMaxAttempts));
+  }
+  // Queue full: stay pending; the next successful Verify arms it again.
+}
+static void NetworkLegacyCompletionResendService() {
+  if(!networkCompletionResendId||networkLegacyResendWithdrawn){ return; }
+  // Never let a queued resend wait through an outage or a long queue: by the
+  // time it would dispatch, the server state it was based on may be stale.
+  const bool offline=WiFi.status()!=WL_CONNECTED;
+  const bool aged=uint32_t(millis()-networkCompletionResendEnqueuedAt)>kNetworkCompletionResendQueueLifetimeMs;
+  if(!offline&&!aged){ return; }
+  bool withdrawn=false;
+  portENTER_CRITICAL(&networkMux);
+  for(auto &slot:networkSlots) {
+    if(slot.occupied&&!slot.active&&slot.request.id==networkCompletionResendId&&!slot.request.cancelled){ slot.request.cancelled=true;withdrawn=true; }
+  }
+  portEXIT_CRITICAL(&networkMux);
+  if(withdrawn) {
+    networkLegacyResendWithdrawn=true;
+    DiagnosticPrintf("[NET] completion target=%s queued resend withdrawn (%s)\r\n",networkCompletion,offline?"offline":"queue lifetime exceeded");
+  }
+}
+static void NetworkLegacyCompletionService() {
+  if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||
+      networkCompletionGeneration!=GeneratorNetworkGeneration()){ return; }
+  if(uint32_t(millis()-networkCompletionSince)>=30000&&
+      uint32_t(millis()-networkCompletionWarningAt)>=30000) {
+    networkCompletionWarningAt=millis();
+    DiagnosticPrintf("[NET] completion target=%s unconfirmed for %lu ms; Send attempts used %u/%u (repeated only while undelivered at connect); staff recovery required if state remains unchanged\r\n",
+      networkCompletion,(unsigned long)(millis()-networkCompletionSince),unsigned(networkCompletionAttempts),unsigned(kNetworkLegacyMaxAttempts));
+  }
+  NetworkLegacyCompletionResendService();
+  if(networkCompletionVerify||int32_t(millis()-networkCompletionRetryAt)<0){ return; }
+  String path="/has2.php?request=ReceiveMine&table=device&mac="+NetworkEncode(has2wifi.GetMacAddress().c_str());
+  networkCompletionVerify=NetworkSubmit(NetworkKind::Verify,path,false,networkCompletionGeneration,networkCompletionToken,NetworkLegacyCompletionVerifyResult)!=0;
+  if(!networkCompletionVerify){ networkCompletionRetryAt=millis()+250; }
+}
+static void NetworkLegacyCompletionBegin(const char *state,uint32_t generation,bool bypass) {
+  portENTER_CRITICAL(&networkMux);++networkCompletionToken;if(!networkCompletionToken){ ++networkCompletionToken; }portEXIT_CRITICAL(&networkMux);
+  networkCompletionMode=NetworkCompletionMode::Legacy;
+  snprintf(networkCompletion,sizeof(networkCompletion),"%s",state);
+  snprintf(networkCompletionDevice,sizeof(networkCompletionDevice),"%s",my["device_name"]|"");
+  snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",my["device_state"]|"");
+  networkCompletionGeneration=generation;
+  networkCompletionSent=false;networkCompletionVerify=false;networkCompletionConfirmed=false;networkCompletionSuperseded=false;networkCompletionDispatched=false;
+  networkCompletionNeedsFull=false;networkCompletionRetryAt=0;
+  networkCompletionAttempts=0;NetworkLegacyCompletionResendClear();
+  DiagnosticPrintf("[NET] completion target=%s mode=legacy protocol=%d bypass=%u\r\n",state,int(networkServerProtocol),unsigned(bypass));
+}
+// The first Send of a transaction; the queue may refuse it, then a later call retries.
+static void NetworkLegacyCompletionSubmit() {
+  if(networkCompletionSent||networkCompletionStoreFault){ return; }
+  const GeneratorWireState wire=WireSnapshot();
+  const bool bypass=WireServerCompleted();
+  if(!bypass&&!wire.qualified(millis())){ return; }
+  String path="/has2.php?request=Send&table=device&key="+NetworkEncode(networkCompletionDevice)+"&column=device_state&value="+NetworkEncode(networkCompletion);
+  if(NetworkSubmit(NetworkKind::Completion,path,true,networkCompletionGeneration,networkCompletionToken,NetworkLegacyCompletionSendResult,wire.stable(),wire.generation(),bypass)) {
+    snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",my["device_state"]|"");
+    networkCompletionWireCount=wire.stable();networkCompletionWireGeneration=wire.generation();networkLegacyWireBypass=bypass;
+    networkCompletionAttempts=0;NetworkLegacyCompletionResendClear();
+    networkCompletionSent=true;networkCompletionRetryAt=millis()+2500;
+    networkCompletionSince=millis();networkCompletionWarningAt=millis();
+  }
+}
+// Confirmed returns true; superseded stays false. Sends once when unsent.
+static bool NetworkLegacyCompletionContinue() {
+  if(networkCompletionConfirmed){ return true; }
+  if(networkCompletionSuperseded){ return false; }
+  NetworkLegacyCompletionSubmit();
+  NetworkLegacyCompletionService();
+  return false;
+}
 // Full legacy snapshots carry no epoch/revision. They may update presentation,
 // but cannot settle or renew a conditional intent.
 static void NetworkCompletionObserveSnapshot() {
   if(networkCompletionAwaitResync&&!networkResetCyclePending) networkCompletionAwaitResync=false;
+  if(networkCompletionMode==NetworkCompletionMode::Legacy){ NetworkLegacyCompletionObserveSnapshot();return; }
   if(networkCompletionNeedsFull) {
     const char *state=my["device_state"]|"";
     if(!strcmp(my["device_name"]|"",networkCompletionDevice)&&!strcmp(my["game_state"]|"","activate")&&
@@ -433,6 +667,7 @@ static void NetworkCompletionObserveSnapshot() {
   }
 }
 static bool NetworkOwnBatteryEcho(const JsonDocument &snapshot) {
+  if(networkCompletionMode==NetworkCompletionMode::Legacy){ return NetworkLegacyCompletionOwnBatteryEcho(snapshot); }
   return networkCompletionSent&&!networkCompletionConfirmed&&!networkCompletionSuperseded&&networkCompletionDispatched&&
     !strcmp(networkCompletion,"battery_max")&&!strcmp(snapshot["device_name"]|"",networkCompletionDevice)&&
     !strcmp(snapshot["game_state"]|"","activate")&&!strcmp(snapshot["device_state"]|"","battery_max");
@@ -443,14 +678,34 @@ static bool NetworkCompletionPhysical() {
     wire.stable()>=networkCompletionIntent.maximum&&
     (networkCompletionRestored||wire.generation()==networkCompletionWireGeneration);
 }
+// The server stopped advertising protocol 1 within the same epoch. Such a
+// server has no CompleteGenerator handler, so this unconfirmed intent was never
+// applied: keep the player's progress and finish it with one legacy Send now.
+// Gameplay may already have left the stage (card lifted, or a restored intent).
+static void NetworkCompletionDowngrade() {
+  NetworkCompletionCancelQueued();
+  if(networkCompletionDurable&&!GeneratorCompletionStore::clear()) {
+    networkCompletionStoreFault=true;networkCompletionSuperseded=true;
+    DiagnosticPrintf("[NET] completion journal clear failed; completion target=%s not sent, further mutations blocked\r\n",networkCompletion);
+    return;
+  }
+  networkCompletionDurable=false;networkCompletionMode=NetworkCompletionMode::Legacy;
+  networkCompletionSent=networkCompletionConfirmed=networkCompletionSuperseded=networkCompletionDispatched=false;
+  networkCompletionAttempts=0;NetworkLegacyCompletionResendClear();
+  DiagnosticPrintf("[NET] completion target=%s: server dropped protocol 1; continuing with legacy Send\r\n",networkCompletion);
+  NetworkLegacyCompletionSubmit();
+}
 static bool NetworkCompletionSnapshot(const Has2BoundedTransport::Result &result,bool cancelled,bool mutation) {
   if(cancelled||!result.ok()||(result.status!=200&&result.status!=409)){return false;}
   JsonDocument json;GeneratorWireSnapshot snapshot;
   if(deserializeJson(json,result.payload)||!json["success"].is<bool>()||
-     !WireParseSnapshot(json,networkCompletionDevice,snapshot)||snapshot.completionProtocol!=1){return false;}
+     !WireParseSnapshot(json,networkCompletionDevice,snapshot)){return false;}
   if((result.status==200&&!json["success"].as<bool>())||
      (result.status==409&&(json["success"].as<bool>()||strcmp(json["error"]|"","CONFLICT")))||
      (mutation&&!json["applied"].is<bool>())){return false;}
+  // Only a successful read, never a mutation reply, may show protocol 1 gone.
+  if(snapshot.completionProtocol!=1&&(mutation||result.status!=200)){return false;}
+  GeneratorNetworkObserveProtocol(snapshot);
   networkRecoveryPolicy.serverReply(millis());
   const bool sameEpoch=!strcmp(snapshot.epoch,networkCompletionIntent.epoch);
   const bool match=!strcmp(snapshot.deviceState,networkCompletion)||
@@ -491,6 +746,7 @@ static bool NetworkCompletionSnapshot(const Has2BoundedTransport::Result &result
     networkCompletionRestored=false;networkCompletionGeneration=GeneratorNetworkGeneration();
     networkCompletionWireGeneration=WireSnapshot().generation();
   }
+  if(snapshot.completionProtocol!=1){ NetworkCompletionDowngrade();return true; }
   if(!mutation) NetworkCompletionResendSubmit();
   return true;
 }
@@ -506,7 +762,8 @@ static void NetworkCompletionSendResult(const NetworkRequest &request,const Has2
   networkCompletionRetryAt=millis()+NetworkCompletionBackoff();
   NetworkCompletionSnapshot(result,cancelled,true);
   // Every ambiguous result remains retryable, but only after a fresh read and
-  // with the exact original token. There is no unsafe legacy Send fallback.
+  // with the exact original token. A mutation reply never falls back to Send;
+  // only a fresh same-epoch read without protocol 1 does (Downgrade).
 }
 static void NetworkCompletionResendSubmit() {
   if(networkCompletionResendId||networkCompletionStoreFault||!networkCompletionDurable||!NetworkCompletionPhysical()){return;}
@@ -522,6 +779,7 @@ static void NetworkCompletionLoad() {
   networkCompletionStoreFault=result==GeneratorCompletionStore::LoadResult::Fault;
   if(networkCompletionStoreFault) DiagnosticPrintf("[NET] completion journal unreadable/invalid; mutations quarantined until verified inactive boundary\r\n");
   if(result!=GeneratorCompletionStore::LoadResult::Ready){return;}
+  networkCompletionMode=NetworkCompletionMode::Conditional;
   networkCompletionDurable=true;networkCompletionSent=true;networkCompletionRestored=true;
   networkCompletionDispatched=true; // Power may have failed after any write byte.
   snprintf(networkCompletion,sizeof(networkCompletion),"%s",networkCompletionIntent.target==GeneratorCompletionStore::Target::BatteryMax?"battery_max":"repaired");
@@ -537,9 +795,12 @@ static void NetworkCompletionFaultResult(const NetworkRequest &,const Has2Bounde
   networkCompletionVerify=false;networkCompletionRetryAt=millis()+5000;
   if(!networkCompletionStoreFault||cancelled||!result.ok()||result.status!=200)return;
   JsonDocument json;GeneratorWireSnapshot snapshot;
+  // Any server version may confirm the inactive boundary; a journal fault must
+  // not block legacy completion forever after a server rollback.
   if(deserializeJson(json,result.payload)||!json["success"].is<bool>()||!json["success"].as<bool>()||
-     !WireParseSnapshot(json,my["device_name"]|"",snapshot)||snapshot.completionProtocol!=1||
+     !WireParseSnapshot(json,my["device_name"]|"",snapshot)||
      !NetworkCompletionSafeBoundary(snapshot.gameState)||strcmp(snapshot.gameState,my["game_state"]|""))return;
+  GeneratorNetworkObserveProtocol(snapshot);
   if(!GeneratorCompletionStore::clear())return;
   networkCompletionStoreFault=networkCompletionDurable=networkCompletionSent=networkCompletionRestored=false;
   networkCompletionAwaitResync=true;GeneratorNetworkRefreshCycle();WireRequestContextRefresh();
@@ -558,8 +819,34 @@ static void NetworkCompletionFaultService() {
   networkCompletionVerify=NetworkSubmit(NetworkKind::Verify,path,false,GeneratorNetworkGeneration(),networkCompletionToken,NetworkCompletionFaultResult)!=0;
   if(!networkCompletionVerify)networkCompletionRetryAt=millis()+5000;
 }
+// Server capability comes from plain wire snapshots. An old gateway turns any
+// error into an empty 200 body, so only a parsed snapshot decides it. Failed
+// probes back off from 5 s to 60 s.
+static bool networkProtocolProbe=false;
+static uint32_t networkProtocolProbeAt=0;
+static uint8_t networkProtocolProbeFailures=0;
+static void NetworkProtocolProbeResult(const NetworkRequest &,const Has2BoundedTransport::Result &result,bool cancelled) {
+  networkProtocolProbe=false;
+  networkProtocolProbeAt=millis()+(networkProtocolProbeFailures>=4?60000u:5000u<<networkProtocolProbeFailures);
+  if(networkProtocolProbeFailures<4)++networkProtocolProbeFailures;
+  if(!NetworkOk(result,cancelled))return;
+  JsonDocument json;GeneratorWireSnapshot snapshot;
+  if(deserializeJson(json,result.payload)||!json["success"].is<bool>()||!json["success"].as<bool>()||
+     !WireParseSnapshot(json,my["device_name"]|"",snapshot))return;
+  GeneratorNetworkObserveProtocol(snapshot);
+}
+static void NetworkProtocolProbeService() {
+  const char *name=my["device_name"]|"";
+  if(networkServerProtocol>=0||networkProtocolProbe||!networkBootReady||networkMaintenance||!name[0]||
+     int32_t(millis()-networkProtocolProbeAt)<0)return;
+  String path="/has2.php?request=GetGeneratorWires&key="+NetworkEncode(name)+"&mac="+NetworkEncode(has2wifi.GetMacAddress().c_str());
+  networkProtocolProbe=NetworkSubmit(NetworkKind::Verify,path,false,0,networkCompletionToken,NetworkProtocolProbeResult)!=0;
+  if(!networkProtocolProbe)networkProtocolProbeAt=millis()+5000;
+}
 static void NetworkCompletionService() {
   NetworkCompletionFaultService();
+  NetworkProtocolProbeService();
+  if(networkCompletionMode==NetworkCompletionMode::Legacy){ NetworkLegacyCompletionService();return; }
   if(!networkCompletionSent||networkCompletionConfirmed||networkCompletionSuperseded||!networkBootReady||networkMaintenance){return;}
   if(networkCompletionRestored) {
     if(strcmp(my["device_name"]|"",networkCompletionDevice)||strcmp(has2wifi.GetMacAddress().c_str(),networkCompletionIntent.mac)) {
@@ -588,15 +875,37 @@ static void NetworkCompletionService() {
   if(!networkCompletionVerify){networkCompletionRetryAt=millis()+250;}
 }
 bool GeneratorNetworkComplete(const char *state) {
-  if(!state||!networkBootReady||networkCompletionStoreFault||networkCompletionAwaitResync||(strcmp(state,"battery_max")&&strcmp(state,"repaired"))){return false;}
-  if(GeneratorNetworkCompletionPending()){NetworkCompletionService();return false;}
+  if(!state||!networkBootReady||(strcmp(state,"battery_max")&&strcmp(state,"repaired"))){return false;}
   const uint32_t generation=GeneratorNetworkGeneration();
-  if(networkCompletionConfirmed&&networkCompletionNeedsFull){return false;}
-  if(networkCompletionConfirmed&&networkCompletionGeneration==generation&&!strcmp(state,networkCompletion)){return true;}
+  if(networkCompletionMode==NetworkCompletionMode::Legacy&&networkCompletionGeneration==generation) {
+    if(!strcmp(state,networkCompletion)){return NetworkLegacyCompletionContinue();}
+    // Do not replace an unresolved transaction just because the caller changed.
+    // A fresh authoritative snapshot can confirm/supersede the preceding stage.
+    if(networkCompletionSent&&!networkCompletionConfirmed&&!networkCompletionSuperseded){return false;}
+  }
+  if(networkCompletionStoreFault||networkCompletionAwaitResync){return false;}
+  if(GeneratorNetworkCompletionPending()){NetworkCompletionService();return false;}
+  if(networkCompletionMode==NetworkCompletionMode::Conditional&&networkCompletionConfirmed) {
+    if(networkCompletionNeedsFull){return false;}
+    if(networkCompletionGeneration==generation&&!strcmp(state,networkCompletion)){return true;}
+  }
+  // Decided per accomplishment from the latest server snapshot. A staff
+  // battery_max override cannot meet CompleteGenerator's full-wire rule, and a
+  // protocol 1 server still accepts (and deduplicates) the legacy Send.
+  const bool bypass=WireServerCompleted();
+  if(bypass||networkServerProtocol==0) {
+    NetworkLegacyCompletionBegin(state,generation,bypass);
+    return NetworkLegacyCompletionContinue();
+  }
+  if(networkServerProtocol<0) {
+    static uint32_t waitLogAt=0;
+    if(int32_t(millis()-waitLogAt)>=0){waitLogAt=millis()+5000;DiagnosticPrintf("[NET] completion target=%s waits for a server wire snapshot\r\n",state);}
+    return false;
+  }
   GeneratorWireSnapshot context;const GeneratorWireState wire=WireSnapshot();
   if(!WireCompletionContext(context)||context.completionProtocol!=1) {
     static uint32_t probeAt=0;
-    if(int32_t(millis()-probeAt)>=0){WireRequestContextRefresh();probeAt=millis()+5000;DiagnosticPrintf("[NET] completion waits for server protocol 1\r\n");}
+    if(int32_t(millis()-probeAt)>=0){WireRequestContextRefresh();probeAt=millis()+5000;DiagnosticPrintf("[NET] completion waits for a fresh protocol 1 wire context\r\n");}
     return false;
   }
   const bool start=!strcmp(state,"battery_max")?!strcmp(context.deviceState,"activate"):
@@ -610,7 +919,8 @@ bool GeneratorNetworkComplete(const char *state) {
   intent.wireCount=context.count;intent.maximum=context.maximum;
   if(!GeneratorCompletionStore::save(intent)){networkCompletionStoreFault=true;DiagnosticPrintf("[NET] completion journal save failed; mutation blocked\r\n");return false;}
   networkCompletionIntent=intent;networkCompletionDurable=true;networkCompletionRestored=false;
-  NetworkCompletionCancelQueued();
+  NetworkCompletionCancelQueued();networkCompletionMode=NetworkCompletionMode::Conditional;networkCompletionNeedsFull=false;
+  DiagnosticPrintf("[NET] completion target=%s mode=conditional protocol=1 bypass=0\r\n",state);
   snprintf(networkCompletion,sizeof(networkCompletion),"%s",state);snprintf(networkCompletionDevice,sizeof(networkCompletionDevice),"%s",context.device);
   snprintf(networkCompletionStartState,sizeof(networkCompletionStartState),"%s",context.deviceState);
   networkCompletionGeneration=generation;networkCompletionWireCount=wire.stable();networkCompletionWireGeneration=wire.generation();
@@ -700,9 +1010,11 @@ static bool NetworkOfflineRecoveryService() {
   uint32_t blocked=0;
   if(networkMaintenance){blocked|=1;}
   // Only a verified durable conditional intent may survive an uncertain
-  // completion reboot; restore reads the original token before any write.
+  // completion reboot; restore reads the original token before any write. An
+  // uncertain legacy Send in the current game would be sent again after boot.
   if(networkCompletionSent&&networkCompletionDispatched&&!networkCompletionConfirmed&&
-      !networkCompletionSuperseded&&!networkCompletionDurable){blocked|=2;}
+      !networkCompletionSuperseded&&!networkCompletionDurable&&
+      (networkCompletionMode!=NetworkCompletionMode::Legacy||networkCompletionGeneration==GeneratorNetworkGeneration())){blocked|=2;}
   portENTER_CRITICAL(&networkMux);
   if(!networkTask||networkDriverFault){blocked|=4;}
   if(networkMailboxReady){blocked|=8;}

@@ -66,6 +66,7 @@ static void WireHttpResult(const NetworkRequest &request,const Has2BoundedTransp
   if(response.status==409&&!json["success"].as<bool>()&&json["error"].is<const char*>()&&
      !strcmp(json["error"].as<const char*>(),"CONFLICT"))wireHttpOutcome=GeneratorWireResult::Conflict;
   else if(response.status==200&&json["success"].as<bool>())wireHttpOutcome=GeneratorWireResult::Ok;
+  if(wireHttpOutcome!=GeneratorWireResult::Failed)GeneratorNetworkObserveProtocol(wireHttpResponse);
   (void)request;
 }
 GeneratorWireResult WireHttpRequest(bool set,const char *device,int count,const char *epoch,uint32_t revision,GeneratorWireSnapshot &snapshot) {

@@ -188,7 +188,11 @@ AP outage/recovery, OTA and server integration validation.
 
 See [the current completion contract](../COMPLETION_RECOVERY.md).
 `run_network_tests.py` executes production worker/facade/gameplay code with
-conditional completion responses and persisted intent doubles.
+conditional completion responses and persisted intent doubles. It also covers
+the path choice: no mutation before a parsed wire snapshot (an empty 200 stays
+unknown), one legacy `Send` per stage on a server without `completion_protocol`,
+the staff-override `repaired` Send without wires, the same-epoch downgrade of an
+unapplied or restored intent, and the v37 legacy resend/withdrawal rules.
 `run_completion_store_tests.py` separately executes the actual NVS adapter with
 read/write/commit/erase faults, CRC corruption and restart reconstruction under
 ASan/UBSan. These checks do not replace ESP32 power-cut or store RF testing.
