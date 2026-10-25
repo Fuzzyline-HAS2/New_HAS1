@@ -35,7 +35,7 @@ $CodeFiles = @('collector.py','storage.py','protocol.py','service_runtime.py',
     'service_definition.py','requirements.txt','export.py','decode_flash.py',
     'omada.py','telemetry.py','telemetry_runtime.py','timeline.py',
     'evidence_runtime.py','clock_probe.py','gateway.py','import_omada_csv.py',
-    'incidents.py','incident_evidence.py','notifications.py','retention.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')
+    'incidents.py','incident_evidence.py','generator_watch.py','notifications.py','retention.py','configure-notifications.ps1','NOTIFICATIONS.md','README.md')
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments

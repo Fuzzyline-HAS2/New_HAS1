@@ -5,7 +5,8 @@ power cycles are evidence, never an offline rule. Raw telemetry is unchanged.
 """
 import argparse
 from contextlib import closing
-from datetime import timedelta
+import copy
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
@@ -15,6 +16,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
+from generator_watch import GROUP_MIN, SILENCE_SECONDS, GeneratorWatch, boot_reason
 from incident_evidence import GIVE_UP_SECONDS, summarize, wait_seconds
 from telemetry import Event, canonical_json, normalize_mac, parse_utc, utc_now
 
@@ -23,10 +25,41 @@ APP_ID = 0x48424931
 FRESH_SECONDS = 30
 BATCH = 128
 EVIDENCE_DEADLINE = GIVE_UP_SECONDS + 3600  # stop rebuilding a summary that keeps failing
+# observed_utc is when the collector received the Boot record, not when the generator booted.
+# Older than this when processed means the importer re-read old rows; never announced.
+REBOOT_FRESH_SECONDS = 300
+# A crash loop while Wi-Fi was down uploads many Boot records at once: one announcement per
+# generator per window, the others are in its blackbox table.
+REBOOT_QUIET_SECONDS = 600
+# A reboot alert still undelivered after this (source down overnight) is no longer news.
+REBOOT_DELIVERY_SECONDS = 3600
+KST = timezone(timedelta(hours=9))
+
+
+def validate_generators(value):
+    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "silence_seconds", "group_min"}:
+        raise ValueError("incidents generators contains unknown fields")
+    enabled = value.get("enabled", False)
+    if type(enabled) is not bool:
+        raise ValueError("incidents generators enabled must be boolean")
+    devices = value.get("devices", {})
+    if not isinstance(devices, dict) or len(devices) > 16 or (enabled and not devices):
+        raise ValueError("incidents generators devices must map 1-16 names to MACs")
+    for name, mac in devices.items():
+        if not isinstance(name, str) or not 0 < len(name) <= 32 or not name.isalnum():
+            raise ValueError("incidents generator names must be short alphanumeric")
+        normalize_mac(mac)
+    silence, group = value.get("silence_seconds", SILENCE_SECONDS), value.get("group_min", GROUP_MIN)
+    if type(silence) is not int or not 10 <= silence <= 300:
+        raise ValueError("incidents generators silence_seconds must be 10..300")
+    if type(group) is not int or not 2 <= group <= 16:
+        raise ValueError("incidents generators group_min must be 2..16")
+    GeneratorWatch(devices)  # unique names and MACs
+    return {"enabled": enabled, "devices": dict(devices), "silence_seconds": silence, "group_min": group}
 
 
 def validate_config(value, base_path, telemetry_database, device_database, server):
-    if not isinstance(value, dict) or set(value) - {"enabled", "database", "notifications"}:
+    if not isinstance(value, dict) or set(value) - {"enabled", "database", "notifications", "generators"}:
         raise ValueError("incidents contains unknown fields")
     enabled = value.get("enabled", False)
     if type(enabled) is not bool:
@@ -41,7 +74,8 @@ def validate_config(value, base_path, telemetry_database, device_database, serve
         raise ValueError("incidents requires enabled server_jsonl")
     from notifications import validate_config as validate_notifications
     settings = validate_notifications(value.get("notifications", {"enabled": False}), base_path)
-    return {"enabled": enabled, "database": database, "notifications": settings}
+    generators = validate_generators(value.get("generators", {"enabled": False}))
+    return {"enabled": enabled, "database": database, "notifications": settings, "generators": generators}
 
 
 def _text(value):
@@ -66,6 +100,8 @@ def _fresh(event, now):
 
 class IncidentStore:
     def __init__(self, path, *, readonly=False):
+        self.watch = self.watch_source = None
+        self.watch_ids = {}  # generator watch key -> incident_id
         self.path = Path(path).resolve()
         if not readonly:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +166,20 @@ class IncidentStore:
     def close(self):
         self.db.close()
 
+    def attach_generators(self, watch, source_id):
+        """Collector-derived generator incidents, filed under the game server they were seen through."""
+        self.watch, self.watch_source, self.watch_ids = watch, source_id, {}
+        # The watch lives in memory; incidents left open by a previous process resume their recovery.
+        for row in self.db.execute("SELECT incident_id,session_id,opened_utc,details FROM incident_state WHERE source_id=? AND state='open' AND reason='generator_silent'", (source_id,)):
+            details = json.loads(row["details"])
+            try:
+                watch.restore(row["incident_id"], details.get("member_macs") or [], parse_utc(details["since_utc"]),
+                              row["session_id"], parse_utc(row["opened_utc"]))
+                if row["incident_id"] in watch.open:
+                    self.watch_ids[row["incident_id"]] = row["incident_id"]
+            except (KeyError, ValueError, TypeError):
+                pass  # Ends at the next game change like any incident the watch no longer tracks.
+
     def cursor(self):
         row = self.db.execute("SELECT value FROM incident_meta WHERE key='cursor'").fetchone()
         return int(row[0]) if row else 0
@@ -160,15 +210,24 @@ class IncidentStore:
         details = json.loads(row["details"])
         role = _text(details.get("role")) or "unknown"
         reason = row["reason"] or "unknown"
+        kind = _text(details.get("kind"))
+        if kind == "reboot":
+            summary = f"Generator {row['device_id']} rebooted: reset reason {details.get('reset_reason')} ({details.get('reset_label')}), firmware {details.get('firmware')}. Cause not determined."
+        elif kind in ("silence", "group"):
+            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms during the game; last_seen={details.get('last_seen_utc', 'unknown')}. Cause not determined."
+        else:
+            summary = f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined."
         payload = {"incident_id": row["incident_id"], "site_id": row["site_id"],
                    "device_mac": row["mac"], "device_id": row["device_id"],
-                   "game_session_id": row["session_id"], "status": status,
-                   "summary": f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined.",
-                   "occurred_at": row["opened_utc"] if status == "offline" else row["updated_utc"],
+                   "game_session_id": row["session_id"], "status": status, "summary": summary,
+                   "occurred_at": row["opened_utc"] if status in ("offline", "rebooted") else row["updated_utc"],
                    # Structured copies of the summary values for the human-readable Slack card.
                    "role": role, "server_reason": details.get("reason"), "close_reason": row["reason"],
                    "opened_at": row["opened_utc"], "last_seen_utc": details.get("last_seen_utc"),
                    "gap_ms": details.get("gap_ms")}
+        if kind:
+            payload.update(kind=kind, members=details.get("members"), reset_label=details.get("reset_label"),
+                           firmware=details.get("firmware"))
         for channel in channels:
             linked = {}
             if version > 1:
@@ -182,7 +241,8 @@ class IncidentStore:
                 if not delivered or (status != "recovered" and channel != "notion" and not linked):
                     continue
             self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,?,?)", (row["incident_id"], channel, version, canonical_json(dict(payload, **linked))))
-            if version == 2 and channel == "notion" and linked:
+            # A generator group has no single device MAC, so it has no blackbox table to show.
+            if version == 2 and channel == "notion" and linked and kind != "group":
                 # Blackbox summary for the event page; built at delivery, once the device backlog has arrived.
                 self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,3,?)", (row["incident_id"], channel, canonical_json({"incident_id": row["incident_id"], "evidence": True, **linked})))
 
@@ -231,18 +291,93 @@ class IncidentStore:
                     self.db.execute("UPDATE incident_outbox SET payload=? WHERE id=?",(canonical_json(payload),pending["id"]))
 
     def process(self, seq, event, *, now, mono, run_id, channels):
-        with self.transaction():
-            floor = self.db.execute("SELECT value FROM incident_meta WHERE key='snapshot_floor'").fetchone()
-            if event.event_type != "game_monitor_snapshot" or not floor or seq > int(floor[0]):
-                self._process(event, now=now, mono=mono, run_id=run_id, channels=channels)
-            self.db.execute("INSERT OR REPLACE INTO incident_meta VALUES ('cursor',?)", (str(seq),))
+        # The generator watch decides in memory: roll it back with the transaction, so a
+        # retried event decides again instead of finding its incident "already open".
+        saved = (copy.deepcopy(self.watch), dict(self.watch_ids)) if self.watch else None
+        try:
+            with self.transaction():
+                floor = self.db.execute("SELECT value FROM incident_meta WHERE key='snapshot_floor'").fetchone()
+                if event.event_type != "game_monitor_snapshot" or not floor or seq > int(floor[0]):
+                    self._process(event, now=now, mono=mono, run_id=run_id, channels=channels)
+                self.db.execute("INSERT OR REPLACE INTO incident_meta VALUES ('cursor',?)", (str(seq),))
+        except Exception:
+            if saved:
+                self.watch, self.watch_ids = saved
+            raise
+
+    def _generator_actions(self, actions, site_id, when, channels):
+        for action in actions:
+            if action["type"] != "open":
+                incident = self.watch_ids.pop(action["key"], None)
+                if incident:
+                    recovered = action["type"] == "recover"
+                    self._close(incident, "recovered" if recovered else "closed",
+                                "reconnected" if recovered else action["reason"],
+                                action["at"].isoformat(timespec="microseconds") if recovered else when, channels)
+                continue
+            incident = str(uuid.uuid5(uuid.NAMESPACE_URL, f"has1-generator-silence/{site_id}/{action['key']}"))
+            self.watch_ids[action["key"]] = incident
+            names, macs = action["names"], action["macs"]
+            single = len(names) == 1
+            since = action["since"].isoformat(timespec="microseconds")
+            opened = action["at"].isoformat(timespec="microseconds")
+            last_seen = action["last_seen"].isoformat(timespec="microseconds") if action.get("last_seen") else None
+            details = {"role": "generator", "kind": "silence" if single else "group", "members": names,
+                       "member_macs": macs, "since_utc": since, "last_seen_utc": last_seen, "gap_ms": action["gap_ms"],
+                       "boot_id": self.watch.boot, "game_session_id": self.watch.session, "reason": "generator_silent"}
+            inserted = self.db.execute("INSERT OR IGNORE INTO incident_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (incident, site_id, self.watch_source, self.watch.boot or "unknown", self.watch.session,
+                 names[0] if single else "발전기 " + "·".join(names), macs[0] if single else None,
+                 "open", "generator_silent", opened, opened, canonical_json(details))).rowcount
+            if inserted:
+                self._queue(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident,)).fetchone(), channels, 1, "offline")
+
+    def _generator_boot(self, event, now, channels):
+        """A crash reboot is over by the time its Boot record arrives: announced once, never left open."""
+        found = boot_reason({"event_type": event.event_type, "fields": event.fields}) if self.watch else None
+        if not found or event.mac not in self.watch.names:
+            return
+        label = self.watch.reboot_label(found[0])
+        age = (parse_utc(now) - parse_utc(event.observed_utc)).total_seconds()
+        if not label or not -2 <= age <= REBOOT_FRESH_SECONDS:
+            return
+        observed = parse_utc(event.observed_utc)
+        # Outside a game the day's reboots share one card and one Notion page.
+        session = self.watch.session or "게임외-" + observed.astimezone(KST).strftime("%Y%m%d")
+        quiet = (observed - timedelta(seconds=REBOOT_QUIET_SECONDS)).isoformat(timespec="microseconds")
+        # Within one session only: a reboot once a game starts is news again.
+        if self.db.execute("SELECT 1 FROM incident_state WHERE reason='generator_reboot' AND site_id=? AND mac=? AND session_id=? AND opened_utc>=?",
+                           (event.site_id, event.mac, session, quiet)).fetchone():
+            return
+        device_boot = event.fields.get("boot")
+        details = {"role": "generator", "kind": "reboot", "reset_reason": found[0], "reset_label": label,
+                   "firmware": found[1], "device_boot": device_boot, "game_session_id": session,
+                   # The blackbox table is anchored on this record, not on the upload's arrival time.
+                   "device_ring": event.fields.get("ring"), "device_seq": event.fields.get("seq")}
+        incident = str(uuid.uuid5(uuid.NAMESPACE_URL, f"has1-generator-reboot/{event.site_id}/{event.mac}/{device_boot}"))
+        stamp = observed.isoformat(timespec="microseconds")
+        inserted = self.db.execute("INSERT OR IGNORE INTO incident_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (incident, event.site_id, self.watch_source, self.watch.boot or "unknown", session,
+             self.watch.names[event.mac], event.mac, "recovered", "generator_reboot", stamp, stamp,
+             canonical_json(details))).rowcount
+        if inserted:
+            self._queue(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident,)).fetchone(), channels, 1, "rebooted")
 
     def _process(self, event, *, now, mono, run_id, channels):
+        if event.source == "device":
+            self._generator_boot(event, now, channels)
+            return
         if event.source != "game_server":
             return
         fields = event.fields
         boot, session = _text(fields.get("boot_id")), _text(fields.get("game_session_id"))
         incident = _text(fields.get("incident_id"))
+        if self.watch and event.source_id == self.watch_source and event.occurred_utc:
+            at = parse_utc(event.occurred_utc)
+            actions = self.watch.server(boot, at)
+            if event.event_type == "request_ingress":
+                actions += self.watch.request(event.mac, at)
+            self._generator_actions(actions, event.site_id, event.occurred_utc, channels)
         if event.event_type == "device_offline":
             self._record_open(event, {"incident_id": incident}, fields)
             return  # No notification until a complete fresh snapshot confirms it.
@@ -298,9 +433,19 @@ class IncidentStore:
         ids = [item["incident_id"] for item in active] if fields["game_active"] else []
         age = max(0, (parse_utc(now)-parse_utc(event.occurred_utc)).total_seconds(), (parse_utc(now)-parse_utc(event.observed_utc)).total_seconds())
         self.db.execute("INSERT OR REPLACE INTO incident_sources VALUES (?,?,?,?,?,?,?,?,?,?)", (event.site_id,event.source_id,boot,session,event.occurred_utc,sequence,run_id,mono+FRESH_SECONDS-age,canonical_json(ids),"healthy"))
+        if self.watch and event.source_id == self.watch_source:
+            self._generator_actions(self.watch.game(fields["game_active"], session, parse_utc(event.occurred_utc)),
+                                    event.site_id, event.occurred_utc, channels)
         # The new snapshot also reconciles missed end events and process restarts.
         rows = self.db.execute("SELECT * FROM incident_state WHERE site_id=? AND source_id=? AND state='open'", (event.site_id,event.source_id))
         for row in rows:
+            if row["reason"] == "generator_silent":
+                # Not in the server's list by design: the generator watch ends it with the game.
+                # One it no longer tracks (watch disabled, unreadable details) ends here instead.
+                tracked = self.watch and row["incident_id"] in self.watch_ids.values()
+                if not tracked and (row["boot_id"] != boot or row["session_id"] != session or not fields["game_active"]):
+                    self._close(row["incident_id"], "closed", "game_ended", event.occurred_utc, channels)
+                continue
             if row["boot_id"] != boot or row["session_id"] != session or row["incident_id"] not in ids:
                 self._close(row["incident_id"], "closed", "snapshot_no_longer_active", event.occurred_utc, channels)
         for item in active if fields["game_active"] else []:
@@ -316,19 +461,28 @@ class IncidentStore:
                 return None
             # Filter eligibility in SQL BEFORE LIMIT. A previous source's stale
             # queue must never starve another source's currently eligible row.
-            rows = self.db.execute("""SELECT o.*,i.site_id,i.source_id,i.boot_id,i.session_id,i.state AS incident_state
+            # A reboot alert still unsent long after the fact is no longer news (all at once, not one per cycle).
+            stale = datetime.fromtimestamp(now_epoch - REBOOT_DELIVERY_SECONDS, timezone.utc).isoformat(timespec="microseconds")
+            self.db.execute("UPDATE incident_outbox SET state='canceled',error_code='stale_reboot' WHERE version=1 AND state IN ('pending','retryable') "
+                            "AND incident_id IN (SELECT incident_id FROM incident_state WHERE reason='generator_reboot' AND opened_utc<?)", (stale,))
+            # A first alert needs the incident in the server's current list. The collector's own
+            # generator silences need only the same server boot and game; a generator reboot is
+            # already over and needs only a healthy source.
+            rows = self.db.execute("""SELECT o.*,i.site_id,i.source_id,i.boot_id,i.session_id,i.state AS incident_state,i.reason AS incident_reason
               FROM incident_outbox o JOIN incident_state i USING(incident_id)
               JOIN incident_sources s ON s.site_id=i.site_id AND s.source_id=i.source_id
               WHERE o.state IN ('pending','retryable') AND o.next_attempt<=?
                 AND s.validated_run=? AND s.deadline>=?
-                AND (o.version>1 OR (i.state='open' AND s.boot_id=i.boot_id AND s.session_id=i.session_id
-                  AND EXISTS(SELECT 1 FROM json_each(s.active_ids) WHERE value=i.incident_id)))
+                AND (o.version>1 OR i.reason='generator_reboot'
+                  OR (i.state='open' AND s.boot_id=i.boot_id AND s.session_id=i.session_id
+                  AND (i.reason='generator_silent' OR EXISTS(SELECT 1 FROM json_each(s.active_ids) WHERE value=i.incident_id))))
               ORDER BY o.id LIMIT 1""", (now_epoch,run_id,mono)).fetchall()
             for row in rows:
                 source = self.db.execute("SELECT * FROM incident_sources WHERE site_id=? AND source_id=?", (row["site_id"],row["source_id"])).fetchone()
                 if not source or source["validated_run"] != run_id or source["deadline"] < mono:
                     continue
-                if row["version"] == 1 and (row["incident_state"] != "open" or source["boot_id"] != row["boot_id"] or source["session_id"] != row["session_id"] or row["incident_id"] not in json.loads(source["active_ids"])):
+                listed = row["incident_reason"] == "generator_silent" or row["incident_id"] in json.loads(source["active_ids"])
+                if row["version"] == 1 and row["incident_reason"] != "generator_reboot" and (row["incident_state"] != "open" or source["boot_id"] != row["boot_id"] or source["session_id"] != row["session_id"] or not listed):
                     continue
                 self.db.execute("UPDATE incident_outbox SET state='sending',attempts=attempts+1 WHERE id=?", (row["id"],))
                 result = dict(row)
@@ -354,7 +508,12 @@ class IncidentStore:
                 self.db.execute("INSERT OR REPLACE INTO session_links VALUES (?,?,?,?)", (incident["site_id"], incident["session_id"], row["destination"], parent))
             if on_delivered and state == "delivered":
                 on_delivered()  # same transaction: a follow-up cannot be lost between the two writes
-            if row["version"] == 1 and incident["state"] != "open":
+            if row["version"] == 1 and incident["reason"] == "generator_reboot":
+                if state == "delivered" and row["destination"] == "notion" and result.remote_id:
+                    # No follow-up exists for a reboot; its page gets the blackbox table (crash records) directly.
+                    self.db.execute("INSERT OR IGNORE INTO incident_outbox(incident_id,destination,version,payload) VALUES (?,?,3,?)",
+                                    (row["incident_id"], "notion", canonical_json({"incident_id": row["incident_id"], "evidence": True, "notion_page_id": result.remote_id})))
+            elif row["version"] == 1 and incident["state"] != "open":
                 if state == "retryable":
                     self.db.execute("UPDATE incident_outbox SET state='canceled' WHERE id=?", (delivery_id,))
                 elif state == "delivered":
@@ -386,7 +545,7 @@ class IncidentStore:
         params = (row["site_id"], row["session_id"], incident_id)
         # Unresolved first, then newest: a flapping session must not hide the device that is down now.
         incidents = [dict(item) for item in self.db.execute(
-            "SELECT incident_id,device_id,state,opened_utc,updated_utc " + announced +
+            "SELECT incident_id,device_id,state,opened_utc,updated_utc,reason " + announced +
             " ORDER BY state='open' DESC,opened_utc DESC,incident_id LIMIT 64", params)]
         counts = dict(self.db.execute("SELECT state,count(*) " + announced + " GROUP BY state", params).fetchall())
         return {"site_id": row["site_id"], "session_id": row["session_id"], "ts": links.get("slack"),
@@ -464,6 +623,25 @@ class IncidentRuntime:
         self.slack_cards = bool(notification.get("enabled") and notification.get("slack",{}).get("enabled") and notification.get("slack",{}).get("channel_id"))
         order = ("notion","slack") if self.slack_cards else ("slack","notion")
         self.channels = [name for name in order if notification.get("enabled") and notification.get(name,{}).get("enabled")]
+        self.generators = config.get("generators") or {"enabled": False}
+
+    def _new_store(self):
+        state = IncidentStore(self.config["database"])
+        state.start_run(self.run_id)
+        self._watch_generators(state)
+        return state
+
+    def _watch_generators(self, state):
+        if self.generators.get("enabled"):
+            state.attach_generators(GeneratorWatch(self.generators["devices"],
+                silence_seconds=self.generators["silence_seconds"], group_min=self.generators["group_min"]), self.source_id)
+
+    def _routed(self, event, state):
+        """Events the incident store processes; the cursor skips the rest. Device records
+        (source_id is the MAC) reach only the generator reboot rule."""
+        if event.site_id != self.site_id:
+            return False
+        return event.source_id == self.source_id or (event.source == "device" and state.watch is not None)
 
     def start(self):
         for target,name in ((self._process_loop,"incident-state"),(self._notification_loop,"incident-delivery")):
@@ -480,8 +658,7 @@ class IncidentRuntime:
                 try:
                     self.check_disk()
                     if state is None:
-                        state = IncidentStore(self.config["database"])
-                        state.start_run(self.run_id)
+                        state = self._new_store()
                     if raw is None:
                         raw = _open_telemetry(self.telemetry_database)
                     self.ready.set()
@@ -499,7 +676,7 @@ class IncidentRuntime:
                         event = Event.from_dict(json.loads(payload))
                         # Cursor advances over unrelated sources without treating
                         # other stores/server identities as authorities.
-                        if event.site_id != self.site_id or event.source_id != self.source_id:
+                        if not self._routed(event, state):
                             with state.transaction():
                                 state.db.execute("INSERT OR REPLACE INTO incident_meta VALUES ('cursor',?)",(str(seq),))
                         else:

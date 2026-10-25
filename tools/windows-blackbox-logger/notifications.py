@@ -20,7 +20,8 @@ from service_runtime import read_machine_password
 NOTION_VERSION = "2025-09-03"
 MAX_BODY = 65536
 TOTAL_TIMEOUT = 10.0
-NOTION_STATUS_NAMES = {"offline": "장애중", "recovered": "복구됨", "monitoring_ended": "미복구 종료"}
+# A reboot is over before it is reported, so its event is filed as recovered.
+NOTION_STATUS_NAMES = {"offline": "장애중", "recovered": "복구됨", "monitoring_ended": "미복구 종료", "rebooted": "복구됨"}
 # Device-event DB (configured data source) and the incident DB its "게임 세션" relation points to.
 NOTION_EVENT_PROPERTIES = {"이벤트": "title", "사건 ID": "rich_text", "상태": "status", "게임 세션": "relation",
                            "장치": "select", "역할": "select", "매장": "select", "발생 시각": "date",
@@ -291,8 +292,13 @@ def _text(value, limit=1800):
 
 KST = timezone(timedelta(hours=9), "KST")
 SLACK_HEADERS = {"offline": "🔴 장치 연결 끊김", "recovered": "🟢 장치 복구됨",
-                 "monitoring_ended": "⚪ 모니터링 종료 (복구 확인 안 됨)"}
-CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active": "게임 종료 또는 서버 목록에서 제외"}
+                 "monitoring_ended": "⚪ 모니터링 종료 (복구 확인 안 됨)", "rebooted": "🔁 장치 재부팅"}
+CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active": "게임 종료 또는 서버 목록에서 제외",
+                 "game_ended": "게임 종료", "server_restarted": "서버 재시작"}
+# generator_watch reboot labels (esp_reset_reason_t).
+REBOOT_LABELS = {"panic": "패닉(크래시)", "int_wdt": "인터럽트 워치독", "task_wdt": "태스크 워치독", "wdt": "워치독",
+                 "brownout": "전압 저하", "pwr_glitch": "전원 글리치", "cpu_lockup": "CPU 잠김",
+                 "poweron": "전원 투입", "ext": "외부 리셋"}
 
 
 def _parse_time(value):
@@ -338,6 +344,11 @@ def _close_reason(payload):
     return CLOSE_REASONS.get(reason, reason)
 
 
+def _reboot_reason(payload):
+    label = _text(payload.get("reset_label"), 40)
+    return REBOOT_LABELS.get(label, label)
+
+
 def slack_message(payload):
     """Human-readable card. plain_text only, so payload values can never mention or link."""
     status = payload.get("status")
@@ -353,6 +364,9 @@ def slack_message(payload):
     if status == "offline":
         fields += [("끊긴 시각", _kst(payload.get("occurred_at"))),
                    ("마지막 수신", _kst(payload.get("last_seen_utc"))), ("무응답 시간", gap)]
+    elif status == "rebooted":
+        fields += [("확인 시각", _kst(payload.get("occurred_at"))), ("재부팅 사유", _reboot_reason(payload)),
+                   ("펌웨어", _text(payload.get("firmware"), 20))]
     else:
         fields += [("끊긴 시각", _kst(payload.get("opened_at"))),
                    ("복구 시각" if status == "recovered" else "종료 시각", _kst(payload.get("occurred_at"))),
@@ -361,7 +375,7 @@ def slack_message(payload):
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"{header} · {device}"[:150]}},
               {"type": "section", "fields": [{"type": "plain_text", "text": f"{label}\n{value}"[:2000]}
                                              for label, value in fields if value and value != "unknown"][:10]}]
-    note = "원인은 아직 확정되지 않았습니다." if status == "offline" else ""
+    note = "원인은 아직 확정되지 않았습니다." if status in ("offline", "rebooted") else ""
     blocks.append({"type": "context", "elements": [{"type": "plain_text",
                    "text": f"{note} 사건 ID {_text(payload.get('incident_id'), 160)}".strip()}]})
     title = " ".join(part for part in (header, site, device) if part)
@@ -382,6 +396,8 @@ def _notion_link(page_id, label):
 
 def _session_item_line(item):
     device = _text(item.get("device_id"), 40) or "알 수 없는 장치"
+    if item.get("reason") == "generator_reboot":
+        return f"🔁 {device} · {_kst(item.get('opened_utc')) or '?'} 재부팅"
     opened, updated = _parse_time(item.get("opened_utc")), _parse_time(item.get("updated_utc"))
     line = f"{SESSION_STATES.get(item.get('state'), '❔')} {device} · {_kst(item.get('opened_utc')) or '?'} 끊김"
     if item.get("state") == "recovered":
@@ -452,6 +468,10 @@ def slack_event_reply(payload, session):
     elif status == "recovered":
         outage = _outage(payload)
         parts = [f"🟢 {device} 복구", outage and outage + " 만에", _close_reason(payload)]
+    elif status == "rebooted":
+        firmware = _text(payload.get("firmware"), 20)
+        parts = [f"🔁 {device} 재부팅", _reboot_reason(payload), firmware and "펌웨어 " + firmware,
+                 _kst(payload.get("occurred_at")) and "확인 " + _kst(payload.get("occurred_at"))]
     else:
         parts = [f"⚪ {device} 미복구 종료", _close_reason(payload),
                  _kst(payload.get("opened_at")) and "끊긴 시각 " + _kst(payload.get("opened_at"))]
@@ -495,10 +515,11 @@ def _send_slack_session(call, token, channel_id, payload):
     session = payload.get("slack_session")
     if not isinstance(session, dict):
         # Without the collector's session context, the card covers this event alone.
-        state = {"offline": "open", "recovered": "recovered"}.get(payload.get("status"), "closed")
+        state = {"offline": "open", "recovered": "recovered", "rebooted": "recovered"}.get(payload.get("status"), "closed")
         session = {"incidents": [{"device_id": payload.get("device_id"), "state": state,
                                   "opened_utc": payload.get("opened_at") or payload.get("occurred_at"),
-                                  "updated_utc": payload.get("occurred_at")}]}
+                                  "updated_utc": payload.get("occurred_at"),
+                                  "reason": "generator_reboot" if payload.get("status") == "rebooted" else None}]}
     card = slack_session_card(payload, session)
     # A pre-upgrade follow-up still carries its per-device card: take it over as the session card.
     parent = next((ts for ts in (session.get("ts"), payload.get("slack_ts")) if isinstance(ts, str) and SLACK_TS.fullmatch(ts)), None)
@@ -522,9 +543,9 @@ def _send_slack_session(call, token, channel_id, payload):
             return DeliveryResult("unknown", "invalid_write_response")
     open_count, recovered, unrecovered = _session_counts(session)
     # Edits notify nobody. Thread and surface what needs a person: a device unrecovered at game end,
-    # or a new drop on a card that had settled (everything else had already ended).
+    # a crash reboot, or a new drop on a card that had settled (everything else had already ended).
     reopened = payload.get("status") == "offline" and edited and open_count == 1 and recovered + unrecovered > 0
-    if payload.get("status") != "monitoring_ended" and not reopened:
+    if payload.get("status") not in ("monitoring_ended", "rebooted") and not reopened:
         return DeliveryResult("delivered", "ok", remote_id=parent, parent_id=parent)
     reply = dict(slack_event_reply(payload, session), channel=channel_id, thread_ts=parent, reply_broadcast=True)
     _, failure = _slack_api(call, token, "chat.postMessage", reply)
@@ -602,7 +623,8 @@ def _opened_at(payload, status):
 def _event_properties(payload, status, incident_id):
     """Device-event columns. Missing values are omitted so an update never clears them."""
     device = _select_name(payload.get("device_id")) or "알 수 없는 장치"
-    properties = {"이벤트": {"title": _rich(device + " 연결 끊김")}, "사건 ID": {"rich_text": _rich(incident_id)},
+    rebooted = status == "rebooted"
+    properties = {"이벤트": {"title": _rich(device + (" 재부팅" if rebooted else " 연결 끊김"))}, "사건 ID": {"rich_text": _rich(incident_id)},
                   "상태": {"status": {"name": NOTION_STATUS_NAMES[status]}},
                   "매장": {"select": {"name": _select_name(payload.get("site_id"))}},
                   "장치": {"select": {"name": device}}}
@@ -617,12 +639,13 @@ def _event_properties(payload, status, incident_id):
     if opened:
         properties["발생 시각"] = {"date": {"start": _iso(opened)}}
     if status != "offline":
-        ended, reason = _parse_time(payload.get("occurred_at")), _select_name(_close_reason(payload))
+        ended = _parse_time(payload.get("occurred_at"))
+        reason = _select_name("재부팅 " + _reboot_reason(payload) if rebooted else _close_reason(payload))
         if ended:
             properties["종료 시각"] = {"date": {"start": _iso(ended)}}
         if reason:
             properties["종료 사유"] = {"select": {"name": reason}}
-        if opened and ended:
+        if opened and ended and not rebooted:
             # Notion stores date-times to the minute, so the duration cannot be derived from the dates there.
             seconds = round((ended - opened).total_seconds())
             if seconds >= 0:
