@@ -20,6 +20,14 @@ void setup() {
     // can deliver a legacy M pulse command.
     digitalWrite(RELAY_PIN, LOW);
     pinMode(RELAY_PIN, OUTPUT);
+    // setRxBufferSize() returns 0 when it is ignored (e.g. called after begin()).
+    // Keep the smaller size on failure: the drain-until-quiet flush still
+    // protects against stale frames, only with less headroom.
+    const size_t subRx = toSubSerial.setRxBufferSize(BEETLE_RX_BUFFER_BYTES);
+    const size_t mainRx = toMainSerial.setRxBufferSize(BEETLE_RX_BUFFER_BYTES);
+    beetleRxBufferBytes = (subRx && mainRx) ? BEETLE_RX_BUFFER_BYTES : 0;
+    if (beetleRxBufferBytes == 0)
+        Serial.println("[BEETLE] RX buffer resize failed; default size in use");
     toSubSerial.begin(9600, SERIAL_8N1, SUB_BEETLE_RX_PIN, SUB_BEETLE_TX_PIN);
     toMainSerial.begin(9600, SERIAL_8N1, MAIN_BEETLE_RX_PIN, MAIN_BEETLE_TX_PIN);
     // Start Beetle discovery before WiFi setup.  W keeps old firmware working;

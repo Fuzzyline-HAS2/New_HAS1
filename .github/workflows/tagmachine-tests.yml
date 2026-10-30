@@ -44,6 +44,8 @@ jobs:
         run: python3 devices/HAS1_tagmachine_sub/tests/run_tests.py
       - name: TTGO lock/unlock pending-state regression
         run: python3 devices/HAS1_tagmachine_main/tests/run_pending_lock_tests.py
+      - name: TTGO Beetle flush drains re-injected UART overflow
+        run: python3 devices/HAS1_tagmachine_main/tests/run_flush_drain_tests.py
       - name: OTA wire protocol
         run: |
           c++ -std=c++11 -Wall -Wextra -Werror \
