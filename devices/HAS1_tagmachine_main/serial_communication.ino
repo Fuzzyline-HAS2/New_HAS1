@@ -350,11 +350,14 @@ static void DiscardQueuedTags(int idx) {
         ReadBeetleFramesWithBudget(idx, (size_t)queuedBytes);
         readAny = true;
         quietSince = millis();
-      } else if (!readAny || BeetleOtaActive() ||
-                 Elapsed(millis(), quietSince, BEETLE_FLUSH_QUIET_MS)) {
+        if (Elapsed(millis(), start, BEETLE_FLUSH_MAX_MS)) break;
+        continue;  // Re-check at once: a read may have re-injected stashed bytes.
+      }
+      if (!readAny || BeetleOtaActive() ||
+          Elapsed(millis(), quietSince, BEETLE_FLUSH_QUIET_MS) ||
+          Elapsed(millis(), start, BEETLE_FLUSH_MAX_MS)) {
         break;
       }
-      if (Elapsed(millis(), start, BEETLE_FLUSH_MAX_MS)) break;
       delay(1);
     }
   }
