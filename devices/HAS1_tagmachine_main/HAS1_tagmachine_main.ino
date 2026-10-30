@@ -9,7 +9,7 @@
  *
  */
 
-#define FIRMWARE_VER 16
+#define FIRMWARE_VER 17
 #define PARTITION_VER 1
 #include "HAS1_tagmachine_main.h"
 // #include <esp_task_wdt.h>  // [WDT 비활성화]
