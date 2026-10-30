@@ -158,6 +158,14 @@ struct BeetleLinkState {
 
 extern BeetleLinkState beetleLinks[BEETLE_COUNT];
 unsigned long beetleSendLastMs[2] = {0, 0}; // 채널별 서버 전송 스로틀용 (1초)
+// Door effects block loop() for up to ~8 s while a held card streams ~110 B/s
+// per reader. The default 256-byte RX ring overflowed there and the driver's
+// stashed overflow chunk resurfaced after the post-lock flush as a phantom tag
+// (academy AT, 2026-10-30). 2048 bytes holds the whole blind window. The size
+// must be applied before HardwareSerial::begin(); the applied size is reported
+// in PrintBeetleLinkDiagnostics() so a telnet client can verify it.
+#define BEETLE_RX_BUFFER_BYTES 2048
+size_t beetleRxBufferBytes = 0;
 HardwareSerial toSubSerial(1);
 HardwareSerial toMainSerial(2);
 bool tagState = false;

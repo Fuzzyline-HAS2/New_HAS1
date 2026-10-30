@@ -9,6 +9,11 @@ const unsigned long BEETLE_RECOVERY_COOLDOWN_MS = 20000;
 const unsigned long BEETLE_STATUS_UNKNOWN_MS = 10000;
 const unsigned long BEETLE_DIAGNOSTIC_INTERVAL_MS = 30000;
 const size_t BEETLE_RX_BYTE_BUDGET = 192;
+// DiscardQueuedTags() keeps draining until the port is quiet this long. Live
+// Beetle frames are >= ~50 ms apart, so a quiet gap always arrives.
+const unsigned long BEETLE_FLUSH_QUIET_MS = 20;
+// Hard bound on one flush so no input pattern can hold the loop.
+const unsigned long BEETLE_FLUSH_MAX_MS = 150;
 
 unsigned long lastBeetleDiagnosticsMs = 0;
 
@@ -320,17 +325,38 @@ static void MaintainBeetleLink(int idx) {
 static void DiscardQueuedTags(int idx) {
   // Mode transitions used to throw away every byte in the UART FIFO. Parse
   // queued frames instead so W/H/A/E/R remain effective, and discard only
-  // pending tag/relay events that belong to the mode being exited. Snapshot
-  // the current backlog
-  // so all bytes already queued are consumed even when it exceeds the normal
-  // 192-byte service budget. Newly arriving bytes cannot make this loop
-  // unbounded. Complete control/status frames are handled above; an incomplete
-  // transition-time frame is discarded to preserve the old raw-flush boundary.
+  // pending tag/relay events that belong to the mode being exited. Complete
+  // control/status frames are handled above; an incomplete transition-time
+  // frame is discarded to preserve the old raw-flush boundary.
+  //
+  // Drain until the port stays quiet for BEETLE_FLUSH_QUIET_MS instead of one
+  // available()-sized read. Door effects block the loop for up to ~8 s while a
+  // Beetle keeps streaming a held card, so the RX ring buffer could overflow;
+  // the UART driver then re-injects its stashed overflow chunk (and the
+  // hardware FIFO residue) only after a read frees space. A single read missed
+  // those stale frames and the next loop dispatched them as a new tag right
+  // after the door relocked (academy AT phantom tag, 2026-10-30). An empty
+  // port returns at once: nothing was read, so nothing can be re-injected.
+  // BEETLE_FLUSH_MAX_MS bounds the wait regardless of input. Beetle OTA keeps
+  // the historical single pass so coordinator timing is unchanged.
   BeetleLinkState &link = beetleLinks[idx];
   if (link.serial != nullptr) {
-    const int queuedBytes = link.serial->available();
-    if (queuedBytes > 0)
-      ReadBeetleFramesWithBudget(idx, (size_t)queuedBytes);
+    const unsigned long start = millis();
+    unsigned long quietSince = start;
+    bool readAny = false;
+    while (true) {
+      const int queuedBytes = link.serial->available();
+      if (queuedBytes > 0) {
+        ReadBeetleFramesWithBudget(idx, (size_t)queuedBytes);
+        readAny = true;
+        quietSince = millis();
+      } else if (!readAny || BeetleOtaActive() ||
+                 Elapsed(millis(), quietSince, BEETLE_FLUSH_QUIET_MS)) {
+        break;
+      }
+      if (Elapsed(millis(), start, BEETLE_FLUSH_MAX_MS)) break;
+      delay(1);
+    }
   }
   link.rxLength = 0;
   link.rxOverflow = false;
@@ -414,7 +440,8 @@ void PrintBeetleLinkDiagnostics() {
                   String(link.helloCount) + "/" + String(link.heartbeatCount) + "/" +
                   String(link.readyCount) + "/" + String(link.errorCount) + "/" +
                   String(link.tagCount) + "/" + String(link.recoveryCount) + "/" +
-                  String(link.invalidFrameCount) + "/" + String(link.droppedInputCount);
+                  String(link.invalidFrameCount) + "/" + String(link.droppedInputCount) +
+                  " rxbuf=" + String((unsigned long)beetleRxBufferBytes);
     Serial.println(line);
   }
 }
