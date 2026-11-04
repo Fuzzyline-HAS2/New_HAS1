@@ -24,7 +24,8 @@ its own task-watchdog user and sets a 1 s panic timeout. The loop keeps yielding
 The core 3.3.11 C3 configuration enables panic reboot; verify a physical reboot
 on the installed board as part of the first USB validation.
 
-The user-confirmed schematic on 2026-09-17 connects TTGO GPIO12 to Beetle symbol
+The user-confirmed schematic on 2026-09-17 connects TTGO GPIO12 (GPIO33 from
+TTGO firmware v24; the Beetle input is unchanged) to Beetle symbol
 physical pin 4, labelled GPIO1. The previously installed v1 image monitored
 GPIO3; its UART worked after battery power was connected, but reset pulses did
 not change the boot ID. The GPIO1 correction was subsequently installed by USB.
@@ -120,7 +121,8 @@ Scanning pauses during OTA, the UART/main loop remains responsive, and reset-lin
 requests are deferred until flash work ends. A worker stuck over 180 s stops the
 loop watchdog feed and triggers recovery within its 30 s timeout. BLE discovery
 stuck over 8 s does the same. A watchdog reboot cannot guarantee recovery from a
-hardware power fault; validate the GPIO12 boot strap pull-down on the TTGO.
+hardware power fault. TTGO v24 moved the request line from the GPIO12 boot strap
+to GPIO33; the Beetle pull-down on GPIO1 keeps the line LOW while the TTGO boots.
 
 Host regression tests cover the real UART parser, location tracker, reset latch,
 and NVS OTA recovery policy (upgrade/rollback, wrong target, same boot, partition
