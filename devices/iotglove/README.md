@@ -31,13 +31,13 @@ TTGO T1과 Beetle ESP32-C3용 1호점 The Origin 펌웨어. Nextion 없이 칩·
 | --- | --- | --- |
 | UART TTGO → Beetle | GPIO32 TX | GPIO6 RX |
 | UART Beetle → TTGO | GPIO36 RX | GPIO5 TX |
-| 리셋 요청 | GPIO12 출력 | GPIO1 입력 (회로도 심벌의 물리 핀 4, 라벨 1) |
+| 리셋 요청 | GPIO33 출력 (v23까지는 GPIO12) | GPIO1 입력 (회로도 심벌의 물리 핀 4, 라벨 1) |
 | NeoPixel 4개 | GPIO25 | — |
 | 생명칩, LOW=장착 | GPIO26 | — |
 | 발각 버튼, LOW=눌림 | GPIO27 | — |
-| 진동, HIGH=ON | GPIO13 | — |
+| 진동, LEDC PWM 20kHz 8비트, 듀티 0=OFF | GPIO13 (모스펫 게이트, 모터에 플라이백 다이오드 필요) | — |
 
-공통 GND와 실제 구동 회로를 확인한다. GPIO12는 모터 용도로 사용하지 않는다. 리셋은 LOW 대기 → HIGH 150ms → LOW이며 요청 간 30초 간격을 둔다. Beetle은 부팅 후 LOW를 확인해야 재무장하고, 유효 요청 뒤 자기 watchdog feed를 중단해 재부팅한다. GPIO12는 TTGO 부팅 strap 핀이므로 부팅 전부터 LOW가 유지되는 회로가 필요하다.
+공통 GND와 실제 구동 회로를 확인한다. 리셋은 LOW 대기 → HIGH 150ms → LOW이며 요청 간 30초 간격을 둔다. Beetle은 부팅 후 LOW를 확인해야 재무장하고, 유효 요청 뒤 자기 watchdog feed를 중단해 재부팅한다. v24부터 리셋 요청선은 GPIO33이다. GPIO12는 MTDI 부팅 strap 핀이라 리셋 펄스 중 TTGO가 리셋되면 flash 전압 설정이 틀어질 수 있어 옮겼다. GPIO33은 strap 핀이 아니고 부팅 직후 내부 pull이 없어 펌웨어가 LOW로 잡기 전까지 플로팅이지만, Beetle 쪽 pull-down과 "LOW 50ms 뒤 HIGH 20ms" 게이트 때문에 오동작 리셋은 나지 않는다. 펌웨어와 배선이 다른 글러브(v24 이상 + GPIO12 배선, 또는 v23 이하 + GPIO33 배선)는 벽돌이 되지는 않지만 원격 Beetle 리셋만 조용히 동작하지 않으므로, 글러브별 재배선 여부를 버전 경계로 관리한다.
 
 2026-09-17 사용자 회로도 확인으로 Beetle 리셋 입력을 GPIO3에서 **GPIO1**로 정정했다. 기존 GPIO3 이미지에서는 요청을 감지하지 못했으나, 수정본을 두 보드에 USB 설치한 뒤 `b` 펄스 후 새 boot ID와 일치 PING/HELLO 응답으로 Beetle 재부팅·UART 복구를 확인했다. UART에서 하드웨어 reset cause는 직접 읽지 않았다. 설치 이력과 실측 근거는 [검증 기록](docs/VALIDATION.md)에 구분한다.
 
@@ -80,6 +80,8 @@ TTGO와 Beetle OTA는 `badland_shoot`에 직접 연결한다. `first_store`의 �
 
 진동은 [feedback_config.h](feedback_config.h)에서 상태별로 지정한다. 짧게 1회·길게 1회·짧게 2회 및 끄기를 선택할 수 있고 기본 길이는 각각 150ms, 300ms, 150ms ON → 100ms OFF → 150ms ON이다. 서버 필드를 추가하지 않으며 설정 변경은 펌웨어 릴리즈와 OTA로 반영한다.
 
+v24부터 모터는 GPIO13의 LEDC PWM(20kHz, 8비트)으로 구동하고 [motor_drive.h](motor_drive.h)가 ON 요청의 듀티를 만든다. 근접 진동과 연속 ON(`vibe=11`)은 듀티 160에서 시작해 25ms 동안 255까지 올리는 소프트 스타트를 적용하고, 상태 전이·발각/제거 이벤트·운영자 명령(12~17) 진동은 즉시 255로 켠다. OFF는 램프 없이 즉시 0이며 OTA·리셋 펄스 중 강제 OFF, 재시작 직전 모터 OFF도 그대로다. 한 번의 ON 안에서 듀티는 내려가지 않는다(즉시 소스가 255에 도달한 뒤 근접 소스로 바뀌어도 255 유지). 램프는 틱마다 더하는 방식이 아니라 ON 시작 후 경과 시간으로 계산하므로 HTTP·flash로 루프가 멈췄다 깨어나도 바로 맞는 듀티로 간다. `out.motor`와 블랙박스·`s` 상태의 `motor`는 여전히 ON/OFF 요청이고, `motor_duty`가 마지막 PWM 듀티다. ERM 모터는 낮은 듀티에서 기동하지 않으므로 시작 듀티·램프 시간·소스별 적용 여부는 실물로 맞춘다. 모터에 플라이백 다이오드가 없는 글러브에 PWM 펌웨어를 올리면 OFF 에지마다 역기전력이 모스펫에 걸리므로 다이오드 추가와 같이 적용한다.
+
 진동 중 LED 소등이 남는 현상을 완화하기 위해 모터 ON 중에는 500ms마다, OFF 전환 50ms 뒤에는 한 번 현재 LED 상태를 재전송한다. 색·밝기·칸 수 변경은 즉시 전송하며 정상 소등도 그대로 보존한다. 두 번 진동의 중간 OFF 구간에도 같은 규칙을 적용하고, 50ms 전에 다시 ON이 되면 이전 OFF 재전송을 취소한다. 간격은 [pixel_refresh.h](pixel_refresh.h)의 상수로 조절하며 진동 길이와 통신 루프를 지연시키지 않는다.
 
 `feedback_config::Settings`의 해당 초기값을 `Pattern::Short1`, `Long1`, `Short2`, `Off` 중 하나로 바꾼다. 길이는 `shortMs`, `longMs`, `doubleGapMs`에서 조절한다.
@@ -117,10 +119,10 @@ Beetle의 초기 설치가 끝난 뒤에는 **TTGO USB Serial 115200 또는 같�
 | --- | --- |
 | `s` 또는 `?` | IP·MAC, 서버 valid/fresh·device·phase, GPIO26/27 원시값·디바운스 입력·모델 칩 상태, 역할·device_state·동기화·life_chip·포획 허용·로컬/서버 소생 카운트·봉헌/개방, 마지막 LED/모터 출력과 밝기, 로그 유실량, peer known/online, 펌웨어·파티션·부팅 ID, 마지막 유효 수신/HELLO 경과시간, heartbeat의 freshness·uptime·scan·OTA busy, 위치 freshness/방, UART 송수신 누계 |
 | `p` | 현재 PING 요청 ID와 **동일한 ID의 유효 HELLO**를 확인하고 RTT 출력. 자동 PING도 2초마다 같은 방식으로 추적 |
-| `b` | GPIO12→GPIO1에 리셋 펄스를 보낸 뒤 최대 15초 동안 새 부팅 ID와 펄스 이후 발급한 PING의 일치 응답을 확인 |
+| `b` | GPIO33→GPIO1에 리셋 펄스를 보낸 뒤 최대 15초 동안 새 부팅 ID와 펄스 이후 발급한 PING의 일치 응답을 확인 |
 | `u` | 두 보드 순차 OTA 요청 |
 
-`inputs`의 GPIO 원시값은 조회 순간의 HIGH=1/LOW=0이며, 현재 칩·버튼 입력은 LOW를 장착·눌림으로 해석한다. `chip_debounced`/`button_debounced`는 30ms 안정화 후 논리값이고 `chip_model`은 게임 모델이 반영한 장착 여부다. `outputs`는 직전 렌더의 명령 캐시이며 `cache_valid=1`일 때 읽는다. RGB는 밝기 적용 전 값, `lit`은 점등 개수, `brightness8`은 0~255 밝기이며, `motor`는 마지막 GPIO13 출력 명령이다. 실제 발광·진동을 측정한 값은 아니므로 실물 관찰과 함께 비교한다. 상태 조회는 게임 피드백이나 입력을 소비하지 않는다.
+`inputs`의 GPIO 원시값은 조회 순간의 HIGH=1/LOW=0이며, 현재 칩·버튼 입력은 LOW를 장착·눌림으로 해석한다. `chip_debounced`/`button_debounced`는 30ms 안정화 후 논리값이고 `chip_model`은 게임 모델이 반영한 장착 여부다. `outputs`는 직전 렌더의 명령 캐시이며 `cache_valid=1`일 때 읽는다. RGB는 밝기 적용 전 값, `lit`은 점등 개수, `brightness8`은 0~255 밝기이며, `motor`는 마지막 GPIO13 ON/OFF 요청, `motor_duty`는 마지막 PWM 듀티(0~255)다. 실제 발광·진동을 측정한 값은 아니므로 실물 관찰과 함께 비교한다. 상태 조회는 게임 피드백이나 입력을 소비하지 않는다.
 
 `probe.latest=matched`, `matched_fresh=1`은 현재 부팅 ID에 대해 최근 양방향 응답을 확인했다는 뜻이다. HEART, 부팅 시 ID 0 HELLO, 이전 요청의 응답, 1.5초 timeout 뒤 도착한 응답으로 이를 갱신하지 않는다. `online=1`만으로는 양방향 연결을 입증하지 않는다. `heart.fresh=0`이면 uptime/scan/busy는 과거 샘플이며, 서버와 게임 상태에 따라 정상 연결에서도 scan은 0일 수 있다. `rx`/`tx` 누계는 TTGO 부팅 이후 값이고 핀 전압 측정값은 아니다.
 

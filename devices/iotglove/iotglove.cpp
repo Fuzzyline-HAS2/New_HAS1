@@ -10,6 +10,7 @@
 #include "battery.h"
 #include "sensor.h"
 #include "feedback.h"
+#include "motor_drive.h"
 #include "pixel_refresh.h"
 #include "blackbox.h"
 #include "network_policy.h"
@@ -30,6 +31,7 @@ using namespace iotglove;
 constexpr bool kTraining = IOTGLOVE_TRAINING != 0;
 GameModel game(kTraining ? Profile::Training : Profile::Origin);
 FeedbackEngine feedbackEngine;
+motor_drive::SoftStart motorDrive;
 PixelRefresh pixelRefresh;
 BatterySampler battery(IOTGLOVE_BATTERY_DIVIDER_RATIO, IOTGLOVE_BATTERY_CALIBRATION,
                        IOTGLOVE_BATTERY_MIN_MV, IOTGLOVE_BATTERY_MAX_MV);
@@ -70,6 +72,8 @@ bool lastLocationValid = false, locationReported = false, haveOutputs = false;
 char lastRoom[40] = {};
 Outputs lastOutputs;
 uint8_t lastBrightness = 0;
+uint8_t lastMotorDuty = 0;
+bool motorPwmReady = false;
 uint32_t rxBytes = 0, rxLines = 0, rxDecoded = 0, rxRejectedLines = 0;
 uint32_t txBytes = 0, txFrames = 0, txFailures = 0;
 uint32_t statusPrintedAt = 0, manualProbeAt = 0, transitionPrintedAt = 0;
@@ -294,9 +298,9 @@ void printDiagnostics(uint32_t now) {
       roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
       game.count(), server.revivalCount, server.sacrificed, server.open, deviceStateName(server.deviceState));
   // feedback() consumes event haptics. Diagnostics only read the last render.
-  remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u brightness8=%u motor_age_ms=%s\n",
+  remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u motor_duty=%u brightness8=%u motor_age_ms=%s\n",
       haveOutputs, lastOutputs.red, lastOutputs.green, lastOutputs.blue, lastOutputs.lit,
-      lastOutputs.motor, lastBrightness, motorAgeText(now));
+      lastOutputs.motor, lastMotorDuty, lastBrightness, motorAgeText(now));
   remoteConsoleLogf("[battery] adc_mv=%u configured=%u volts=%.2f\n",
       batteryAdcMv, battery.configured(), static_cast<double>(batteryVolts));
   const has1blackbox::Diagnostics bb = has1blackbox::blackbox.diagnostics();
@@ -521,11 +525,17 @@ void controlOta(uint32_t now) {
   }
 }
 
+// Restart paths spend a flash write before ESP.restart(); never leave the motor running across it.
+void motorOff() {
+  if (motorPwmReady) ledcWrite(IOTGLOVE_MOTOR_PIN, 0);
+  lastMotorDuty = 0;
+}
+
 void controlReset(uint32_t now) {
   if (resetHigh && uint32_t(now - resetStarted) >= kResetPulseMs) {
     digitalWrite(IOTGLOVE_BEETLE_RESET_PIN, LOW);
     resetHigh = false;
-    if (resetTtgo) { remoteConsoleLogf("[reset] Server watchdog: restarting TTGO\n"); blackBoxBeforeRestart(1,networkRestartHistory.attempts); ESP.restart(); }
+    if (resetTtgo) { remoteConsoleLogf("[reset] Server watchdog: restarting TTGO\n"); motorOff(); blackBoxBeforeRestart(1,networkRestartHistory.attempts); ESP.restart(); }
   }
   if (resetPending && !resetHigh && !otaBusy() &&
       (!haveReset || uint32_t(now - lastReset) >= kResetCooldownMs)) {
@@ -593,7 +603,10 @@ void render(uint32_t now) {
   // preventing an unchanged command from replaying after Academy ends.
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
   if (otaBusy() || resetHigh) out.motor = false;
-  digitalWrite(IOTGLOVE_MOTOR_PIN, out.motor ? HIGH : LOW);
+  // out.motor stays the ON/OFF request for logs and diagnostics; the PWM duty
+  // only shapes how an ON request starts. OFF always writes 0 immediately.
+  lastMotorDuty = motorDrive.update(out.motor, out.motorSource, now);
+  if (!motorPwmReady || !ledcWrite(IOTGLOVE_MOTOR_PIN, lastMotorDuty)) lastMotorDuty = 0;
   blackBoxMotor(now,out.motor,int(out.motorSource),out.motorPressId);
   blackBoxOutput(now,out.motor,lastOutputs.lit,lastBrightness);
   lastOutputs.motor = out.motor;  // Motor can change without any LED update.
@@ -727,6 +740,7 @@ void monitorNetwork() {
     const auto cause = decision.cause == 2 ? LinkLossCause::WorkerStall : LinkLossCause::WifiDown;
     linkLossComplete(linkLossRecord,cause,now,d.wifiConnectFailures,
         NetworkRestartPolicy::diagnosticAttempt(networkRestartHistory.attempts),currentLinkLossContext(now));
+    motorOff();
     blackBoxBeforeRestart(decision.cause,networkRestartHistory.attempts);
     ESP.restart();
   }
@@ -737,6 +751,10 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   firmware = firmwareVersion; partition = partitionVersion;
   // Set output latch before enabling the driver: motor OFF and reset idle LOW.
   digitalWrite(IOTGLOVE_MOTOR_PIN, LOW); pinMode(IOTGLOVE_MOTOR_PIN, OUTPUT);
+  // Hardware PWM for the motor MOSFET: duty 0 keeps the pin LOW, so the gate
+  // stays off across the attach. Above the audible band; 8-bit is plenty.
+  motorPwmReady = ledcAttach(IOTGLOVE_MOTOR_PIN, IOTGLOVE_MOTOR_PWM_HZ, IOTGLOVE_MOTOR_PWM_BITS);
+  if (motorPwmReady) ledcWrite(IOTGLOVE_MOTOR_PIN, 0);
   digitalWrite(IOTGLOVE_BEETLE_RESET_PIN, LOW); pinMode(IOTGLOVE_BEETLE_RESET_PIN, OUTPUT);
   sensorConfigurePins();
   Serial.begin(115200);
@@ -756,7 +774,8 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
   // Raw ADC sampling of the battery pin runs regardless of calibration.
   analogReadResolution(12);
   analogSetPinAttenuation(IOTGLOVE_BATTERY_PIN, ADC_11db);
-  remoteConsoleLogf("[glove] firmware=%d profile=%s\n", firmware, kTraining ? "training" : "origin");
+  remoteConsoleLogf("[glove] firmware=%d profile=%s motor_pwm=%u\n", firmware, kTraining ? "training" : "origin", motorPwmReady);
+  if (!motorPwmReady) remoteConsoleLogf("[motor] ledcAttach failed; GPIO13 stays LOW and the motor never runs\n");
   diagnosticLog.append("[diag] TTGO console ready: s/? status, p UART probe, b Beetle reset, u OTA\n");
   if (!battery.configured())
     remoteConsoleLogf("[battery] Calibrated reporting disabled: configure measured ADC divider and battery range; raw adc_mv is still sampled\n");

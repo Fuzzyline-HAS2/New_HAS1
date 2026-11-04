@@ -3,7 +3,7 @@
 namespace beetle_config {
 constexpr int kUartRx = 6;
 constexpr int kUartTx = 5;
-// Schematic: TTGO GPIO12 -> Beetle symbol pin 4, labelled GPIO1 (not GPIO3).
+// Schematic: TTGO GPIO33 (GPIO12 before TTGO v24) -> Beetle symbol pin 4, labelled GPIO1 (not GPIO3).
 constexpr int kResetRequest = 1;
 constexpr uint32_t kBaud = 115200;
 constexpr uint32_t kHeartbeatMs = 1000;

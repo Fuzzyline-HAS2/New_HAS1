@@ -1,6 +1,8 @@
 #pragma once
 
-// Confirmed wiring. GPIO12 is exclusively the Beetle reset request.
+// Confirmed wiring. GPIO33 is exclusively the Beetle reset request (moved off
+// the GPIO12/MTDI boot strap in firmware v24; gloves still wired to GPIO12 need v23).
+// GPIO13 drives the motor MOSFET with LEDC PWM; the motor needs a flyback diode.
 #define IOTGLOVE_LED_PIN 25
 #define IOTGLOVE_LED_COUNT 4
 #define IOTGLOVE_CHIP_PIN 26
@@ -8,8 +10,10 @@
 #define IOTGLOVE_MOTOR_PIN 13
 #define IOTGLOVE_UART_RX 36
 #define IOTGLOVE_UART_TX 32
-#define IOTGLOVE_BEETLE_RESET_PIN 12
+#define IOTGLOVE_BEETLE_RESET_PIN 33
 #define IOTGLOVE_UART_BAUD 115200
+#define IOTGLOVE_MOTOR_PWM_HZ 20000
+#define IOTGLOVE_MOTOR_PWM_BITS 8
 
 #ifndef IOTGLOVE_TRAINING
 #define IOTGLOVE_TRAINING 0
