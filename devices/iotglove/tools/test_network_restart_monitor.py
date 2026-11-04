@@ -59,6 +59,8 @@ const char* deviceStateName(int){return "test";}
 const char* motorAgeText(uint32_t){return "test";}
 template<class... T> void remoteConsoleLogf(const char*,T...){}
 void blackBoxBeforeRestart(int reason,uint32_t){restartReason=reason;}
+unsigned motorOffs=0;
+void motorOff(){assert(!ESP.restarts);++motorOffs;} // Motor must be cut before the restart.
 // PRODUCTION_FUNCTIONS
 void tick(uint32_t at,bool connected=false){
   nowMs=at;sample.phase=NetworkPhase::Backoff;sample.sequence=at;
@@ -69,7 +71,7 @@ void reset(unsigned attempts){
   networkRestartHistory={NetworkRestartPolicy::kMagic,attempts,false};
   networkRestartPolicy=NetworkRestartPolicy{};sample=NetworkDiagnostics{};
   linkLossRecord={};stallReported=linkDownReported=ota=false;ESP.restarts=0;
-  has1blackbox::waitLogs=has1blackbox::cancelLogs=0;
+  has1blackbox::waitLogs=has1blackbox::cancelLogs=motorOffs=0;
 }
 int main(){
   reset(UINT32_MAX);armMainWatchdog();
@@ -78,14 +80,14 @@ int main(){
   reset(1); // bootId XOR attempts = 0 jitter
   tick(30000);assert(linkDownReported && !ESP.restarts && has1blackbox::waitLogs==1);
   tick(299999);assert(!ESP.restarts && has1blackbox::waitLogs==1);
-  tick(300000);assert(ESP.restarts==1 && restartReason==3); // Reporting latch cannot block due.
+  tick(300000);assert(ESP.restarts==1 && restartReason==3 && motorOffs==1); // Reporting latch cannot block due.
   reset(1);tick(30000);tick(50000,true);
   assert(has1blackbox::cancelLogs==1);tick(300000,true);assert(!ESP.restarts);
   reset(1);tick(30000);ota=true;tick(300000);
   assert(has1blackbox::cancelLogs==1 && !ESP.restarts);
   reset(1);sample.phase=NetworkPhase::Http;sample.deadlineMs=20000;sample.wifiConnected=true;
   nowMs=20000;monitorNetwork();assert(stallReported && !ESP.restarts);
-  nowMs=300000;monitorNetwork();assert(ESP.restarts==1 && restartReason==2);
+  nowMs=300000;monitorNetwork();assert(ESP.restarts==1 && restartReason==2 && motorOffs==1);
   reset(300);tick(1800000);assert(ESP.restarts==0); // Jitter = bootId ^ 300 = 301.
   tick(1800301);assert(ESP.restarts==1 && linkLossRecord.restartAttempt==255);
 }
