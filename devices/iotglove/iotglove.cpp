@@ -312,7 +312,7 @@ void printDiagnostics(uint32_t now) {
       unsigned(bb.crashState), bb.crashTask[0] ? bb.crashTask : "-",
       (unsigned long)bb.crashPc, (unsigned long)bb.crashCause);
   diagnosticLog.append(
-      "[diag] TTGO fw=%d partition=%d; UART TX32->6 RX36<-5 reset12->1\n"
+      "[diag] TTGO fw=%d partition=%d; UART TX32->6 RX36<-5 reset33->1\n"
       "[peer] known=%u online=%u fw=%lu partition=%lu boot=%lu last_seen_ms=%s hello_age_ms=%s\n"
       "[heart] known=%u fresh=%u age_ms=%s uptime_ms=%lu scan=%u ota_busy=%u (last sample)\n"
       "[probe] latest=%s id=%lu age_ms=%lu rtt_ms=%s matched_fresh=%u sent=%lu matched=%lu timeouts=%lu\n"
