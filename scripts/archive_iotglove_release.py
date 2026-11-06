@@ -79,6 +79,7 @@ def source_paths(root, device):
     paths.update(root / name for name in (
         "scripts/firmware_targets.py", "scripts/archive_iotglove_release.py",
         "scripts/write_firmware_secret.py", "scripts/write_blackbox_release_config.py",
+        "scripts/verify_blackbox_release.py",
         "devices/iotglove/tools/has2-wifi-result-api.patch", ".github/workflows/deploy-firmware.yml",
     ))
     paths.update(path for path in (root / "devices/iotglove/tools/bounded_http").rglob("*") if path.is_file())

@@ -66,6 +66,8 @@ python3 devices/iotglove/tools/compile.py all \
 
 훈련 profile은 자동 배포 대상이 아니다. 모든 브랜치가 동일 고정 태그를 사용하므로 구현 브랜치 시험에는 `Compile IoT glove`만 사용한다. 실제 Release/OTA 전에 실기기 검증과 서버 연동 확인을 끝낸다.
 
+글러브 TTGO와 발전기의 정식 배포는 MQTT 블랙박스 전송을 필수로 한다. `blackbox_mode=auto`(기본값)는 두 대상에 `mqtt`를 적용하고 다른 대상은 기존 방식으로 빌드한다. 두 대상에서 `flash`를 선택하거나 `BLACKBOX_BROKER_URI`/`BLACKBOX_MQTT_PASSWORD`가 없으면 버전 증가 전에 실패한다. 컴파일 후에는 실제 `update.bin`에 블랙박스 코드와 현재 MQTT 접속 설정이 포함됐는지 확인한 뒤 서명·게시한다. 로컬 시험용 내부 저장 전용 빌드는 `write_blackbox_release_config.py --mode flash`로 가능하지만 정식 배포의 `--release` 검증은 통과하지 못한다. 이 검증은 장치에서 수집 PC까지의 실제 수신·저장 ACK 확인을 대신하지 않는다.
+
 워크플로 변경은 기본 브랜치에 반영한 뒤 배포한다. GitHub는 기본 브랜치와 다른 워크플로 변경을 포함한 커밋에 새 Release 태그를 만들 때 추가 workflow 권한을 요구할 수 있으며, Actions `GITHUB_TOKEN`으로는 그 권한을 추가할 수 없다. 근거: [GitHub Release 생성 API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
 ## 버전 보관과 선택
