@@ -22,6 +22,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Generator BLE build switch and retained blackbox logging
+        run: python devices/HAS1_generator/tests/run_ble_config_tests.py
       - name: Bounded NeoPixel transport with fault injection
         run: python devices/HAS1_generator/tests/run_neopixel_tests.py
       - name: Blackbox admission and LED retry with fault injection

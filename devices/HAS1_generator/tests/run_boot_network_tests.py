@@ -19,12 +19,15 @@ prefix = r'''
 #include <cstdio>
 #include <string>
 #include <vector>
+#if HAS1_GENERATOR_BLE_ENABLED
+#include <HAS1BleBeacon.h>
+#endif
 static bool initializeOk = true, tcpReady = false, workerStarted = false;
 static unsigned initCalls = 0, socketCalls = 0, workerCalls = 0;
 static unsigned networkLoops = 0, telnetLoops = 0, diagnosticLoops = 0;
 static unsigned yieldCalls = 0, gameLoops = 0, bleBegins = 0, blePolls = 0;
 static unsigned otaSetups = 0, connectCalls = 0, failureLogs = 0;
-static unsigned watchdogFeeds = 0;
+static unsigned watchdogFeeds = 0, blackboxBegins = 0, blackboxLoops = 0;
 static std::vector<std::string> events;
 struct Net {
  bool begin() {
@@ -65,8 +68,8 @@ struct Ota {
  template<class T> void setOnSkip(T) {}
  void setPartitionUpdate(const char*,const char*,const char*,int) {}
 } ota;
-void BlackBoxBegin() {}
-void BlackBoxLoop() {}
+void BlackBoxBegin() { ++blackboxBegins; }
+void BlackBoxLoop() { ++blackboxLoops; }
 void NeoRetryPending() {}
 void DiagnosticInit() {}
 void CrashReportInit() {}
@@ -97,9 +100,10 @@ void delay(unsigned ms) { assert(ms == 1); ++yieldCalls; }
 void esp_task_wdt_reset() { ++watchdogFeeds; }
 namespace Has1BleBeacon {
  void begin() { ++bleBegins; }
- void poll() { ++blePolls; }
+ void poll(bool) { ++blePolls; }
 }
 void TelnetInit();
+#include "generator_ble.h"
 '''
 tests = r'''
 int main(int argc, char**) {
@@ -109,12 +113,14 @@ int main(int argc, char**) {
  assert(ptrCurrentMode == WaitFunc && ptrRfidMode == WaitFunc);
  for (unsigned i = 0; i < 1000; ++i) loop();
  assert(diagnosticLoops == 1000 && initCalls == 1);
+ assert(blackboxBegins == 1 && blackboxLoops == 1000);
  if (initializeOk) {
   const std::vector<std::string> expected{"tcp-init", "configure", "worker", "socket"};
   assert(events == expected);
   assert(connectCalls == 1 && workerCalls == 1 && socketCalls == 1);
   assert(networkLoops == 1000 && telnetLoops == 1000 && gameLoops == 1000);
-  assert(bleBegins == 1 && blePolls == 1000 && otaSetups == 1);
+  assert(bleBegins == unsigned(GeneratorBle::enabled()));
+  assert(blePolls == (GeneratorBle::enabled() ? 1000U : 0U) && otaSetups == 1);
   assert(yieldCalls == 0 && failureLogs == 0 && watchdogFeeds == 0);
   puts("PASS: setup initializes TCP/IP before deferred worker and actual Telnet socket; loop remains active");
  } else {
@@ -131,8 +137,10 @@ with tempfile.TemporaryDirectory(prefix='generator-boot-network-') as directory:
     cpp = Path(directory) / 'boot.cpp'
     binary = Path(directory) / 'boot'
     cpp.write_text(prefix + source + init + tests)
-    subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-Wall', '-Wextra',
-                    '-Werror', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    str(cpp), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
-    subprocess.run([str(binary), 'init-failure'], check=True)
+    for enabled in (0, 1):
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-Wall', '-Wextra',
+                        '-Werror', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        '-I', str(ROOT), '-I', str(ROOT.parents[1]/'libraries/HAS1BleBeacon/src'),
+                        f'-DHAS1_GENERATOR_BLE_ENABLED={enabled}', str(cpp), '-o', str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+        subprocess.run([str(binary), 'init-failure'], check=True)

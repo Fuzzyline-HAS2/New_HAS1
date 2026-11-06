@@ -35,7 +35,7 @@ void DataChanged()
 
   // 서버 이름만 복사한다. BLE 명령/응답 처리는 loop() 끝에서 진행한다.
   if (my["device_name"].is<const char *>()) {
-    Has1BleBeacon::setDeviceName(my["device_name"].as<const char *>());
+    GeneratorBle::setDeviceName(my["device_name"].as<const char *>());
   }
 
   // 서버에서 받은 스타터 설정값 동기화 (0 이하인 값은 아직 세팅 전이라 판단해 무시)

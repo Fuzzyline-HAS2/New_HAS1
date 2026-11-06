@@ -107,7 +107,7 @@ void TelnetPreserveCrashReport() {
 }
 
 static size_t TelnetFormatDiagnostics(char *buffer, size_t capacity) {
-  const Has1BleBeacon::Diagnostics ble = Has1BleBeacon::diagnostics();
+  const GeneratorBle::Diagnostics ble = GeneratorBle::diagnostics();
   const has1blackbox::Diagnostics bb = has1blackbox::blackbox.diagnostics();
   const char *deviceName = my["device_name"].as<const char *>();
   uint8_t mac[6] = {};
@@ -118,7 +118,7 @@ static size_t TelnetFormatDiagnostics(char *buffer, size_t capacity) {
       "[diagnostics] firmware=%u device=%.18s "
       "mac=%02X:%02X:%02X:%02X:%02X:%02X ip=%u.%u.%u.%u "
       "heap_free=%lu heap_min=%lu heap_largest=%lu "
-      "ble_step=%u ble_radio=%u ble_error=%u ble_hci=%u "
+      "ble=%s ble_step=%u ble_radio=%u ble_error=%u ble_hci=%u "
       "ble_pending=%u ble_awaiting=%u ble_timeout=%u "
       "ble_commands=%lu ble_failures=%lu "
       "bb_ready=%u bb_status=%u bb_partition=%lu bb_flash_errors=%lu "
@@ -133,7 +133,7 @@ static size_t TelnetFormatDiagnostics(char *buffer, size_t capacity) {
       static_cast<unsigned long>(ESP.getFreeHeap()),
       static_cast<unsigned long>(ESP.getMinFreeHeap()),
       static_cast<unsigned long>(ESP.getMaxAllocHeap()),
-      static_cast<unsigned>(ble.step), static_cast<unsigned>(ble.radio),
+      GeneratorBle::mode(), static_cast<unsigned>(ble.step), static_cast<unsigned>(ble.radio),
       static_cast<unsigned>(ble.lastError), static_cast<unsigned>(ble.hciStatus),
       static_cast<unsigned>(ble.pendingOpcode),
       static_cast<unsigned>(ble.awaitingCompletion),

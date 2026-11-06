@@ -169,11 +169,14 @@ Result get(const char*,uint16_t,const char *path,const Options &options){
 }
 '''
 application_stubs=r'''
+#include "generator_ble.h"
+#if HAS1_GENERATOR_BLE_ENABLED
 namespace Has1BleBeacon {
  void setDeviceName(const char*){}
  void suspend(){otaTrace.emplace_back("ble-off");}
  bool releaseMemory(){otaTrace.emplace_back("ble-release");return true;}
 }
+#endif
 static int gameTimerDeletes=0;
 struct Timer {void deleteTimer(int){++gameTimerDeletes;} int setInterval(unsigned,void(*)()){return 1;} bool isEnabled(int){return true;}} GameTimer,BlinkTimer;
 int gameTimerId=1,blinkTimerId=2,starterDecreaseAmount=1;
@@ -376,7 +379,11 @@ int main(){
  for(int i=0;i<10;++i){now+=1000;mainTurn();}
  assert(networkMaintenance&&otaChecks==0&&otaTrace.empty());
  blackboxUploadIdle=true;mainTurn();assert(otaChecks==1&&networkMaintenance&&networkOtaRestartPending&&restarts==0);
- assert((otaTrace==std::vector<std::string>{"pause","ble-off","ble-release","ota","unpause"}));
+ if(GeneratorBle::enabled()) {
+  assert((otaTrace==std::vector<std::string>{"pause","ble-off","ble-release","ota","unpause"}));
+ } else {
+  assert((otaTrace==std::vector<std::string>{"pause","ota","unpause"}));
+ }
  {bool logged=false;for(const auto &line:diagnostics){if(line.find("OTA memory")!=std::string::npos){logged=true;}}assert(logged);}
  assert(NetworkOtaAttempts()==1&&guardArms==1&&guardStops==1&&!guardArmed);
  mainTurn();assert(restarts==1&&NetworkOtaAttempts()==1&&otaChecks==1);
@@ -986,5 +993,6 @@ int main(){
 with tempfile.TemporaryDirectory(prefix='generator-network-test-') as tmp:
  p=Path(tmp);src=p/'test.cpp';src.write_text(prefix+'\n'+application_stubs+'\n'+actual_datachanged+'\n'+actual_activate+'\n'+actual_finish+'\n'+network+'\n'+wire+'\n'+contrib+'\n'+tests)
  exe=p/'test'
- subprocess.run([os.environ.get('CXX','c++'),'-std=c++11','-Wall','-Wextra','-Werror','-Wno-unused-function','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I',str(ROOT),'-I',str(LIB),'-I',str(JSON),str(src),'-o',str(exe)],check=True)
- subprocess.run([str(exe)],check=True)
+ for enabled in (0,1):
+  subprocess.run([os.environ.get('CXX','c++'),'-std=c++11','-Wall','-Wextra','-Werror','-Wno-unused-function','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I',str(ROOT),'-I',str(LIB),'-I',str(ROOT.parents[1]/'libraries/HAS1BleBeacon/src'),'-I',str(JSON),f'-DHAS1_GENERATOR_BLE_ENABLED={enabled}',str(src),'-o',str(exe)],check=True)
+  subprocess.run([str(exe)],check=True)
