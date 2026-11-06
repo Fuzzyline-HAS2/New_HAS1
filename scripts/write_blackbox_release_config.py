@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate the existing firmware secret header and public blackbox build metadata.
 
-No credential is printed or included in public metadata. MQTT is opt-in and only
-supported on glove TTGO / generator. The existing HMAC validation stays intact.
+No credential is printed or included in public metadata. Official glove TTGO /
+generator releases require MQTT; local flash-only builds remain supported.
 """
 
 import argparse
@@ -47,9 +47,13 @@ def checked_password(value):
     return value
 
 
-def configuration(device, mode, broker=None, password=None):
-    if device not in TARGETS or mode not in ("flash", "mqtt"):
+def configuration(device, mode="auto", broker=None, password=None, *, release=False):
+    if device not in TARGETS or mode not in ("auto", "flash", "mqtt"):
         raise ValueError("Unsupported firmware target or blackbox mode")
+    if mode == "auto":
+        mode = "mqtt" if device in PREFIXES else "flash"
+    if release and device in PREFIXES and mode != "mqtt":
+        raise ValueError("Official glove/generator releases require MQTT blackbox; flash is local-only")
     if mode == "mqtt" and device not in PREFIXES:
         raise ValueError("MQTT blackbox is supported only for iotglove and HAS1_generator")
     uri = checked_broker(broker) if mode == "mqtt" else ""
@@ -68,7 +72,8 @@ def configuration(device, mode, broker=None, password=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, choices=TARGETS)
-    parser.add_argument("--mode", required=True, choices=("flash", "mqtt"))
+    parser.add_argument("--mode", default="auto", choices=("auto", "flash", "mqtt"))
+    parser.add_argument("--release", action="store_true", help="require MQTT for official glove/generator releases")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--public-config", required=True, type=Path)
     args = parser.parse_args()
@@ -76,7 +81,7 @@ def main():
         key = checked_secret(os.environ.get("HMAC_SECRET"))
         defines, public = configuration(args.device, args.mode,
                                        os.environ.get("BLACKBOX_BROKER_URI"),
-                                       os.environ.get("BLACKBOX_MQTT_PASSWORD"))
+                                       os.environ.get("BLACKBOX_MQTT_PASSWORD"), release=args.release)
     except ValueError as error:
         parser.error(str(error))
     # Validate everything before replacing the header. Public metadata has an
