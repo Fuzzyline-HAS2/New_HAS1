@@ -79,7 +79,7 @@ struct Document {
     bool containsKey(const char* k) { return values.count(k); }
 } my, cur;
 #define BREADCRUMB(x) ((void)0)
-namespace Has1BleBeacon { void setDeviceName(const char*) {} }
+namespace GeneratorBle { void setDeviceName(const char*) {} }
 struct Wifi { void Send(String,const char*,String) {} } has2wifi;
 struct Log { template<class T> void println(T) {} } Serial;
 struct Ota { void check() { assert(false && "OTA must be deferred out of state application"); } } ota;

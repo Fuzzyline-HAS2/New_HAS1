@@ -17,6 +17,9 @@ permissions:
 jobs:
   compile:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ble: ['0', '1']
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-arduino-cli@v2
@@ -42,4 +45,5 @@ jobs:
       - name: Link MQTT and existing OTA paths (never deploy)
         run: |
           python scripts/compile_blackbox_generator.py --libraries-dir "$RUNNER_TEMP/blackbox-deps" \
-            --output-dir "$RUNNER_TEMP/blackbox-generator" --blackbox-mode mqtt
+            --output-dir "$RUNNER_TEMP/blackbox-generator" --blackbox-mode mqtt --ble-enabled '${{ matrix.ble }}' \
+            --verify-symbols-nm "$HOME/.arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32-elf-nm"

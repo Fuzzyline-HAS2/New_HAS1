@@ -34,6 +34,7 @@ void setup() {
     BlackBoxBegin(); // Durable logger starts before blocking peripheral initialization.
     DiagnosticInit(); // Capture previous RTC evidence before any initialization can block.
     Serial.begin(115200);
+    DebugSerial.println(GeneratorBle::bootMessage());
     has2wifi.SetHttpDiagnosticHook(DiagnosticHttpHook);
     has2wifi.EnableBoundedResponseBody(); // Reject stalled/oversized HTTP bodies before they block the loop watchdog.
     has2wifi.SetDebugPrint(&DebugSerial); // 라이브러리/비동기 통신 로그도 같은 UART + RAM/Telnet 경로로 전달
@@ -90,7 +91,7 @@ void setup() {
     ptrRfidMode = WaitFunc;
 
     // 초기 서버 상태는 GeneratorNetworkLoop에서 비동기 응답을 받은 뒤 적용한다.
-    Has1BleBeacon::begin();
+    GeneratorBle::begin();
 }
 
 // ---------------------------------------------------------------------------------
@@ -122,5 +123,5 @@ void loop() {
     ptrCurrentMode();  // 현재 모드 함수 실행 (예: WaitFunc / RfidLoopMain / WirePollMain / StarterActivate)
     TimerRun();         // 완료 기준 HTTP 폴링 예약 및 GameTimer/BlinkTimer 갱신
     // 엔코더/배선/서버 처리가 끝난 뒤 BLE 설정을 대기 없이 한 단계만 진행한다.
-    Has1BleBeacon::poll();
+    GeneratorBle::poll();
 }

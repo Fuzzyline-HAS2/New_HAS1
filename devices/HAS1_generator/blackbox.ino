@@ -21,6 +21,8 @@ void BlackBoxBegin() {
   has1blackbox::blackbox.begin({"HAS1_generator",version,HAS1_GENERATOR_BLACKBOX_BROKER_URI,
       HAS1_GENERATOR_BLACKBOX_ENABLED!=0,HAS1_GENERATOR_BLACKBOX_MQTT_USERNAME,HAS1_GENERATOR_BLACKBOX_MQTT_PASSWORD});
   has1blackbox::blackbox.log(has1blackbox::EventType::Boot,esp_reset_reason(),FIRMWARE_VER,PARTITION_VER,0,"device.boot");
+  has1blackbox::blackbox.log(has1blackbox::EventType::State,HAS1_GENERATOR_BLE_ENABLED,
+      HAS1_GENERATOR_BLACKBOX_ENABLED,0,0,"build.ble.blackbox");
   WiFi.onEvent([](WiFiEvent_t event,WiFiEventInfo_t info) {
     has1blackbox::logWifiMetadata(event,info);
   });

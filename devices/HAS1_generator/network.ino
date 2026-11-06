@@ -958,8 +958,8 @@ static void NetworkGithubOta() {
   const uint32_t attempt=NetworkOtaAttempts()+1;
   NetworkOtaAttemptsSet(attempt);
   const uint32_t heap=ESP.getFreeHeap(),largest=ESP.getMaxAllocHeap();
-  Has1BleBeacon::suspend();
-  const bool released=Has1BleBeacon::releaseMemory();
+  GeneratorBle::suspend();
+  const bool released=GeneratorBle::releaseMemory();
   DiagnosticPrintf("[NET] OTA memory heap=%lu largest=%lu; BLE off heap=%lu largest=%lu released=%u bb_idle=%u\r\n",
     (unsigned long)heap,(unsigned long)largest,(unsigned long)ESP.getFreeHeap(),
     (unsigned long)ESP.getMaxAllocHeap(),unsigned(released),unsigned(has1blackbox::blackbox.uploadIdle()));
@@ -1113,7 +1113,7 @@ void GeneratorNetworkLoop() {
       // Released BLE memory returns only through boot. Let the OTA callback's
       // state report leave first, for at most ten seconds.
       if(!busy||uint32_t(millis()-networkOtaRestartSince)>=10000) {
-        DiagnosticPrintf("[NET] restarting after GitHub OTA without update; BLE returns at boot\r\n");
+        DiagnosticPrintf("[NET] restarting after GitHub OTA without update; reboot restores configured BLE mode\r\n");
         BlackBoxOtaRestart(NetworkOtaAttempts());
         networkOtaRestartPending=false;networkMaintenance=false;
         ESP.restart();
